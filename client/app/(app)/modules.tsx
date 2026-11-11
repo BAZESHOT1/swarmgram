@@ -33,7 +33,6 @@ import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
 import { GlassCard, SettingsPage, SettingsSection } from '../../src/components/settings/SettingsUI';
 import { CardsSkeleton } from '../../src/components/skeletons/PageSkeletons';
-import { NearbyModulesBanner } from '../../src/components/modules/NearbyModulesBanner';
 import {
   HeaderIconButton,
   ProgressBar,
@@ -642,9 +641,6 @@ export default function ModulesScreen() {
           </GlassCard>
         )}
       </SettingsSection>
-
-      {/* Найденные рядом носимые модули (автопоиск BLE). */}
-      <NearbyModulesBanner onConnect={() => void localConnection.connectBle()} />
 
       {/* 2. ТЕКУЩИЙ МОДУЛЬ — прямое USB/BLE-подключение. */}
       {!loading && total > 0 ? (

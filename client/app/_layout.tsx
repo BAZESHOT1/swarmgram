@@ -15,6 +15,7 @@ import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
 import { ToastHost } from '../src/components/Toast';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import { ModuleAutoBanner } from '../src/components/ModuleAutoBanner';
 import { LoadingBar } from '../src/components/LoadingBar';
 import { GlobalHotkeys } from '../src/components/GlobalHotkeys';
 import { useSounds } from '../src/components/useSounds';
@@ -648,34 +649,40 @@ export default function RootLayout() {
       // Приглушённые чаты живут локально и не зависят от сервера.
       void useStore.getState().hydrateMuted();
       void useStore.getState().hydrateMutedUsers();
-      if (s) {
-        try {
-          const u = await api.me();
-          useStore.getState().setMe(u);
-          // Настройки с сервера применяем без отправки обратно.
-          applyServerPreferences(u);
-        } catch (meError) {
-          // протухший access — пробуем refresh
-          try {
-            const s2 = getSession();
-            if (!s2) throw new Error('no-session');
-            const r = await api.refresh(s2.refreshToken);
-            await setSession({ ...s2, accessToken: r.accessToken, refreshToken: r.refreshToken, accessExp: Date.now() + r.expiresIn * 1000 });
-            const u2 = await api.me();
-            useStore.getState().setMe(u2);
-            applyServerPreferences(u2);
-          } catch (refreshError) {
-            const status = Number((refreshError as { status?: number } | null)?.status ?? (meError as { status?: number } | null)?.status ?? 0);
-            // 401/403 — сессия действительно недействительна; сеть/5xx — оставляем вход
-            if (status === 401 || status === 403) await setSession(null);
-          }
-        }
-      }
-      // store ready — для (app)-layout, local ready — для внутренних гейтов этого layout
+      // ВАЖНО: приложение готово к работе сразу после чтения локальной сессии.
+      // Сеть (api.me, refresh) догружается в фоне — без интернета запуск не блокируется.
       useStore.getState().setReady(true);
       setReady(true);
-      // Синхронизация настроек: включаем после применения серверных значений.
       initPreferenceSync();
+
+      if (s) {
+        void (async () => {
+          try {
+            const u = await api.me();
+            useStore.getState().setMe(u);
+            // Настройки с сервера применяем без отправки обратно.
+            applyServerPreferences(u);
+          } catch (meError) {
+            // протухший access — пробуем refresh
+            try {
+              const s2 = getSession();
+              if (!s2) throw new Error('no-session');
+              const r = await api.refresh(s2.refreshToken);
+              await setSession({ ...s2, accessToken: r.accessToken, refreshToken: r.refreshToken, accessExp: Date.now() + r.expiresIn * 1000 });
+              const u2 = await api.me();
+              useStore.getState().setMe(u2);
+              applyServerPreferences(u2);
+            } catch (refreshError) {
+              const status = Number((refreshError as { status?: number } | null)?.status ?? (meError as { status?: number } | null)?.status ?? 0);
+              // 401/403 — сессия действительно недействительна; сеть/5xx — оставляем вход.
+              if (status === 401 || status === 403) {
+                await setSession(null);
+                useStore.getState().setSession(null);
+              }
+            }
+          }
+        })();
+      }
     })();
   }, []);
 
@@ -719,6 +726,7 @@ export default function RootLayout() {
                 <Stack.Screen name="join/[token]" options={{ animation: 'slide_from_bottom' }} />
               </Stack>
               {!ready ? <FullSkeleton /> : null}
+              <ModuleAutoBanner />
               <ToastHost />
               {/* Верхний прогресс-бар: сетевые запросы + инициализация сессии. */}
               <LoadingBar forceVisible={!ready} />

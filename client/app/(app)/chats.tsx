@@ -361,8 +361,10 @@ function SwipeChatRow(props: {
   onDelete: () => void;
   onOpen: () => void;
   onMenu: () => void;
+  /** Начался горизонтальный свайп — отменяем отложенное закрытие. */
+  onSwipeStart?: () => void;
 }) {
-  const { chat, title, myUsername, unread, pinned, muted, open, onOpenChange, onTogglePin, onToggleMute, onDelete, onOpen, onMenu } = props;
+  const { chat, title, myUsername, unread, pinned, muted, open, onOpenChange, onTogglePin, onToggleMute, onDelete, onOpen, onMenu, onSwipeStart } = props;
   const theme = useTheme();
   const haptics = useHaptics();
   const reduced = useReducedMotion();
@@ -399,9 +401,13 @@ function SwipeChatRow(props: {
   const pan = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.3,
       onPanResponderTerminationRequest: () => false,
-      onShouldBlockNativeResponder: () => false,
-      onPanResponderGrant: () => translateX.stopAnimation(),
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderGrant: () => {
+        onSwipeStart?.();
+        translateX.stopAnimation();
+      },
       onPanResponderMove: (_e, g) => {
         const base = openRef.current ? -ACTIONS_WIDTH : 0;
         translateX.setValue(Math.min(0, Math.max(-ACTIONS_WIDTH, base + g.dx)));
@@ -409,7 +415,7 @@ function SwipeChatRow(props: {
       onPanResponderRelease: (_e, g) => {
         const base = openRef.current ? -ACTIONS_WIDTH : 0;
         const next = base + g.dx;
-        const shouldOpen = g.vx < -0.35 || (next < -ACTIONS_WIDTH * 0.45 && g.vx <= 0.35);
+        const shouldOpen = g.vx < -0.45 ? next < -ACTIONS_WIDTH * 0.15 : next < -ACTIONS_WIDTH * 0.4;
         if (cbRef.current.reduced) translateX.setValue(shouldOpen ? -ACTIONS_WIDTH : 0);
         else
           Animated.spring(translateX, {
@@ -515,6 +521,19 @@ export default function ChatsScreen() {
   const [busyUser, setBusyUser] = useState('');
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
   const [openRowId, setOpenRowId] = useState<string | null>(null);
+  const swipeCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelSwipeClose = useCallback(() => {
+    if (swipeCloseTimer.current) {
+      clearTimeout(swipeCloseTimer.current);
+      swipeCloseTimer.current = null;
+    }
+  }, []);
+  const scheduleSwipeClose = useCallback(() => {
+    if (!openRowId) return;
+    cancelSwipeClose();
+    swipeCloseTimer.current = setTimeout(() => setOpenRowId(null), 300);
+  }, [openRowId, cancelSwipeClose]);
+  useEffect(() => () => cancelSwipeClose(), [cancelSwipeClose]);
   const [readingAll, setReadingAll] = useState(false);
   const [menuChat, setMenuChat] = useState<Chat | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -1379,6 +1398,7 @@ export default function ChatsScreen() {
             onRefresh={() => void refreshAll()}
             refreshing={refreshing}
             onScrollBeginDrag={() => setOpenRowId(null)}
+            onTouchStart={scheduleSwipeClose}
             onScroll={() => {
               if (openRowId) setOpenRowId(null);
             }}
@@ -1456,6 +1476,7 @@ export default function ChatsScreen() {
                   onDelete={() => requestDelete([chat], titleOf(chat, myUsername))}
                   onOpen={() => void onPressChatRow(item)}
                   onMenu={() => setMenuChat(chat)}
+                  onSwipeStart={cancelSwipeClose}
                 />
               );
 
@@ -2074,7 +2095,9 @@ function ChatRow({
       style={({ pressed }) => [
         styles.row,
         {
-          backgroundColor: selected || pinned || pressed ? theme.accentSoft : theme.surface,
+          // Фон всегда непрозрачный: иначе при нажатии/закреплении сквозь него
+          // просвечивают кнопки свайпа (эффект «мигающего» свайпа).
+          backgroundColor: pressed ? theme.surfacePressed : selected || pinned ? theme.surfaceElevated : theme.surface,
           borderColor: selected ? theme.accent : pinned ? theme.accentSoft : pressed ? theme.surfacePressed : theme.line,
         },
       ]}

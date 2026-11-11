@@ -29,6 +29,15 @@ import {
 
 const AUTO_RETRY_MS = 30_000;
 
+export type AutoModulePhase = 'found' | 'connecting' | 'connected' | 'failed';
+export interface AutoModuleState {
+  key: string;
+  name: string;
+  isMine: boolean;
+  phase: AutoModulePhase;
+  error?: string;
+}
+
 interface ModuleContextValue {
   connection: ModuleConnection | null;
   info: ModuleInfo | null;
@@ -48,6 +57,10 @@ interface ModuleContextValue {
   clearError: () => void;
   /** Последняя ошибка подключения синхронно (контекст может быть ещё не обновлён). */
   getLastError: () => string | null;
+  /** Глобальное окно найденного/подключаемого модуля. */
+  autoModule: AutoModuleState | null;
+  acceptAutoModule: () => Promise<void>;
+  dismissAutoModule: () => void;
   /** Ручной повтор автовосстановления (например, после включения модуля). */
   restore: () => Promise<void>;
 }
@@ -79,6 +92,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const [configuring, setConfiguring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastErrorRef = useRef<string | null>(null);
+  const [autoModule, setAutoModule] = useState<AutoModuleState | null>(null);
+  const autoRef = useRef<AutoModuleState | null>(null);
+  autoRef.current = autoModule;
+  const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ignoredModulesRef = useRef<Set<string>>(new Set());
+  const cancelAutoKeyRef = useRef<string | null>(null);
 
   const connectionRef = useRef<ModuleConnection | null>(null);
   const infoRef = useRef<ModuleInfo | null>(null);
@@ -288,6 +307,40 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const connectUsb = useCallback(() => connect('usb'), [connect]);
   const connectBle = useCallback(() => connect('ble'), [connect]);
 
+  /** Принять найденный модуль (кнопка «Подключить» в глобальном окне). */
+  const acceptAutoModule = useCallback(async () => {
+    const item = autoRef.current;
+    if (!item || item.phase === 'connected') return;
+    setAutoModule({ ...item, phase: 'connecting', error: undefined });
+    const info = await connectBle();
+    if (!mountedRef.current) return;
+    if (info) {
+      setAutoModule({ ...item, phase: 'connected' });
+      if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
+      autoTimerRef.current = setTimeout(() => setAutoModule(null), 2600);
+    } else {
+      setAutoModule({
+        ...item,
+        phase: 'failed',
+        error: lastErrorRef.current ?? 'Не удалось подключить модуль',
+      });
+    }
+  }, [connectBle]);
+
+  /** Игнорировать модуль до перезапуска приложения. */
+  const dismissAutoModule = useCallback(() => {
+    const item = autoRef.current;
+    if (item) {
+      ignoredModulesRef.current.add(item.key);
+      cancelAutoKeyRef.current = item.key;
+    }
+    if (autoTimerRef.current) {
+      clearTimeout(autoTimerRef.current);
+      autoTimerRef.current = null;
+    }
+    setAutoModule(null);
+  }, []);
+
   const disconnect = useCallback(async () => {
     const last = lastRecordRef.current;
     await detachCurrent();
@@ -347,6 +400,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const restore = useCallback(async () => {
     if (!useStore.getState().session) return;
     if (inFlightRef.current || connectionRef.current) return;
+    if (autoRef.current?.phase === 'found' || autoRef.current?.phase === 'connecting') return;
     const now = Date.now();
     if (now - lastAttemptRef.current < AUTO_RETRY_MS) return;
     lastAttemptRef.current = now;
@@ -354,59 +408,99 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
     const last = await readLastModule(kv);
     lastRecordRef.current = last;
-    if (!last?.hardwareId) {
-      // Нет сохранённого модуля — ищем рядом и предлагаем список в «Модулях».
+
+    try {
+      // На смартфоне показываем глобальное окно найденного модуля.
       if (Platform.OS !== 'web') {
+        const scanTransport = getModuleTransport('ble');
+        const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
+        setNearbyModules(nearby);
+        const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
+        const mineKey = String(last?.publicId ?? last?.hardwareId ?? '')
+          .toLowerCase()
+          .replace(/^esp32-/, '');
+        const mine = mineKey
+          ? available.find(
+              (device) =>
+                device.name.toLowerCase().includes(mineKey) || device.id.toLowerCase().includes(mineKey),
+            ) ?? null
+          : null;
+        const candidate = available[0] ?? null;
+
+        if (!last?.hardwareId) {
+          if (candidate) {
+            setAutoModule({ key: candidate.id, name: candidate.name, isMine: false, phase: 'found' });
+          }
+          return;
+        }
+
+        // Если рядом есть чужой модуль, а свой не найден — предлагаем подключить.
+        if (!mine && candidate) {
+          setAutoModule({ key: candidate.id, name: candidate.name, isMine: false, phase: 'found' });
+          return;
+        }
+
+        const key = mine?.id ?? last.hardwareId;
+        const displayName = mine?.name ?? `Модуль ${last.publicId ?? ''}`.trim();
+        cancelAutoKeyRef.current = null;
+        setAutoModule({ key, name: displayName, isMine: true, phase: 'connecting' });
+
         const transport = getModuleTransport('ble');
-        if (transport.scan) {
-          const nearby = await transport.scan(2500).catch(() => []);
-          setNearbyModules(nearby);
-          if (nearby[0]) {
-            const key = `nearby:${nearby[0].id}:${Math.floor(Date.now() / 300_000)}`;
-            if (foundToastRef.current !== key) {
-              foundToastRef.current = key;
-              useStore.getState().pushToast({
-                kind: 'info',
-                message: `Найден модуль ${nearby[0].name}. Откройте «Модули», чтобы подключить.`,
-              });
-            }
+        if (!transport.openKnown) {
+          setAutoModule(null);
+          return;
+        }
+        try {
+          const nextInfo = await transport.openKnown(last.hardwareId, 5000);
+          if (cancelAutoKeyRef.current === key) {
+            await transport.close().catch(() => undefined);
+            setAutoModule(null);
+            return;
+          }
+          if (nextInfo) {
+            await adopt(transport, nextInfo);
+            setAutoModule((prev) => (prev && prev.key === key ? { ...prev, phase: 'connected' } : prev));
+            if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
+            autoTimerRef.current = setTimeout(() => setAutoModule(null), 2600);
+            return;
+          }
+          await transport.close().catch(() => undefined);
+          if (cancelAutoKeyRef.current !== key) {
+            setAutoModule((prev) =>
+              prev && prev.key === key
+                ? { ...prev, phase: 'failed', error: lastErrorRef.current ?? 'Модуль не отвечает' }
+                : prev,
+            );
+          }
+        } catch (e) {
+          await transport.close().catch(() => undefined);
+          if (cancelAutoKeyRef.current !== key) {
+            setAutoModule((prev) =>
+              prev && prev.key === key
+                ? { ...prev, phase: 'failed', error: e instanceof Error ? e.message : String(e) }
+                : prev,
+            );
           }
         }
+        return;
       }
-      inFlightRef.current = false;
-      return;
-    }
 
-    // web: сначала USB (уже разрешённые порты), затем Web Bluetooth, если он есть.
-    const order: ConnectionKind[] =
-      Platform.OS === 'web'
-        ? last.kind === 'ble'
+      if (!last?.hardwareId) return;
+
+      // web: сначала USB (уже разрешённые порты), затем Web Bluetooth, если он есть.
+      const order: ConnectionKind[] =
+        last.kind === 'ble'
           ? webBluetoothSupported()
             ? ['ble', 'usb']
             : ['usb']
-          : ['usb', ...(webBluetoothSupported() ? (['ble'] as const) : [])]
-        : ['ble'];
+          : ['usb', ...(webBluetoothSupported() ? (['ble'] as const) : [])];
 
-    if (order.length) setBusy(order[0]);
-    try {
+      if (order.length) setBusy(order[0]);
       for (const kind of order) {
         const transport = getModuleTransport(kind);
         if (!transport.supported || !transport.openKnown) continue;
         try {
-          // На смартфоне сначала короткий скан, чтобы показать «найден модуль».
-          if (Platform.OS !== 'web' && kind === 'ble' && transport.scan) {
-            const nearby = await transport.scan(2200).catch(() => []);
-            setNearbyModules(nearby);
-            const match = nearby[0];
-            if (match) {
-              const key = `${match.id}:${Math.floor(Date.now() / 300_000)}`;
-              if (foundToastRef.current !== key) {
-                foundToastRef.current = key;
-                useStore.getState().pushToast({ kind: 'info', message: `Найден модуль ${match.name}` });
-              }
-            }
-          }
-          const nextInfo = await transport.openKnown(last.hardwareId, Platform.OS === 'web' ? 3000 : 5000);
+          const nextInfo = await transport.openKnown(last.hardwareId, 3000);
           if (nextInfo) {
             await adopt(transport, nextInfo);
             return;
@@ -416,7 +510,6 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           await transport.close().catch(() => undefined);
         }
       }
-      // Тихий отказ: не показываем ошибку на старте, модуль мог быть просто выключен.
     } finally {
       inFlightRef.current = false;
       if (mountedRef.current) setBusy(null);
@@ -487,9 +580,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       configureGateway,
       clearError,
       getLastError: () => lastErrorRef.current,
+      autoModule,
+      acceptAutoModule,
+      dismissAutoModule,
       restore,
     }),
-    [connection, info, busy, configuring, error, connectUsb, connectBle, disconnect, configureGateway, clearError, restore],
+    [connection, info, busy, configuring, error, connectUsb, connectBle, disconnect, configureGateway, clearError, autoModule, acceptAutoModule, dismissAutoModule, restore],
   );
 
   return <ModuleContext.Provider value={value}>{children}</ModuleContext.Provider>;

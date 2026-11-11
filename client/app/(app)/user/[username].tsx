@@ -318,7 +318,11 @@ export default function UserProfileScreen() {
   return (
     <>
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 120 }}
+        contentContainerStyle={
+          compact
+            ? { paddingBottom: 120, flexGrow: 1, backgroundColor: bannerPreset(banner).colors[1] }
+            : { paddingBottom: 120 }
+        }
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -718,9 +722,9 @@ function MobileProfile({
   const contribution = Number(profile.nodeCapacityBytes ?? 0);
 
   return (
-    <View style={{ width: '100%' }}>
-      {/* Верхний блок: фон профиля, без карточки/бокса. */}
-      <View style={[styles.mHeader, bannerBackground(banner)]}>
+    <View style={[styles.mRoot, bannerBackground(banner)]}>
+      {/* Верхний блок: фон профиля на всей странице, без карточки/бокса. */}
+      <View style={styles.mHeader}>
         {Platform.OS !== 'web' ? (
           <>
             <View pointerEvents="none" style={[styles.mBlob, { backgroundColor: preset.colors[0], opacity: 0.45 }]} />
@@ -1012,6 +1016,7 @@ const styles = StyleSheet.create({
   qrButtons: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   qrButtonCell: { flex: 1, minWidth: 104 },
   mHeader: { paddingTop: 14, paddingBottom: 18, paddingHorizontal: 14, overflow: 'hidden' },
+  mRoot: { width: '100%', flexGrow: 1 },
   mBlob: { position: 'absolute', top: -90, left: -60, width: 260, height: 260, borderRadius: 130 },
   mBlob2: { position: 'absolute', bottom: -120, right: -70, width: 300, height: 300, borderRadius: 150 },
   mBack: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
