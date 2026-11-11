@@ -91,11 +91,25 @@ function num(value, def = 0) {
 
 /* -------------------------------------------------------- config.h ---------- */
 
+/**
+ * Нормализует выбор связи из визарда: "Wi-Fi + LoRa", "wifi+lora",
+ * "both" и т.п. -> "wifi_lora". Прошивка понимает только wifi/wifi_lora/lora.
+ */
+function normalizeConnectivity(value) {
+  const s = String(value ?? 'wifi').trim().toLowerCase().replace(/[\s+\-/]+/g, '_');
+  const hasLora = s.includes('lora');
+  const hasWifi = s.includes('wifi') || s.includes('wi_fi');
+  if (s === 'both') return 'wifi_lora';
+  if (hasLora && hasWifi) return 'wifi_lora';
+  if (hasLora) return 'lora';
+  return 'wifi';
+}
+
 /** Генерирует config.h из JSON-конфигурации визарда. */
 function generateConfigHeader(config, version) {
   const board = String(config.board || 'esp32');
   const role = String(config.role || 'gateway');
-  const connectivity = String(config.connectivity || 'wifi');
+  const connectivity = normalizeConnectivity(config.connectivity);
   const wifi = config.wifi || config.gatewayWifi || {};
   const mesh = config.mesh || {};
   const lora = config.lora || null;

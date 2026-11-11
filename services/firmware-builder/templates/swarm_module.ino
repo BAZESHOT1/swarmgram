@@ -356,6 +356,9 @@ static uint16_t gBleMtu = 23;   // согласованный ATT MTU, обно�
 static uint8_t gBleRxBuf[SG_MAX_PAYLOAD + 16];
 static size_t gBleRxLen = 0;
 static bool gUsbSeen = false;
+// USB-клиент начал обмен кадрами: текстовые логи глушим, чтобы не мешать
+// бинарному протоколу (до подключения клиента они полезны).
+static bool gUsbProtoActive = false;
 static uint32_t gLastClientActivityMs = 0;
 static String gStatusJson;
 
@@ -388,18 +391,44 @@ static BLECharacteristic *pBleRx = nullptr;
 static BLECharacteristic *pBleStatus = nullptr;
 #endif
 
+// Диагностика транспортов: счётчики видны в USB-логе (раз в 30 секунд).
+static uint32_t gUdpRxCount = 0;
+static uint32_t gUdpTxCount = 0;
+static uint32_t gLoraRxCount = 0;
+static uint32_t gLoraTxCount = 0;
+static uint32_t gTxCount = 0;
+static uint32_t gFwdCount = 0;
+static uint32_t gLastFwdLogMs = 0;
+static uint32_t gLastDiagMs = 0;
+
 // Wi-Fi UDP fallback.
 #if !SG_USE_ESP_MESH
 static WiFiUDP gUdp;
 static bool gUdpStarted = false;
 static uint32_t gLastWifiAttemptMs = 0;
+static uint32_t gLastUdpRetryMs = 0;
 static bool gStaWasConnected = false;
+static uint8_t gApChannel = 0;
+static uint32_t gStaDownSinceMs = 0;
+static uint32_t gLastScanMs = 0;
+
+// Недавние собеседники: unicast-дубли надёжнее broadcast между STA и AP-хостом
+// (broadcast 255.255.255.255 у ESP32 уходит только в STA-интерфейс).
+struct PeerIp {
+  IPAddress ip;
+  uint32_t lastMs;
+  bool used;
+};
+static PeerIp gPeerIps[4];
 #endif
 
 /* --------------------------------------------------------- утилиты/лог --- */
 
 static void sgLog(const char *fmt, ...) {
   if (!gLogEnabled) return;
+  // На wearable USB CDC несёт бинарные кадры. Логи полезны до подключения
+  // клиента; после первого кадра замолкаем, чтобы не мешать протоколу.
+  if (gUsbProtoActive && strcmp(SG_ROLE, "wearable") == 0) return;
   char buf[224];
   va_list ap;
   va_start(ap, fmt);
@@ -415,12 +444,18 @@ static bool isWearable() { return roleIs("wearable"); }
 static bool isRepeater() { return roleIs("repeater"); }
 static bool isGateway()  { return roleIs("gateway"); }
 
+static bool connHas(const char *needle) {
+  return strstr(SG_CONNECTIVITY, needle) != nullptr;
+}
+
 static bool wifiTransportEnabled() {
+  // wifi и wifi_lora -> Wi-Fi; чистый lora -> только радио.
   return strcmp(SG_CONNECTIVITY, "lora") != 0;
 }
 static bool loraTransportEnabled() {
 #if SG_USE_LORA
-  return strcmp(SG_CONNECTIVITY, "wifi") != 0;
+  // Реагируем на "wifi_lora", "lora", "Wi-Fi + LoRa" и т.п.
+  return connHas("lora") || strcmp(SG_CONNECTIVITY, "wifi") != 0;
 #else
   return false;
 #endif
@@ -833,6 +868,12 @@ static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json) 
       break;
     }
   }
+  // Диагностика: факт видимости шлюза через mesh (не чаще раза в 5 минут).
+  static uint32_t lastGwLogMs = 0;
+  if (jsonGetInt(json, "gw") != 0 && millis() - lastGwLogMs > 300000UL) {
+    lastGwLogMs = millis();
+    sgLog("[mesh] gateway visible id=%08lx rssi=%d", (unsigned long)id, (int)rssi);
+  }
 }
 
 static uint8_t neighborCount() {
@@ -930,25 +971,97 @@ static bool meshParse(const uint8_t *buf, size_t n, MeshHeader &h, const uint8_t
 static bool wifiSendRaw(const uint8_t *buf, size_t len);
 
 #if !SG_USE_ESP_MESH
+static bool wifiStartUdp() {
+  gUdpStarted = gUdp.begin(SG_MESH_UDP_PORT);
+  if (gUdpStarted) {
+    sgLog("[udp] listen :%u", (unsigned)SG_MESH_UDP_PORT);
+  } else {
+    sgLog("[udp] begin :%u failed", (unsigned)SG_MESH_UDP_PORT);
+  }
+  gLastUdpRetryMs = millis();
+  return gUdpStarted;
+}
+
+static bool wifiSameIp(const IPAddress &a, const IPAddress &b) {
+  return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+static void wifiNotePeer(const IPAddress &ip) {
+  if (ip[0] == 0) return;
+  if (wifiSameIp(ip, WiFi.softAPIP()) || wifiSameIp(ip, WiFi.localIP())) return;
+
+  int freeSlot = -1;
+  int oldest = 0;
+  for (int i = 0; i < 4; i++) {
+    if (gPeerIps[i].used && wifiSameIp(gPeerIps[i].ip, ip)) {
+      gPeerIps[i].lastMs = millis();
+      return;
+    }
+    if (!gPeerIps[i].used && freeSlot < 0) freeSlot = i;
+    if (gPeerIps[i].used && gPeerIps[i].lastMs < gPeerIps[oldest].lastMs) oldest = i;
+  }
+  const int slot = (freeSlot >= 0) ? freeSlot : oldest;
+  const bool fresh = !gPeerIps[slot].used;
+  gPeerIps[slot].ip = ip;
+  gPeerIps[slot].lastMs = millis();
+  gPeerIps[slot].used = true;
+  if (fresh) sgLog("[udp] peer %s", ip.toString().c_str());
+}
+
+static bool wifiSendOne(const IPAddress &dst, const uint8_t *buf, size_t len) {
+  if (!gUdp.beginPacket(dst, SG_MESH_UDP_PORT)) return false;
+  if (gUdp.write(buf, len) != len) {
+    gUdp.endPacket();
+    return false;
+  }
+  return gUdp.endPacket() == 1;
+}
+
 static bool wifiSendRaw(const uint8_t *buf, size_t len) {
   if (!gWifiReady || !gUdpStarted) return false;
-  bool ok = false;
 
-  IPAddress bcast(255, 255, 255, 255);
-  gUdp.beginPacket(bcast, SG_MESH_UDP_PORT);
-  gUdp.write(buf, len);
-  if (gUdp.endPacket() == 1) ok = true;
+  uint8_t copies = 0;
+  const IPAddress bcast(255, 255, 255, 255);
+  if (wifiSendOne(bcast, buf, len)) copies++;
 
-  IPAddress ap = WiFi.softAPIP();
-  if (ap[0] != 0) {
-    IPAddress apBcast(ap[0], ap[1], ap[2], 255);
-    if (!(apBcast == bcast)) {
-      gUdp.beginPacket(apBcast, SG_MESH_UDP_PORT);
-      gUdp.write(buf, len);
-      if (gUdp.endPacket() == 1) ok = true;
-    }
+  // Broadcast подсети SoftAP: гарантированно уходит в AP-интерфейс
+  // (глобальный 255.255.255.255 маршрутизируется только через STA).
+  const IPAddress ap = WiFi.softAPIP();
+  if (ap[0]) {
+    const IPAddress apBcast(ap[0], ap[1], ap[2], 255);
+    if (!wifiSameIp(apBcast, bcast) && wifiSendOne(apBcast, buf, len)) copies++;
   }
-  return ok;
+
+  // STA-клиент -> хост AP: дублируем unicast на адрес шлюза по STA.
+  // Для самого gateway это адрес роутера, поэтому ему unicast не нужен.
+  const IPAddress gw = WiFi.gatewayIP();
+  if (!isGateway() && gw[0] && !wifiSameIp(gw, WiFi.localIP())) {
+    if (wifiSendOne(gw, buf, len)) copies++;
+  }
+
+  // Fallback-unicast для собеседников: broadcast между STA и AP-хостом
+  // доходит не на всех ядрах, поэтому дублируем unicast (не больше двух
+  // адресов, чтобы не плодить трафик).
+  const uint32_t now = millis();
+  uint8_t unicasts = 0;
+  for (int i = 0; i < 4 && unicasts < 2; i++) {
+    if (!gPeerIps[i].used) continue;
+    if (now - gPeerIps[i].lastMs > 10UL * 60UL * 1000UL) {
+      gPeerIps[i].used = false;
+      continue;
+    }
+    const IPAddress peer = gPeerIps[i].ip;
+    if (wifiSameIp(peer, bcast)) continue;
+    if (gw[0] && wifiSameIp(peer, gw)) continue;   // уже отправлено
+    if (wifiSendOne(peer, buf, len)) copies++;
+    unicasts++;
+  }
+
+  if (copies) {
+    gUdpTxCount++;
+    return true;
+  }
+  return false;
 }
 #endif
 
@@ -967,12 +1080,14 @@ static bool loraSendRaw(const uint8_t *buf, size_t len) {
   LoRa.write(buf, len);
   if (LoRa.endPacket() != 1) return false;
 #endif
+  gLoraTxCount++;
   gLastLoraTxMs = millis();
   return true;
 }
 #endif
 
-static bool transportCanCarry(uint16_t len) {  if (wifiTransportEnabled() && gWifiReady && len <= SG_MAX_PAYLOAD) return true;
+static bool transportCanCarry(uint16_t len) {
+  if (wifiTransportEnabled() && gWifiReady && len <= SG_MAX_PAYLOAD) return true;
   if (loraTransportEnabled() && gLoraReady && len <= SG_LORA_MAX_PAYLOAD) return true;
   return false;
 }
@@ -1060,8 +1175,14 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
     const uint16_t n = slot->len;
     memcpy(assembled, slot->data, n);
     slot->active = false;
-    sgLog("[lora] reassembled %u bytes", (unsigned)n);
+    sgLog("[lora] reassembled %u bytes id=%08lx -> mesh", (unsigned)n,
+          (unsigned long)origId);
+    // Собранный пакет проходит обычный путь: локальная обработка + ретрансляция
+    // в Wi-Fi (и обратно в LoRa, если TTL позволяет).
     handleMeshPacket(assembled, n, true, rssi);
+  } else if (slot->mask == ((uint32_t)1 << index)) {
+    sgLog("[lora] frag %u/%u id=%08lx %uB", (unsigned)(index + 1),
+          (unsigned)total, (unsigned long)origId, (unsigned)chunk);
   }
 }
 
@@ -1069,19 +1190,29 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
 // Отправка готового пакета во все доступные транспорты (bridge).
 static bool transmitPacket(const uint8_t *buf, size_t len) {
   bool ok = false;
+  bool viaWifi = false;
+  bool viaLora = false;
   if (wifiTransportEnabled() && gWifiReady) {
-    if (wifiSendRaw(buf, len)) ok = true;
+    if (wifiSendRaw(buf, len)) { ok = true; viaWifi = true; }
   }
 #if SG_USE_LORA
   if (loraTransportEnabled() && gLoraReady) {
     if (len <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
-      if (loraSendRaw(buf, len)) ok = true;
+      if (loraSendRaw(buf, len)) { ok = true; viaLora = true; }
     } else {
       // Крупный пакет: WiFi уже получил целиком, LoRa — фрагментами.
-      if (loraSendFragments(buf, len)) ok = true;
+      if (loraSendFragments(buf, len)) { ok = true; viaLora = true; }
     }
   }
 #endif
+  if (ok) {
+    gTxCount++;
+    // Не спамим лог: первые пакеты и далее каждый 50-й.
+    if (gTxCount <= 5 || gTxCount % 50 == 0) {
+      sgLog("[tx] #%lu %uB wifi=%d lora=%d", (unsigned long)gTxCount,
+            (unsigned)len, viaWifi ? 1 : 0, viaLora ? 1 : 0);
+    }
+  }
   return ok;
 }
 
@@ -1237,17 +1368,24 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
 }
 
 static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_t rssi) {
-  (void)fromLora;   // транспорт-источник: пакет всё равно уходит во все доступные
   MeshHeader h;
   const uint8_t *payload = NULL;
   if (!meshParse(buf, n, h, payload)) {
-    sgLog("[mesh] bad packet");
+    sgLog("[mesh] bad packet %uB via %s", (unsigned)n, fromLora ? "lora" : "wifi");
     return;
   }
   if (seenBefore(h.packetId)) return;
 
   neighborTouch(h.src, rssi);
   routeLearn(h.src, MESH_BROADCAST);   // src достижим через flood
+
+  // Первый хоп от соседа: по этим строкам видно, работает ли транспорт.
+  if (h.hop == 0 && h.type != MT_PRESENCE) {
+    sgLog("[mesh] rx %s type=%u src=%08lx dst=%s len=%u ttl=%u",
+          fromLora ? "lora" : "wifi", (unsigned)h.type, (unsigned long)h.src,
+          h.dst == MESH_BROADCAST ? "bcast" : "uni", (unsigned)h.payloadLen,
+          (unsigned)h.ttl);
+  }
 
   // LoRa-фрагменты: собрать; дальнейшая обработка произойдёт после сборки.
   if (h.type == MT_FRAG) {
@@ -1257,7 +1395,8 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
   const bool forMe = (h.dst == gNodeId) || (h.dst == MESH_BROADCAST);
   if (forMe && h.type != MT_FRAG) handleMeshLocal(h, payload, rssi);
 
-  // Ре транслируем broadcast и чужие unicast-пакеты, пока жив TTL.
+  // Ретранслируем broadcast и чужие unicast-пакеты, пока жив TTL.
+  // transmitPacket дублирует пакет в WiFi и LoRa — это и есть мост сред.
   if (h.ttl > 0 && (h.dst == MESH_BROADCAST || h.dst != gNodeId)) {
     if (h.dst != MESH_BROADCAST && !routeLookup(h.dst) && h.hop == 0) {
       sendRouteReq(h.dst);
@@ -1266,7 +1405,17 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
     size_t fn = meshBuild(fwd, sizeof(fwd), h.type, h.dst, h.packetId,
                           (uint8_t)(h.ttl - 1), (uint8_t)(h.hop + 1),
                           payload, h.payloadLen);
-    if (fn) transmitPacket(fwd, fn);
+    if (fn) {
+      gFwdCount++;
+      if (millis() - gLastFwdLogMs > 2000UL) {
+        gLastFwdLogMs = millis();
+        sgLog("[mesh] fwd %s->all type=%u hop=%u ttl=%u (n=%lu)",
+              fromLora ? "lora" : "wifi", (unsigned)h.type,
+              (unsigned)(h.hop + 1), (unsigned)(h.ttl - 1),
+              (unsigned long)gFwdCount);
+      }
+      transmitPacket(fwd, fn);
+    }
   }
 }
 
@@ -1292,11 +1441,18 @@ static void meshPumpQueue() {
 
 static void sendQueuedEntry(QueueEntry &e) {
   uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  // Downlink обязан быть broadcast: у wearable может ещё не быть маршрута
+  // до gateway, и unicast-пакет с чужим dst он не примет.
   size_t n = meshBuild(buf, sizeof(buf), MT_DATA, MESH_BROADCAST, e.id,
                        SG_LORA_MAX_HOPS, 0, e.data, e.len);
   if (!n) return;
   seenBefore(e.id);   // не обрабатывать собственный пакет при эхе
-  transmitPacket(buf, n);
+  const bool ok = transmitPacket(buf, n);
+  if (e.tries == 0 || e.tries == 3 || e.tries % 10 == 0) {
+    sgLog("[mesh] queue tx id=%08lx kind=%u len=%u try=%u dst=bcast %s",
+          (unsigned long)e.id, (unsigned)e.kind, (unsigned)e.len,
+          (unsigned)e.tries, ok ? "ok" : "pending");
+  }
 }
 
 /* ------------------------------------------------------------ BLE GATT --- */
@@ -1603,6 +1759,10 @@ static void usbPoll() {
     uint16_t crc = crc16Ccitt(gUsbBuf + pos + 2, 4 + len);
     uint16_t got = (uint16_t)gUsbBuf[pos + 6 + len] | ((uint16_t)gUsbBuf[pos + 7 + len] << 8);
     if (crc == got) {
+      if (!gUsbProtoActive) {
+        sgLog("[usb] client frame -> serial logs muted");
+        gUsbProtoActive = true;
+      }
       gUsbSeen = true;
       gLastClientActivityMs = millis();
       asmFeed(gUsbAsm, gUsbBuf[pos + 3], gUsbBuf + pos + 6, len, false);
@@ -1741,7 +1901,10 @@ static void clientFeedFrame(uint8_t type, const uint8_t *payload, uint16_t len) 
 
 static void setupLora() {
 #if SG_USE_LORA
-  if (!loraTransportEnabled()) return;
+  if (!loraTransportEnabled()) {
+    sgLog("[lora] disabled (conn=%s)", SG_CONNECTIVITY);
+    return;
+  }
 #if SG_LORA_CHIP_SX1262
   SPI.begin(SG_LORA_SCK, SG_LORA_MISO, SG_LORA_MOSI, SG_LORA_CS);
 #if SG_LORA_BUSY >= 0
@@ -1786,6 +1949,9 @@ static void loraPoll() {
     int st = gRadio->readData(buf, avail);
     if (st == RADIOLIB_ERR_NONE) {
       int16_t rssi = (int16_t)gRadio->getRSSI();
+      gLoraRxCount++;
+      sgLog("[lora] rx #%lu %uB rssi=%d", (unsigned long)gLoraRxCount,
+            (unsigned)avail, (int)rssi);
       handleMeshPacket(buf, avail, true, rssi);
     } else {
       sgLog("[lora] rx err %d", st);
@@ -1797,7 +1963,13 @@ static void loraPoll() {
     uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
     size_t n = 0;
     while (LoRa.available() && n < sizeof(buf)) buf[n++] = (uint8_t)LoRa.read();
-    handleMeshPacket(buf, n, true, (int16_t)LoRa.packetRssi());
+    const int16_t rssi = (int16_t)LoRa.packetRssi();
+    gLoraRxCount++;
+    if (gLoraRxCount <= 5 || gLoraRxCount % 20 == 0) {
+      sgLog("[lora] rx #%lu %uB rssi=%d", (unsigned long)gLoraRxCount,
+            (unsigned)n, (int)rssi);
+    }
+    handleMeshPacket(buf, n, true, rssi);
   }
 #endif
 #endif
@@ -1806,28 +1978,118 @@ static void loraPoll() {
 /* ---------------------------------------------------- Wi-Fi mesh (UDP) --- */
 
 #if !SG_USE_ESP_MESH
+// SoftAP не должен «теряться» в режиме AP_STA: если режим сбросился,
+// поднимаем точку доступа заново на текущем канале.
+static void wifiEnsureAp() {
+  const wifi_mode_t mode = (wifi_mode_t)WiFi.getMode();
+  const IPAddress apip = WiFi.softAPIP();
+  if ((mode & WIFI_AP) && apip[0] != 0) return;
+  // Не дёргаем softAP в первые 15 секунд: DHCP/netif могут ещё подниматься.
+  if (millis() - gBootMs < 15000UL) return;
+  const uint8_t ch = gApChannel ? gApChannel : (uint8_t)SG_MESH_CHANNEL;
+  sgLog("[wifi] softAP not running (mode=%d ip=%s) -> restart ch%u",
+        (int)mode, apip.toString().c_str(), (unsigned)ch);
+  WiFi.mode(WIFI_AP_STA);
+  if (!WiFi.softAP(meshSsid(), meshPass(), ch, SG_MESH_HIDDEN ? 1 : 0, 4)) {
+    sgLog("[wifi] softAP restart failed");
+  }
+}
+
 static void ensureWifiLink() {
   const uint32_t now = millis();
+
+  // UDP-сокет мог не открыться на старте (netif ещё не готов) — пробуем снова.
+  if (!gUdpStarted && now - gLastUdpRetryMs > 5000UL) wifiStartUdp();
+
+  wifiEnsureAp();
+
   if (WiFi.status() == WL_CONNECTED) {
+    gStaDownSinceMs = 0;
+    const uint8_t ch = (uint8_t)WiFi.channel();
     if (!gStaWasConnected) {
       gStaWasConnected = true;
-      sgLog("[wifi] sta connected ip=%s rssi=%d",
-            WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      gApChannel = ch;
+      sgLog("[wifi] sta connected ip=%s gw=%s ch=%u rssi=%d",
+            WiFi.localIP().toString().c_str(),
+            WiFi.gatewayIP().toString().c_str(), (unsigned)ch, (int)WiFi.RSSI());
       if (isGateway() && !gTimeSyncStarted) {
         configTime(0, 0, "pool.ntp.org");
         gTimeSyncStarted = true;
       }
+      // Диагностика: если подсеть AP совпала с подсетью роутера, AP-клиенты
+      // будут недостижимы (конфликт маршрутов). Прошивка это не «лечит»,
+      // но строка делает причину очевидной.
+      {
+        const IPAddress lip = WiFi.localIP();
+        const IPAddress apip = WiFi.softAPIP();
+        if (lip[0] && apip[0] && lip[0] == apip[0] && lip[1] == apip[1] &&
+            lip[2] == apip[2]) {
+          sgLog("[wifi] WARN subnet collision sta=%s ap=%s",
+                lip.toString().c_str(), apip.toString().c_str());
+        }
+      }
       gLastRegisterMs = millis() - 60000UL;   // сразу checkin после появления сети
+      // После подключения к роутеру канал AP мог измениться — сразу
+      // объявляемся, чтобы клиенты mesh нашли шлюз на новом канале.
+      sendAdvert();
+      gLastAdvertMs = millis();
+    } else if (ch && ch != gApChannel) {
+      // В AP+STA канал AP следует за STA; mesh-клиенты переподключаются сами.
+      sgLog("[wifi] channel %u -> %u (AP follows STA), clients=%d",
+            (unsigned)gApChannel, (unsigned)ch, (int)WiFi.softAPgetStationNum());
+      gApChannel = ch;
+      sendAdvert();
+      gLastAdvertMs = millis();
     }
     return;
   }
 
-  gStaWasConnected = false;
+  if (gStaWasConnected) {
+    gStaWasConnected = false;
+    sgLog("[wifi] sta disconnected (ap clients=%d)", (int)WiFi.softAPgetStationNum());
+  }
+  if (!gStaDownSinceMs) gStaDownSinceMs = now;
   if (now - gLastWifiAttemptMs < 15000UL) return;
   gLastWifiAttemptMs = now;
 
+  // Долго не можем подключиться к mesh: сканируем эфир (включая скрытые AP)
+  // и цепляемся к самому сильному узлу по BSSID+каналу. Спасает, когда
+  // скрытый SSID и/или канал AP не совпадают с ожидаемым.
+  if (!isGateway() && now - gStaDownSinceMs > 60000UL &&
+      now - gLastScanMs > 120000UL) {
+    gLastScanMs = now;
+    sgLog("[wifi] scan for hidden mesh AP...");
+    const int found = WiFi.scanNetworks(false, true);
+    int best = -1;
+    int bestRssi = -1000;
+    const String ownBssid = WiFi.softAPmacAddress();
+    for (int i = 0; i < found; i++) {
+      if (WiFi.SSID(i) != String(meshSsid())) continue;
+      if (WiFi.BSSIDstr(i).equalsIgnoreCase(ownBssid)) continue;   // свой AP
+      if (WiFi.RSSI(i) > bestRssi) {
+        bestRssi = WiFi.RSSI(i);
+        best = i;
+      }
+    }
+    if (best >= 0) {
+      uint8_t bssid[6];
+      memcpy(bssid, WiFi.BSSID(best), 6);
+      const int ch = WiFi.channel(best);
+      sgLog("[wifi] scan: mesh ap %s ch%d rssi=%d", WiFi.BSSIDstr(best).c_str(),
+            ch, bestRssi);
+      WiFi.begin(meshSsid(), meshPass(), ch, bssid, true);
+    } else {
+      sgLog("[wifi] scan: mesh ap not found (%d nets)", found);
+    }
+    WiFi.scanDelete();
+    if (best >= 0) return;
+  }
+
   if (isGateway()) {
-    if (!gRouterSsid.length()) return;
+    if (!gRouterSsid.length()) {
+      sgLog("[wifi] no router ssid (SET_CONFIG needed)");
+      return;
+    }
     sgLog("[wifi] sta -> router %s", gRouterSsid.c_str());
     WiFi.begin(gRouterSsid.c_str(), gRouterPass.c_str());
   } else {
@@ -1837,7 +2099,10 @@ static void ensureWifiLink() {
 }
 
 static void setupWifi() {
-  if (!wifiTransportEnabled()) return;
+  if (!wifiTransportEnabled()) {
+    sgLog("[wifi] disabled (conn=%s)", SG_CONNECTIVITY);
+    return;
+  }
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
@@ -1846,13 +2111,18 @@ static void setupWifi() {
   const bool apOk = WiFi.softAP(meshSsid(), meshPass(), SG_MESH_CHANNEL,
                                 SG_MESH_HIDDEN ? 1 : 0, 4);
   if (apOk) {
-    sgLog("[wifi] softAP %s ch%d ip=%s", meshSsid(), SG_MESH_CHANNEL,
+    gApChannel = (uint8_t)SG_MESH_CHANNEL;
+    sgLog("[wifi] softAP %s ch%d hidden=%d ip=%s",
+          meshSsid(), (int)SG_MESH_CHANNEL, SG_MESH_HIDDEN ? 1 : 0,
           WiFi.softAPIP().toString().c_str());
   } else {
-    sgLog("[wifi] softAP failed");
+    sgLog("[wifi] softAP failed, mode=%d", (int)WiFi.getMode());
   }
 
-  gUdpStarted = gUdp.begin(SG_MESH_UDP_PORT);
+  if (!wifiStartUdp()) {
+    // Всё равно попробуем позже из ensureWifiLink().
+    sgLog("[wifi] udp not started yet");
+  }
   gWifiReady = apOk || gUdpStarted;
   gLastWifiAttemptMs = millis() - 20000UL;   // первая попытка сразу
   ensureWifiLink();
@@ -1860,14 +2130,27 @@ static void setupWifi() {
 
 static void wifiPoll() {
   if (!gUdpStarted) return;
-  int sz = gUdp.parsePacket();
   int guard = 0;
-  while (sz > 0 && guard++ < 8) {
+  int sz = gUdp.parsePacket();
+  while (sz > 0 && guard++ < 32) {
     uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+    const IPAddress from = gUdp.remoteIP();
     int n = gUdp.read(buf, sizeof(buf));
-    if (n > 0) handleMeshPacket(buf, (size_t)n, false, (int16_t)WiFi.RSSI());
+    if (n > 0) {
+      wifiNotePeer(from);
+      gUdpRxCount++;
+      const IPAddress ap = WiFi.softAPIP();
+      const bool viaAp = ap[0] && from[0] == ap[0] && from[1] == ap[1] &&
+                         from[2] == ap[2];
+      if (gUdpRxCount <= 5 || gUdpRxCount % 20 == 0) {
+        sgLog("[udp] rx #%lu %dB from %s if=%s", (unsigned long)gUdpRxCount,
+              (unsigned)n, from.toString().c_str(), viaAp ? "ap" : "sta");
+      }
+      handleMeshPacket(buf, (size_t)n, false, (int16_t)WiFi.RSSI());
+    }
     sz = gUdp.parsePacket();
   }
+  if (guard >= 32) sgLog("[udp] rx burst cap hit");
 }
 #else
 /* Полноценный ESP-WIFI-MESH. Включается SG_USE_ESP_MESH=1.
@@ -1964,6 +2247,24 @@ static void ensureWifiLink() {
   }
 }
 #endif
+
+/* ----------------------------------------------------------- диагностика -- */
+
+// Периодическая сводка по транспортам: по USB-логу видно, где рвётся связь.
+static void diagPoll() {
+  const uint32_t now = millis();
+  if (now - gLastDiagMs < 30000UL) return;
+  gLastDiagMs = now;
+  const int ch = (int)WiFi.channel();
+  sgLog("[diag] role=%s conn=%s wifi=%d lora=%d sta=%d ch=%d apClients=%d "
+        "udp rx=%lu tx=%lu lora rx=%lu tx=%lu tx=%lu fwd=%lu q=%u",
+        SG_ROLE, SG_CONNECTIVITY, gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
+        WiFi.status() == WL_CONNECTED ? 1 : 0, ch,
+        (int)WiFi.softAPgetStationNum(), (unsigned long)gUdpRxCount,
+        (unsigned long)gUdpTxCount, (unsigned long)gLoraRxCount,
+        (unsigned long)gLoraTxCount, (unsigned long)gTxCount,
+        (unsigned long)gFwdCount, (unsigned)queueLoadValue());
+}
 
 /* ---------------------------------------------------------------- Hub ---- */
 
@@ -2251,9 +2552,13 @@ void setup() {
   // Handshake-строка для клиента; ASCII, чтобы не ломать USB-парсер.
   Serial.printf("SG-INFO {\"hardwareId\":\"%s\",\"publicId\":\"%s\",\"role\":\"%s\"}\n",
                 gHardwareId.c_str(), gPublicId.c_str(), SG_ROLE);
-  if (isWearable()) gLogEnabled = false;   // USB CDC используется протоколом
+  if (isWearable()) gLogEnabled = true;   // до первого USB-кадра логи полезны
   sgLog("[boot] firmware=%s board=%s role=%s conn=%s",
         SG_FIRMWARE_VERSION, SG_BOARD, SG_ROLE, SG_CONNECTIVITY);
+  if (connHas("lora") && !loraTransportEnabled()) {
+    sgLog("[cfg] WARN: conn=%s but SG_USE_LORA=0 — LoRa disabled",
+          SG_CONNECTIVITY);
+  }
 
   gPrefs.begin("swarm", true);
   gModuleToken = gPrefs.getString("module_token", "");
@@ -2277,6 +2582,9 @@ void setup() {
 
   setupWifi();
   setupLora();
+  sgLog("[boot] transports wifi=%d lora=%d (wifiReq=%d loraReq=%d)",
+        gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
+        wifiTransportEnabled() ? 1 : 0, loraTransportEnabled() ? 1 : 0);
   setupBle();
   setupOta();
 
@@ -2306,6 +2614,7 @@ void loop() {
   ensureWifiLink();
   wifiPoll();
   loraPoll();
+  diagPoll();
 
   meshPumpQueue();
   hubLoop();
