@@ -169,9 +169,9 @@ export const useStore = create<AppState>((set, get) => ({
   toasts: [],
   pushToast: (t) => {
     const id = `t-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-    // Новые уведомления сверху, одновременно не больше двух.
+    // Новые уведомления сверху, одновременно не больше четырёх.
     // Авто-скрытие и паузу таймера ведёт ToastHost (reduced-motion friendly).
-    set({ toasts: [{ ...t, id }, ...get().toasts].slice(0, 2) });
+    set({ toasts: [{ ...t, id }, ...get().toasts].slice(0, 4) });
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
 }));

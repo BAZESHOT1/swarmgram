@@ -6,6 +6,7 @@ import { useReducedMotion } from './useReducedMotion';
 import type { AvatarInfo } from '../data/api';
 import { downloadObject } from '../data/chatkit';
 import { decryptFileBytes, fromB64u, toB64 } from '../crypto/core';
+import { getCachedAvatar, loadCachedAvatar, removeCachedAvatar, saveAvatar } from '../data/cache';
 
 /* Градиентные пары: детерминированно по первой букве имени (Telegram-стиль). */
 const PAIRS: [string, string][] = [
@@ -38,8 +39,12 @@ const avatarInflight = new Map<string, Promise<string>>();
 
 /** Сбросить кэш конкретного аватара (например, после перезагрузки фото). */
 export function invalidateAvatar(objectId?: string): void {
-  if (objectId) avatarCache.delete(objectId);
-  else avatarCache.clear();
+  if (objectId) {
+    avatarCache.delete(objectId);
+    removeCachedAvatar(objectId);
+  } else {
+    avatarCache.clear();
+  }
 }
 
 async function loadAvatar(info: AvatarInfo): Promise<string> {
@@ -56,6 +61,8 @@ async function loadAvatar(info: AvatarInfo): Promise<string> {
     const plain = decryptFileBytes(fromB64u(info.key), encrypted);
     const uri = `data:${info.mime || 'image/jpeg'};base64,${toB64(plain)}`;
     avatarCache.set(info.objectId, uri);
+    // Постоянный кэш: следующий офлайн-старт покажет фото без сети.
+    saveAvatar(info.objectId, uri);
     return uri;
   })();
 
@@ -112,27 +119,34 @@ export function Avatar({
   const avatarObjectId = avatar?.objectId ?? '';
   const avatarKey = avatar?.key ?? '';
   const avatarMime = avatar?.mime ?? '';
-  const [photo, setPhoto] = React.useState<{ id: string; uri: string } | null>(() =>
-    avatarObjectId && avatarCache.get(avatarObjectId)
-      ? { id: avatarObjectId, uri: avatarCache.get(avatarObjectId) as string }
-      : null,
-  );
+  const [photo, setPhoto] = React.useState<{ id: string; uri: string } | null>(() => {
+    if (!avatarObjectId) return null;
+    const uri = avatarCache.get(avatarObjectId) ?? getCachedAvatar(avatarObjectId);
+    return uri ? { id: avatarObjectId, uri } : null;
+  });
   const [photoFailed, setPhotoFailed] = React.useState(false);
+  // Пока читаем постоянный кэш, не показываем инициалы — иначе будет «мигание».
+  const [checkingCache, setCheckingCache] = React.useState(
+    () => Boolean(avatarObjectId && avatarKey) && !avatarCache.get(avatarObjectId) && !getCachedAvatar(avatarObjectId),
+  );
 
   React.useEffect(() => {
     let alive = true;
     if (!avatarObjectId || !avatarKey) {
       setPhoto(null);
       setPhotoFailed(false);
+      setCheckingCache(false);
       return () => {
         alive = false;
       };
     }
 
-    const cached = avatarCache.get(avatarObjectId);
+    const cached = avatarCache.get(avatarObjectId) ?? getCachedAvatar(avatarObjectId);
     if (cached) {
+      avatarCache.set(avatarObjectId, cached);
       setPhoto({ id: avatarObjectId, uri: cached });
       setPhotoFailed(false);
+      setCheckingCache(false);
       return () => {
         alive = false;
       };
@@ -140,13 +154,31 @@ export function Avatar({
 
     setPhoto(null);
     setPhotoFailed(false);
-    void loadAvatar({ objectId: avatarObjectId, key: avatarKey, mime: avatarMime })
-      .then((uri) => {
-        if (alive) setPhoto({ id: avatarObjectId, uri });
-      })
-      .catch(() => {
-        if (alive) setPhotoFailed(true);
-      });
+    setCheckingCache(true);
+
+    // Сначала постоянный кэш (асинхронно), только потом сеть.
+    void (async () => {
+      const stored = await loadCachedAvatar(avatarObjectId);
+      if (!alive) return;
+      if (stored) {
+        avatarCache.set(avatarObjectId, stored);
+        setPhoto({ id: avatarObjectId, uri: stored });
+        setCheckingCache(false);
+        return;
+      }
+      try {
+        const uri = await loadAvatar({ objectId: avatarObjectId, key: avatarKey, mime: avatarMime });
+        if (alive) {
+          setPhoto({ id: avatarObjectId, uri });
+          setCheckingCache(false);
+        }
+      } catch {
+        if (alive) {
+          setPhotoFailed(true);
+          setCheckingCache(false);
+        }
+      }
+    })();
 
     return () => {
       alive = false;
@@ -217,6 +249,9 @@ export function Avatar({
             resizeMode="cover"
             accessibilityIgnoresInvertColors
           />
+        ) : checkingCache ? (
+          // Постоянный кэш читается — пустое место лучше, чем мигание инициалов.
+          <View style={{ width: inner, height: inner }} />
         ) : (
           <Text
             style={[styles.initial, { width: inner, height: inner, lineHeight: inner, fontSize: size * 0.4, color: 'rgba(255,255,255,0.94)' }]}

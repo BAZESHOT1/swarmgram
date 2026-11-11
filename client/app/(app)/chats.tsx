@@ -686,6 +686,25 @@ export default function ChatsScreen() {
     [usersQ.data, myUsername],
   );
 
+  // Пользователи, видимые напрямую через mesh (presence), — работают без сервера.
+  const meshPeers = useStore((s) => s.meshPeers);
+  const meshUsers = useMemo<SearchUser[]>(() => {
+    if (!activeQuery || !needle) return [];
+    const q = needle.toLowerCase();
+    const known = new Set(users.map((u) => u.username.toLowerCase()));
+    return Object.values(meshPeers)
+      .filter((peer) => peer.username && !known.has(peer.username.toLowerCase()))
+      .filter((peer) => peer.username.toLowerCase().includes(q))
+      .map((peer) => ({
+        id: peer.userId,
+        username: peer.username,
+        displayName: peer.username,
+        avatar: null,
+        moduleOnline: true,
+      }));
+  }, [activeQuery, needle, meshPeers, users]);
+  const people = useMemo(() => [...users, ...meshUsers], [users, meshUsers]);
+
   const groupHits = useMemo(() => {
     if (!activeQuery || !needle) return [];
     return groupsSafe.groups.filter((g) => g.type === 'group' && !localIds.has(g.id));
@@ -719,13 +738,13 @@ export default function ChatsScreen() {
 
   const counts = useMemo(
     () => ({
-      people: users.length,
+      people: people.length,
       chats: localChatHits.length,
       groups: groupHits.length,
       channels: channelHits.length,
       messages: messageHits.length,
     }),
-    [users.length, localChatHits.length, groupHits.length, channelHits.length, messageHits.length],
+    [people.length, localChatHits.length, groupHits.length, channelHits.length, messageHits.length],
   );
 
   const total = counts.people + counts.chats + counts.groups + counts.channels + counts.messages;
@@ -754,9 +773,9 @@ export default function ChatsScreen() {
       rows.push({ kind: 'section', title: 'Мои чаты', count: localChatHits.length });
       localChatHits.forEach((chat) => rows.push({ kind: 'chat', chat }));
     }
-    if (allow('people') && users.length) {
-      rows.push({ kind: 'section', title: 'Люди', count: users.length });
-      users.forEach((user) => {
+    if (allow('people') && people.length) {
+      rows.push({ kind: 'section', title: 'Люди', count: people.length });
+      people.forEach((user) => {
         const mutual = searchableChats.filter(
           (c) => c.type !== 'direct' && c.members.some((m) => m.username === user.username),
         ).length;
@@ -776,7 +795,7 @@ export default function ChatsScreen() {
       messageHits.forEach((hit) => rows.push({ kind: 'message', hit }));
     }
     return rows;
-  }, [filter, localChatHits, users, groupHits, channelHits, messageHits, searchableChats]);
+  }, [filter, localChatHits, people, groupHits, channelHits, messageHits, searchableChats]);
 
   const selectableRows = useMemo(() => searchRows.filter((r) => r.kind !== 'section'), [searchRows]);
 

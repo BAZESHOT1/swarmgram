@@ -27,6 +27,7 @@ import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
+import { loadCaches, loadProfileCaches, getCachedMe } from '../src/data/cache';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
 const queryClient = new QueryClient({
@@ -645,7 +646,14 @@ export default function RootLayout() {
       const savedLocale = await kv.get('sg:locale');
       if (savedLocale) useStore.getState().setLocale(savedLocale);
       const s = await initSession();
+      // Сначала поднимаем локальный кэш: интерфейс должен рисоваться сразу,
+      // без ожидания сети. Затем уже догружаем серверные данные в фоне.
+      await loadCaches(s?.username ?? null).catch(() => undefined);
       useStore.getState().setSession(s);
+      // Профиль из кэша доступен сразу: без него списки чатов и настройки
+      // оставались бы пустыми до ответа сервера.
+      const cachedMe = getCachedMe();
+      if (s && cachedMe) useStore.getState().setMe(cachedMe);
       // Приглушённые чаты живут локально и не зависят от сервера.
       void useStore.getState().hydrateMuted();
       void useStore.getState().hydrateMutedUsers();
@@ -653,6 +661,7 @@ export default function RootLayout() {
       // Сеть (api.me, refresh) догружается в фоне — без интернета запуск не блокируется.
       useStore.getState().setReady(true);
       setReady(true);
+      void loadProfileCaches();
       initPreferenceSync();
 
       if (s) {

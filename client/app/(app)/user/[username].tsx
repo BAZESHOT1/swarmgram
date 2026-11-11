@@ -207,12 +207,16 @@ export default function UserProfileScreen() {
   }
 
   /* --------------------------------------------------------------- error */
-  if (profileQuery.isError || !profile) {
+  if (!profile) {
     return (
       <View style={{ flex: 1, paddingTop: 44 }}>
         <EmptyState
-          title="Пользователь не найден"
-          subtitle="Возможно, аккаунт удалён или username изменился."
+          title={profileQuery.isError ? 'Профиль недоступен офлайн' : 'Пользователь не найден'}
+          subtitle={
+            profileQuery.isError
+              ? 'Нет связи с сервером, а этот профиль ещё не сохранён на устройстве.'
+              : 'Возможно, аккаунт удалён или username изменился.'
+          }
           actionLabel="Назад"
           onAction={() => router.back()}
         />

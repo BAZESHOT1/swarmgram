@@ -1,11 +1,24 @@
 /**
  * Серверные данные (react-query). Все вызовы — реальные, без кеширования моков.
  */
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import * as api from './api';
 import type { Chat, Envelope } from './api';
 import { loadChatMessages, type ViewMessage } from './messaging';
 import { useStore } from '../state/useStore';
+import {
+  getCachedChats,
+  getCachedMe,
+  getCachedProfile,
+  loadCachedProfile,
+  getCachedMessages,
+  loadCachedMessages,
+  saveMessages,
+  saveChats,
+  saveMe,
+  saveProfile,
+} from './cache';
 
 export const CHATS_KEY = 'chats';
 export const CHANNELS_KEY = 'channels';
@@ -25,26 +38,49 @@ export const STALE = {
 } as const;
 
 export function useMe() {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['me'],
     queryFn: () => api.api.me(),
     retry: false,
     staleTime: STALE.me,
     gcTime: 10 * 60_000,
-    placeholderData: (prev) => prev,
+    // Кэш из storage — как initialData: при ошибке сети данные не пропадают,
+    // а isLoading остаётся false (status уже success).
+    initialData: () => getCachedMe() ?? undefined,
+    // Кэш всегда считается устаревшим, чтобы сеть обновила его в фоне.
+    initialDataUpdatedAt: 0,
+    placeholderData: (prev) => prev ?? getCachedMe() ?? undefined,
   });
+
+  // Каждый успешный ответ (и placeholder) обновляет постоянный кэш в фоне.
+  const data = query.data;
+  useEffect(() => {
+    if (data) saveMe(data);
+  }, [data]);
+
+  return query;
 }
 
 export function useChats() {
   const me = useStore((s) => s.me);
-  return useQuery({
-    queryKey: [CHATS_KEY, me?.username],
+  const username = me?.username;
+  const query = useQuery({
+    queryKey: [CHATS_KEY, username],
     queryFn: () => api.api.listChats(),
     enabled: Boolean(me),
     staleTime: STALE.chats,
     gcTime: 30 * 60_000,
-    placeholderData: (prev) => prev,
+    initialData: () => (username ? getCachedChats(username) ?? undefined : undefined),
+    initialDataUpdatedAt: 0,
+    placeholderData: (prev) => prev ?? (username ? getCachedChats(username) ?? undefined : undefined),
   });
+
+  const data = query.data;
+  useEffect(() => {
+    if (username && data) saveChats(username, data);
+  }, [username, data]);
+
+  return query;
 }
 
 /** Архивные чаты текущего пользователя. */
@@ -111,11 +147,22 @@ export function useChatMessages(chat: Chat | null) {
     queryFn: async () => {
       if (!chat) return [];
       const me = useStore.getState().me;
-      return loadChatMessages(chat, me?.username ?? api.getSession()?.username ?? '');
+      try {
+        const messages = await loadChatMessages(chat, me?.username ?? api.getSession()?.username ?? '');
+        saveMessages(chat.id, messages);
+        return messages;
+      } catch (error) {
+        // Без интернета показываем последние сохранённые сообщения чата.
+        const cached = await loadCachedMessages(chat.id);
+        if (cached) return cached as ViewMessage[];
+        throw error;
+      }
     },
+    initialData: () => (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
+    initialDataUpdatedAt: 0,
     staleTime: STALE.messages,
     gcTime: 10 * 60_000,
-    placeholderData: (prev) => prev,
+    placeholderData: (prev) => prev ?? (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
   });
 }
 
@@ -332,15 +379,33 @@ export function usePatchUser() {
 }
 
 export function useUserProfile(username: string | null) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['profile', username],
-    queryFn: () => api.api.userProfile(username as string),
+    queryFn: async () => {
+      try {
+        return await api.api.userProfile(username as string);
+      } catch (error) {
+        const cached = await loadCachedProfile(username);
+        if (cached) return cached;
+        throw error;
+      }
+    },
     enabled: Boolean(username),
     retry: false,
     staleTime: STALE.profile,
     gcTime: 10 * 60_000,
-    placeholderData: (prev) => prev,
+    // initialData сохраняет кэш даже после сетевой ошибки (offline).
+    initialData: () => (username ? getCachedProfile(username) ?? undefined : undefined),
+    initialDataUpdatedAt: 0,
+    placeholderData: (prev) => prev ?? (username ? getCachedProfile(username) ?? undefined : undefined),
   });
+
+  const data = query.data;
+  useEffect(() => {
+    if (username && data) saveProfile(data);
+  }, [username, data]);
+
+  return query;
 }
 
 export function useUpdateProfile() {

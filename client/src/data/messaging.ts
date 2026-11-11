@@ -27,7 +27,23 @@ import {
 } from '../crypto/core';
 import { dbGet, dbSet, enqueueOutbox, listOutbox, removeOutbox, updateOutboxState, type OutboxItem } from './db';
 import { compressImage, uploadBytesWithProgress, type UploadStage } from './uploader';
-import { sendViaMesh } from '../modules/meshLink';
+import { sendViaMesh, canSendViaMesh, isMeshCongested } from '../modules/meshLink';
+import { useStore } from '../state/useStore';
+
+/**
+ * Политика трафика: без интернета медиа можно отправить только через mesh
+ * и только если сеть модулей не перегружена.
+ */
+function assertMediaTransport(): void {
+  const online = useStore.getState().transportOnline;
+  if (online) return;
+  if (!canSendViaMesh()) {
+    throw new Error('Нет связи с сервером. Подключите носимый модуль или дождитесь сети.');
+  }
+  if (isMeshCongested()) {
+    throw new Error('Сеть модулей сейчас загружена — медиа отправить нельзя. Текст и поиск работают.');
+  }
+}
 
 export type { OutboxItem } from './db';
 
@@ -604,6 +620,7 @@ export async function attachAndSendWithProgress(
   callbacks: AttachProgressCallbacks = {},
 ): Promise<ViewMessage> {
   try {
+    assertMediaTransport();
     if (opts.signal?.aborted) throw abortError();
     callbacks.onStage?.('compress');
     callbacks.onProgress?.(0);
@@ -673,6 +690,7 @@ export async function attachAndSend(
   mime: string,
   myUsername: string,
 ): Promise<ViewMessage> {
+  assertMediaTransport();
   const encrypted = encryptFileBytes(fileBytes);
   const uploaded = await uploadEnvelope(encrypted.bytes);
   return sendMessage(

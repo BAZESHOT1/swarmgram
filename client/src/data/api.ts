@@ -189,15 +189,26 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (session?.accessToken) headers.set('authorization', `Bearer ${session.accessToken}`);
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
     beginRequest();
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 12_000) : null;
     try {
-      return await fetch(`${apiBase}${path}`, { ...init, headers });
+      return await fetch(`${apiBase}${path}`, {
+        ...init,
+        headers,
+        ...(controller && !init.signal ? { signal: controller.signal } : null),
+      });
     } finally {
+      if (timer) clearTimeout(timer);
       endRequest();
     }
   };
 
   let res = await (async (): Promise<Response> => {
     try {
+      // Браузер знает, что сети нет — не ждём таймаут, сразу пробуем mesh.
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('offline');
+      }
       return await run();
     } catch (networkError) {
       // Домен может быть ещё не настроен — перебираем кандидатов по очереди,

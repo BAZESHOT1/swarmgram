@@ -13,6 +13,22 @@ type MeshListener = (envelope: Envelope) => void;
 let sender: MeshSender | null = null;
 const listeners = new Set<MeshListener>();
 
+/** Возможности mesh на текущем подключении (для политики трафика). */
+let capabilities = { connected: false, gateway: false, queue: 0, neighbors: 0 };
+
+export function setMeshCapabilities(next: Partial<typeof capabilities>): void {
+  capabilities = { ...capabilities, ...next };
+}
+
+export function getMeshCapabilities(): typeof capabilities {
+  return capabilities;
+}
+
+/** Перегружена ли сеть модулей: медиа в таком состоянии не отправляем. */
+export function isMeshCongested(queueThreshold = 150): boolean {
+  return capabilities.connected && capabilities.queue > queueThreshold;
+}
+
 /** Установить/снять активный транспорт модуля (вызывает ModuleProvider). */
 export function setMeshSender(next: MeshSender | null): void {
   sender = next;

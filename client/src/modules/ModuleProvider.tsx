@@ -16,7 +16,7 @@ import { api } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
-import { emitMeshEnvelope, setMeshSender } from './meshLink';
+import { emitMeshEnvelope, setMeshCapabilities, setMeshSender } from './meshLink';
 import {
   readLastModule,
   writeLastModule,
@@ -157,6 +157,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         connectionRef.current = null;
         infoRef.current = null;
         setMeshSender(null);
+        setMeshCapabilities({ connected: false, gateway: false, queue: 0, neighbors: 0 });
         if (mountedRef.current) {
           setConnection(null);
           setInfo(null);
@@ -246,6 +247,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
       setTransportModule({ gateway: nextInfo.role === 'gateway', model: nextInfo.role });
       setTransportGateway(Boolean(nextInfo.gateway));
+      setMeshCapabilities({
+        connected: true,
+        gateway: Boolean(nextInfo.gateway),
+        queue: Number(nextInfo.queue ?? 0),
+        neighbors: Number((nextInfo as { neighbors?: number }).neighbors ?? 0),
+      });
 
       // Носимый модуль физически подключён к этому клиенту.
       if (nextInfo.role === 'wearable' && moduleId) {
@@ -542,6 +549,21 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     }, 35_000);
     return () => clearInterval(timer);
   }, [session, restore]);
+
+  // Периодически обновляем нагрузку mesh для политики трафика.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const current = connectionRef.current;
+      const currentInfo = current?.info;
+      if (!current || !currentInfo) return;
+      setMeshCapabilities({
+        connected: true,
+        gateway: Boolean(currentInfo.gateway),
+        queue: Number(currentInfo.queue ?? 0),
+      });
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // При выходе из аккаунта закрываем модуль, чтобы не висеть с чужой привязкой.
   useEffect(() => {
