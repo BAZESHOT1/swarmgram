@@ -219,7 +219,7 @@ static const uint16_t SG_LORA_MAX_PAYLOAD = 180;   // предел LoRa payload
 static const size_t   SG_QUEUE_MAX = 200;          // записей в /queue.log
 static const uint32_t SG_QUEUE_TTL_SEC = 72UL * 3600UL;
 static const uint8_t  SG_BLE_CHUNK = 12;           // 8 байт кадра + 12 = 20 (MTU 23)
-static const uint16_t SG_USB_CHUNK = 200;
+static const uint16_t SG_USB_CHUNK = SG_MAX_PAYLOAD;   // USB может принять кадр целиком
 
 static const uint8_t F_MAGIC0 = 0xA5;
 static const uint8_t F_MAGIC1 = 0x5A;
@@ -353,6 +353,8 @@ static bool gBleConnected = false;
 static bool gBleRestartAdv = false;
 static bool gBleWantInfo = false;
 static uint16_t gBleMtu = 23;   // согласованный ATT MTU, обновляется callback-ом
+static uint8_t gBleRxBuf[SG_MAX_PAYLOAD + 16];
+static size_t gBleRxLen = 0;
 static bool gUsbSeen = false;
 static uint32_t gLastClientActivityMs = 0;
 static String gStatusJson;
@@ -1363,29 +1365,43 @@ static void clientInboxPoll() {
 static size_t buildFrame(uint8_t *out, size_t cap, uint8_t type,
                          const uint8_t *payload, uint16_t totalLen,
                          uint16_t offset, uint16_t chunk) {
-  size_t need = 6 + (size_t)chunk + 2;
+  // Если кадр не влезает в один notification — шлём фрагменты с явным
+  // смещением и полной длиной: [offset u16][total u16][chunk...].
+  // Старший бит типа помечает фрагмент, чтобы клиент собрал payload.
+  const bool frag = offset != 0 || chunk != totalLen;
+  const uint16_t plen = frag ? (uint16_t)(chunk + 4) : chunk;
+  size_t need = 6 + (size_t)plen + 2;
   if (cap < need) return 0;
   out[0] = F_MAGIC0;
   out[1] = F_MAGIC1;
   out[2] = F_VER;
-  out[3] = type;
-  out[4] = (uint8_t)(totalLen & 0xFF);
-  out[5] = (uint8_t)((totalLen >> 8) & 0xFF);
-  if (chunk) memcpy(out + 6, payload + offset, chunk);
-  uint16_t crc = crc16Ccitt(out, 6 + chunk);
-  out[6 + chunk] = (uint8_t)(crc & 0xFF);
-  out[7 + chunk] = (uint8_t)((crc >> 8) & 0xFF);
-  return 6 + chunk + 2;
+  out[3] = frag ? (uint8_t)(type | 0x80) : type;
+  out[4] = (uint8_t)(plen & 0xFF);
+  out[5] = (uint8_t)((plen >> 8) & 0xFF);
+  if (frag) {
+    out[6] = (uint8_t)(offset & 0xFF);
+    out[7] = (uint8_t)((offset >> 8) & 0xFF);
+    out[8] = (uint8_t)(totalLen & 0xFF);
+    out[9] = (uint8_t)((totalLen >> 8) & 0xFF);
+    if (chunk) memcpy(out + 10, payload + offset, chunk);
+  } else if (chunk) {
+    memcpy(out + 6, payload + offset, chunk);
+  }
+  uint16_t crc = crc16Ccitt(out + 2, 4 + plen);
+  out[6 + plen] = (uint8_t)(crc & 0xFF);
+  out[7 + plen] = (uint8_t)((crc >> 8) & 0xFF);
+  return need;
 }
 
 static void bleSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
   if (!gBleConnected || !pBleRx) return;
-  uint8_t frame[6 + SG_MAX_PAYLOAD + 2];
-  // Заголовок кадра 8 байт; укладываем весь notification в (MTU - 3).
-  uint16_t chunkMax = SG_BLE_CHUNK;
+  uint8_t frame[6 + SG_MAX_PAYLOAD + 8];
+  // В фрагменте 4 байта служебного заголовка; notification ≤ MTU-3.
+  uint16_t chunkMax = 8;
   if (gBleMtu > 23) {
-    uint16_t c = (uint16_t)(gBleMtu - 3 - 8);
+    uint16_t c = (uint16_t)(gBleMtu - 3 - 6 - 4 - 2);
     if (c > chunkMax) chunkMax = c;
+    if (chunkMax > SG_BLE_CHUNK) chunkMax = SG_BLE_CHUNK;
   }
   uint16_t off = 0;
   do {
@@ -1402,26 +1418,41 @@ static void bleSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
 
 class SgBleWriteCb : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *ch) {
-    // В Arduino core 2.x getValue() возвращает std::string.
-    String v(ch->getValue().c_str());
-    if (!v.length()) return;
-    const uint8_t *p = (const uint8_t *)v.c_str();
-    size_t n = v.length();
+    // BLE-стек отдаёт запись кусками (20 байт при MTU 23), поэтому кадр
+    // нельзя парсить внутри одного onWrite — копим поток и режем по magic.
+    // Важно: getValue() возвращает String с бинарными данными; копируем
+    // объект целиком, а не через c_str() — иначе кадр обрежется на 0x00.
+    String raw = ch->getValue();
+    if (!raw.length()) return;
+    const uint8_t *p = (const uint8_t *)raw.c_str();
+    size_t n = raw.length();
+    for (size_t i = 0; i < n; i++) {
+      if (gBleRxLen < sizeof(gBleRxBuf)) {
+        gBleRxBuf[gBleRxLen++] = p[i];
+      } else {
+        gBleRxLen = 0;   // переполнение — сброс
+      }
+    }
+
     size_t pos = 0;
-    while (pos + 8 <= n) {
-      if (p[pos] != F_MAGIC0 || p[pos + 1] != F_MAGIC1) { pos++; continue; }
-      uint16_t len = (uint16_t)p[pos + 4] | ((uint16_t)p[pos + 5] << 8);
+    while (gBleRxLen - pos >= 8) {
+      if (gBleRxBuf[pos] != F_MAGIC0 || gBleRxBuf[pos + 1] != F_MAGIC1) { pos++; continue; }
+      uint16_t len = (uint16_t)gBleRxBuf[pos + 4] | ((uint16_t)gBleRxBuf[pos + 5] << 8);
       if (len > SG_MAX_PAYLOAD) { pos += 2; continue; }
       size_t need = 6 + (size_t)len + 2;
-      if (pos + need > n) break;
-      uint16_t crc = crc16Ccitt(p + pos, 6 + len);
-      uint16_t got = (uint16_t)p[pos + 6 + len] | ((uint16_t)p[pos + 7 + len] << 8);
+      if (gBleRxLen - pos < need) break;
+      uint16_t crc = crc16Ccitt(gBleRxBuf + pos + 2, 4 + len);
+      uint16_t got = (uint16_t)gBleRxBuf[pos + 6 + len] | ((uint16_t)gBleRxBuf[pos + 7 + len] << 8);
       if (crc == got) {
-        asmFeed(gBleAsm, p[pos + 3], p + pos + 6, len, true);
+        asmFeed(gBleAsm, gBleRxBuf[pos + 3], gBleRxBuf + pos + 6, len, true);
         pos += need;
       } else {
         pos++;
       }
+    }
+    if (pos) {
+      memmove(gBleRxBuf, gBleRxBuf + pos, gBleRxLen - pos);
+      gBleRxLen -= pos;
     }
     gLastClientActivityMs = millis();
   }
@@ -1523,7 +1554,7 @@ static void usbSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
       frame[4] = (uint8_t)(len & 0xFF);
       frame[5] = (uint8_t)((len >> 8) & 0xFF);
       if (chunk) memcpy(frame + 6, payload + off, chunk);
-      uint16_t crc = crc16Ccitt(frame, 6 + chunk);
+      uint16_t crc = crc16Ccitt(frame + 2, 4 + chunk);
       frame[6 + chunk] = (uint8_t)(crc & 0xFF);
       frame[7 + chunk] = (uint8_t)((crc >> 8) & 0xFF);
       n = need;
@@ -1569,7 +1600,7 @@ static void usbPoll() {
     }
     size_t need = 6 + (size_t)len + 2;
     if (gUsbLen - pos < need) break;
-    uint16_t crc = crc16Ccitt(gUsbBuf + pos, 6 + len);
+    uint16_t crc = crc16Ccitt(gUsbBuf + pos + 2, 4 + len);
     uint16_t got = (uint16_t)gUsbBuf[pos + 6 + len] | ((uint16_t)gUsbBuf[pos + 7 + len] << 8);
     if (crc == got) {
       gUsbSeen = true;

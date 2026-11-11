@@ -127,6 +127,8 @@ export function decodeJson<T = unknown>(payload: Uint8Array): T | null {
 export class FrameDecoder {
   private buffer: Uint8Array = new Uint8Array(0);
   private disposed = false;
+  /** Сборка фрагментированного кадра (старший бит типа). */
+  private fragment: { type: number; total: number; data: Uint8Array; received: number } | null = null;
 
   /** Добавляет чанк и возвращает все полностью собранные кадры. */
   push(chunk: Uint8Array): DecodedFrame[] {
@@ -174,11 +176,50 @@ export class FrameDecoder {
         continue;
       }
 
-      frames.push({
-        type: view[3],
-        payload: view.slice(FRAME_HEADER_SIZE, FRAME_HEADER_SIZE + length),
-      });
+      const rawType = view[3];
+      let payload = view.slice(FRAME_HEADER_SIZE, FRAME_HEADER_SIZE + length);
       this.buffer = view.slice(total);
+
+      // Фрагментированный кадр: payload = [offset u16][total u16][chunk...].
+      // Старший бит типа — флаг фрагмента (см. прошивку bleSendFrame).
+      if ((rawType & 0x80) !== 0) {
+        if (payload.length < 4) {
+          this.fragment = null;
+          continue;
+        }
+        const offset = payload[0] | (payload[1] << 8);
+        const totalLen = payload[2] | (payload[3] << 8);
+        const chunk = payload.subarray(4);
+        if (totalLen === 0 || totalLen > MAX_PAYLOAD) {
+          this.fragment = null;
+          continue;
+        }
+        if (
+          !this.fragment ||
+          this.fragment.type !== (rawType & 0x7f) ||
+          this.fragment.total !== totalLen ||
+          offset !== this.fragment.received
+        ) {
+          this.fragment = {
+            type: rawType & 0x7f,
+            total: totalLen,
+            data: new Uint8Array(totalLen),
+            received: 0,
+          };
+        }
+        const fragment = this.fragment;
+        fragment.data.set(chunk, offset);
+        fragment.received += chunk.length;
+        if (fragment.received >= fragment.total) {
+          frames.push({ type: fragment.type, payload: fragment.data.slice(0, fragment.total) });
+          this.fragment = null;
+        }
+        if (!this.buffer.length) break;
+        continue;
+      }
+
+      this.fragment = null;
+      frames.push({ type: rawType, payload });
       if (!this.buffer.length) break;
     }
     return frames;
@@ -191,6 +232,7 @@ export class FrameDecoder {
 
   reset(): void {
     this.buffer = new Uint8Array(0);
+    this.fragment = null;
   }
 
   dispose(): void {
