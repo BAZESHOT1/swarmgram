@@ -31,6 +31,12 @@ export default function AppLayout() {
           contentStyle: { backgroundColor: theme.background },
           animation: 'slide_from_right',
           animationDuration: 240,
+          // iOS: интерактивный свайп назад для всех страниц, включая настройки
+          // и профиль. customAnimationOnGesture сохраняет нашу анимацию.
+          gestureEnabled: true,
+          fullScreenGestureEnabled: false,
+          customAnimationOnGesture: true,
+          gestureDirection: 'horizontal',
         }}
       >
         <Stack.Screen
@@ -59,7 +65,7 @@ export default function AppLayout() {
         <Stack.Screen name="chat/[id]/info" />
         <Stack.Screen name="user/[username]" />
         <Stack.Screen name="user/[username]/edit" />
-        <Stack.Screen name="compose" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="compose" options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: false }} />
       </Stack>
     </AppShell>
   );

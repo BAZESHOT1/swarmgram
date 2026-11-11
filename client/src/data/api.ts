@@ -461,6 +461,15 @@ export interface UserProfile {
   online: boolean;
   nodeOnline?: boolean;
   moduleOnline?: boolean;
+  /** Роль аккаунта: user / moderator / admin. */
+  role?: string;
+  modulesTotal?: number;
+  modulesOnline?: number;
+  nodesTotal?: number;
+  nodesOnline?: number;
+  /** Вклад в общее хранилище: суммарная ёмкость узлов пользователя. */
+  nodeCapacityBytes?: number;
+  nodeUsedBytes?: number;
   /** null, если пользователь скрыл время последней активности. */
   lastSeenAt: string | null;
   isSelf: boolean;

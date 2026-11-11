@@ -379,7 +379,7 @@ function SwipeChatRow(props: {
       translateX.setValue(0);
       return;
     }
-    Animated.spring(translateX, { toValue: 0, ...SWIPE_SPRING, useNativeDriver: false }).start();
+    Animated.spring(translateX, { toValue: 0, ...SWIPE_SPRING, useNativeDriver: true }).start();
   }, [translateX]);
 
   useEffect(() => {
@@ -398,7 +398,9 @@ function SwipeChatRow(props: {
 
   const pan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.4,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => false,
       onPanResponderGrant: () => translateX.stopAnimation(),
       onPanResponderMove: (_e, g) => {
         const base = openRef.current ? -ACTIONS_WIDTH : 0;
@@ -413,7 +415,7 @@ function SwipeChatRow(props: {
           Animated.spring(translateX, {
             toValue: shouldOpen ? -ACTIONS_WIDTH : 0,
             ...SWIPE_SPRING,
-            useNativeDriver: false,
+            useNativeDriver: true,
           }).start();
         cbRef.current.onOpenChange(shouldOpen ? idRef.current : null);
       },
@@ -2056,7 +2058,6 @@ function ChatRow({
     <PressableScale
       pressedScale={0.985}
       onHoverIn={warmUp}
-      onPressIn={warmUp}
       onPress={() => {
         if (selecting) onToggleSelect?.();
         else handleOpen();

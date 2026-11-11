@@ -542,11 +542,24 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       birthday: string | null;
       last_seen_visibility: string;
       bio_visibility: string;
+      role: string;
+      modules_total: number;
+      modules_online: number;
+      nodes_total: number;
+      nodes_online: number;
+      node_capacity_bytes: string | number;
+      node_used_bytes: string | number;
     }>(
       `SELECT u.id, u.username, u.display_name, u.profile_status, u.bio, u.created_at, u.last_seen_at,
               u.avatar_object_id, u.avatar_key, u.avatar_mime, u.banner, u.links, u.location,
               to_char(u.birthday, 'YYYY-MM-DD') AS birthday,
-              u.last_seen_visibility, u.bio_visibility,
+              u.last_seen_visibility, u.bio_visibility, u.role,
+              (SELECT count(*) FROM modules m WHERE m.owner_id = u.id)::int AS modules_total,
+              (SELECT count(*) FROM modules m WHERE m.owner_id = u.id AND m.status = 'online')::int AS modules_online,
+              (SELECT count(*) FROM nodes n WHERE n.owner_id = u.id)::int AS nodes_total,
+              (SELECT count(*) FROM nodes n WHERE n.owner_id = u.id AND n.status = 'online')::int AS nodes_online,
+              (SELECT COALESCE(SUM(n.capacity_bytes),0) FROM nodes n WHERE n.owner_id = u.id) AS node_capacity_bytes,
+              (SELECT COALESCE(SUM(n.used_bytes),0) FROM nodes n WHERE n.owner_id = u.id) AS node_used_bytes,
               EXISTS(
                 SELECT 1 FROM devices d
                  WHERE d.user_id = u.id AND d.revoked_at IS NULL
@@ -634,6 +647,13 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       online,
       nodeOnline: Boolean(target.node_online),
       moduleOnline: Boolean(target.module_online),
+      role: target.role,
+      modulesTotal: Number(target.modules_total ?? 0),
+      modulesOnline: Number(target.modules_online ?? 0),
+      nodesTotal: Number(target.nodes_total ?? 0),
+      nodesOnline: Number(target.nodes_online ?? 0),
+      nodeCapacityBytes: Number(target.node_capacity_bytes ?? 0),
+      nodeUsedBytes: Number(target.node_used_bytes ?? 0),
       lastSeenAt,
       isSelf,
       blockedByMe,

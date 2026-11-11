@@ -81,6 +81,8 @@ export interface AvatarProps {
   moduleOnline?: boolean;
   /** Толщина обводки в px (по умолчанию 2.5). */
   ringSize?: number;
+  /** Радиус скругления. По умолчанию круг; 10 — квадратная аватарка. */
+  radius?: number;
 }
 
 /**
@@ -100,6 +102,7 @@ export function Avatar({
   nodeOnline,
   moduleOnline,
   ringSize,
+  radius,
 }: AvatarProps) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -176,6 +179,8 @@ export function Avatar({
 
   // Отступ обводки от аватара: 2px. Без обводки сохраняем прежний вид.
   const inner = hasRing ? Math.max(12, size - 2 * (thickness + gap)) : size - 7;
+  const outerRadius = radius ?? size / 2;
+  const innerRadius = Math.max(2, outerRadius - (hasRing ? thickness + gap : 3.5));
   const glowColor = node && moduleOn ? theme.ringNode : node ? theme.ringNode : theme.ringModule;
   const showPhoto = Boolean(photo) && !photoFailed && photo?.id === avatarObjectId;
 
@@ -183,7 +188,7 @@ export function Avatar({
     <View
       style={[
         styles.ring,
-        { width: size, height: size, borderRadius: size },
+        { width: size, height: size, borderRadius: outerRadius },
         ring,
       ]}
     >
@@ -197,18 +202,18 @@ export function Avatar({
             position: 'absolute',
             width: size,
             height: size,
-            borderRadius: size / 2,
+            borderRadius: outerRadius,
             backgroundColor: glowColor,
           }}
         />
       ) : null}
-      <View style={[styles.inner, { width: inner, height: inner, borderRadius: inner / 2, overflow: 'hidden', backgroundColor: c1 }]}>
+      <View style={[styles.inner, { width: inner, height: inner, borderRadius: innerRadius, overflow: 'hidden', backgroundColor: c1 }]}>
         {/* правый-нижний второй цвет — псевдоградиент по диагонали */}
-        <View style={{ position: 'absolute', right: 0, bottom: 0, width: inner * 0.62, height: inner * 0.62, borderTopLeftRadius: inner, backgroundColor: c2 }} />
+        <View style={{ position: 'absolute', right: 0, bottom: 0, width: inner * 0.62, height: inner * 0.62, borderTopLeftRadius: innerRadius, backgroundColor: c2 }} />
         {showPhoto ? (
           <Image
             source={{ uri: photo?.uri ?? '' }}
-            style={{ width: inner, height: inner, borderRadius: inner / 2 }}
+            style={{ width: inner, height: inner, borderRadius: innerRadius }}
             resizeMode="cover"
             accessibilityIgnoresInvertColors
           />

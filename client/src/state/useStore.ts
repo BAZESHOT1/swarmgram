@@ -62,6 +62,10 @@ interface AppState {
   mutedChats: string[];
   toggleMuted: (chatId: string) => void;
   hydrateMuted: () => Promise<void>;
+  /** Пользователи, от которых не показываем звук/вибрацию. */
+  mutedUsers: string[];
+  toggleMutedUser: (username: string) => void;
+  hydrateMutedUsers: () => Promise<void>;
   /** Серверная история поиска (последние 20); персист и синк — в preferences.ts. */
   searchHistory: SearchHistoryEntry[];
   setSearchHistory: (entries: SearchHistoryEntry[]) => void;
@@ -133,6 +137,27 @@ export const useStore = create<AppState>((set, get) => ({
       const parsed: unknown = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         set({ mutedChats: parsed.filter((id): id is string => typeof id === 'string') });
+      }
+    } catch {
+      /* повреждённое значение игнорируем */
+    }
+  },
+  mutedUsers: [],
+  toggleMutedUser: (username) => {
+    const name = username.trim().toLowerCase();
+    if (!name) return;
+    const prev = get().mutedUsers;
+    const next = prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name];
+    set({ mutedUsers: next });
+    void kv.set('sg:muted-users', JSON.stringify(next)).catch(() => undefined);
+  },
+  hydrateMutedUsers: async () => {
+    try {
+      const raw = await kv.get('sg:muted-users');
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        set({ mutedUsers: parsed.filter((name): name is string => typeof name === 'string') });
       }
     } catch {
       /* повреждённое значение игнорируем */

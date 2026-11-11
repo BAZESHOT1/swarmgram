@@ -586,8 +586,13 @@ function RealtimeBridge() {
     if (env.senderUserId && meId && env.senderUserId !== meId) {
       // Тихое «дин» и лёгкая вибрация для входящих, кроме приглушённых чатов.
       if (!useStore.getState().mutedChats.includes(env.chatId)) {
-        soundsRef.current.receive();
-        hapticsRef.current.receive();
+        const mutedUser = useStore
+          .getState()
+          .mutedUsers.includes(String(env.senderUsername ?? '').toLowerCase());
+        if (!mutedUser) {
+          soundsRef.current.receive();
+          hapticsRef.current.receive();
+        }
       }
       await api.postReceipt(env.chatId, env.id).catch(() => undefined);
     }
@@ -642,6 +647,7 @@ export default function RootLayout() {
       useStore.getState().setSession(s);
       // Приглушённые чаты живут локально и не зависят от сервера.
       void useStore.getState().hydrateMuted();
+      void useStore.getState().hydrateMutedUsers();
       if (s) {
         try {
           const u = await api.me();
