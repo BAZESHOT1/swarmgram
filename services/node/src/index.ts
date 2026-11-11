@@ -33,7 +33,7 @@ import { verifyTicket, type Ticket } from './ticket.js';
 const env = (name: string, def = ''): string => (process.env[name] ?? def).trim();
 
 const config = {
-  mainServerUrl: env('MAIN_SERVER_URL', 'http://150.251.143.212:8080').replace(/\/+$/, ''),
+  mainServerUrl: env('MAIN_SERVER_URL', 'https://api.swarmgram.is-a.dev').replace(/\/+$/, ''),
   ownerUsername: env('OWNER_USERNAME'),
   claimToken: env('NODE_CLAIM_TOKEN'),
   publicUrl: env('NODE_PUBLIC_URL'),

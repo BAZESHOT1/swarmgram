@@ -104,6 +104,8 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./certs:/etc/nginx/certs:ro
     ports:
+      # HTTP: ACME-челленджи Let's Encrypt и прямые вызовы Hub прошивками.
+      - "80:80"
       - "3000:80"
       # HTTPS нужен для Web Serial (прошивка из браузера) и безопасного контекста.
       - "3443:443"

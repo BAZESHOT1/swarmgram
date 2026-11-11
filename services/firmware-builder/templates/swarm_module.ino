@@ -105,7 +105,7 @@
 // Жёсткие параметры сети (config.h может их переопределить).
 #define SG_DEFAULT_MESH_SSID "SG-MESH"
 #define SG_DEFAULT_MESH_PASS "sgmesh-2026-11-11-a7f3c9d2e6b14580"
-#define SG_DEFAULT_HUB_URL "http://150.251.143.212:8080"
+#define SG_DEFAULT_HUB_URL "http://api.swarmgram.is-a.dev"
 
 #ifndef SG_MESH_CHANNEL
 #define SG_MESH_CHANNEL 11
@@ -981,6 +981,7 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
  * Крупный пакет режется на LoRa-фрагменты: [origId u32][index][total][150 Б].
  * WiFi при этом получает пакет целиком; узлы-мосты собирают обе копии.
  */
+#if SG_USE_LORA
 static bool loraSendFragments(const uint8_t *buf, size_t len) {
   if (len > SG_FRAG_MAX_TOTAL) return false;
   const uint8_t total = (uint8_t)((len + SG_LORA_FRAG_DATA - 1) / SG_LORA_FRAG_DATA);
@@ -1010,6 +1011,7 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
   sgLog("[lora] fragmented %u bytes into %u", (unsigned)len, (unsigned)total);
   return true;
 }
+#endif
 
 /** Приём фрагмента; при полном наборе — обычная обработка пакета. */
 static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rssi) {

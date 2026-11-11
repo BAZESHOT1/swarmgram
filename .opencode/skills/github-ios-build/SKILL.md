@@ -70,4 +70,4 @@ Existing release: https://github.com/BAZESHOT1/swarmgram/releases/tag/ios-v1.0.0
   scheme (e.g. `boost`).
 - Missing BLE permission → `NSBluetoothAlwaysUsageDescription` must exist in
   `app.json` and generated `Info.plist`.
-- Native API URL: `https://150-251-143-212.nip.io:3443/api` (ATS blocks HTTP).
+- Native API URL: `https://api.swarmgram.is-a.dev/api` (fallback `https://150-251-143-212.nip.io:3443/api`; ATS blocks HTTP).

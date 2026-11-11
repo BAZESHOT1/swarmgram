@@ -145,7 +145,7 @@ function generateConfigHeader(config, version) {
     `#define SG_MESH_CHANNEL ${num(mesh.channel, 11) | 0}`,
     `#define SG_WIFI_MAX_HOPS ${num(mesh.wifiHops, 14) | 0}`,
     `#define SG_LORA_MAX_HOPS ${num(mesh.loraHops, 12) | 0}`,
-    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://150.251.143.212:8080')}`,
+    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://api.swarmgram.is-a.dev')}`,
     `#define SG_MODULE_TOKEN ${cString(config.moduleToken ?? '')}`,
     '',
     `#define SG_USE_LORA ${useLora ? 1 : 0}`,

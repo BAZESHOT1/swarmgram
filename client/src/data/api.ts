@@ -9,16 +9,29 @@ import { beginRequest, endRequest } from './loading';
 
 export type { Session } from '../crypto/core';
 
-const DEFAULT_NATIVE_API = 'https://api.swarmgram.io/api';
-const NATIVE_API_FALLBACK = 'https://150-251-143-212.nip.io:3443/api';
+const NATIVE_API_CANDIDATES = [
+  'https://api.swarmgram.io/api',
+  'https://api.swarmgram.is-a.dev/api',
+  'https://150-251-143-212.nip.io:3443/api',
+];
+const DEFAULT_NATIVE_API = NATIVE_API_CANDIDATES[0];
 const BASE = (process.env.EXPO_PUBLIC_API_URL ?? (Platform.OS === 'web' ? '/api' : DEFAULT_NATIVE_API)).replace(/\/+$/, '');
 
 /**
- * Живой base: при недоступности api.swarmgram.io автоматически
- * переключаемся на рабочий fallback, не роняя UI.
+ * Живой base: если очередной домен ещё не настроен (DNS/сертификат),
+ * автоматически пробуем следующий — вплоть до рабочего nip.io-fallback.
+ * Это не даёт нативному клиенту застрять на чёрном экране.
  */
 export let apiBase = BASE;
-let fallbackTried = false;
+const usingCustomBase = Boolean(process.env.EXPO_PUBLIC_API_URL);
+let candidateIndex = Math.max(0, NATIVE_API_CANDIDATES.indexOf(BASE));
+function nextApiBase(): string | null {
+  if (usingCustomBase) return null;
+  if (apiBase.startsWith('/')) return null; // web — тот же origin
+  if (candidateIndex + 1 >= NATIVE_API_CANDIDATES.length) return null;
+  candidateIndex += 1;
+  return NATIVE_API_CANDIDATES[candidateIndex];
+}
 
 export class ApiError extends Error {
   constructor(
@@ -187,15 +200,15 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     try {
       return await run();
     } catch (networkError) {
-      // api.swarmgram.io может быть ещё не настроен — переключаемся на рабочий
-      // fallback один раз, чтобы нативный клиент не оставался на чёрном экране.
-      if (!fallbackTried && !apiBase.startsWith('/') && apiBase !== NATIVE_API_FALLBACK) {
-        fallbackTried = true;
-        apiBase = NATIVE_API_FALLBACK;
+      // Домен может быть ещё не настроен — перебираем кандидатов по очереди,
+      // чтобы нативный клиент не оставался на чёрном экране.
+      let next = nextApiBase();
+      while (next) {
+        apiBase = next;
         try {
           return await run();
         } catch {
-          /* пойдём в mesh/ошибку */
+          next = nextApiBase();
         }
       }
       if (!isAuthCall) {

@@ -66,6 +66,7 @@ GitHub Actions workflow [`.github/workflows/ios-unsigned.yml`](.github/workflows
 
 Ограничения бесплатной подписи: приложение нужно переподписывать раз в 7 дней,
 BLE работает только в native-сборке (Expo Go и Safari не поддерживают BLE).
-API-адрес нативного клиента: `https://150-251-143-212.nip.io:3443/api`
-(Let's Encrypt; HTTP на iOS блокируется ATS).
+API-адрес нативного клиента: `https://api.swarmgram.is-a.dev/api`
+(затем `api.swarmgram.io`, резервный `https://150-251-143-212.nip.io:3443/api`;
+Let's Encrypt; HTTP на iOS блокируется ATS).
 

@@ -2,14 +2,16 @@
 
 ## Адреса
 
-- HTTP: `http://150.251.143.212:3000`
+- HTTP: `http://150.251.143.212:3000` / `http://swarmgram.is-a.dev`
 - HTTPS (для Web Serial и безопасного контекста):
-  `https://150-251-143-212.nip.io:3443`
-- Hub API: `http://150.251.143.212:8080` (внутри web — `/api`)
+  `https://swarmgram.is-a.dev` (после выпуска сертификата),
+  резервный `https://150-251-143-212.nip.io:3443`
+- Hub API: `https://api.swarmgram.is-a.dev` (внутри web — `/api`)
 
-HTTPS использует сертификат Let's Encrypt на `nip.io`-домен. Продление —
+HTTPS использует сертификат Let's Encrypt на `nip.io` + `is-a.dev`. Продление —
 `/etc/cron.d/certbot-swarmgram`, сертификат копируется в
-`/opt/swarmgram/certs` и nginx перезагружается.
+`/opt/swarmgram/certs` и nginx перезагружается. Ручной выпуск:
+`/opt/swarmgram/scripts/issue-ssl.sh`.
 
 > Прошивка модуля из браузера работает только на HTTPS-адресе или
 > `localhost`: Web Serial недоступен в незащищённом контексте.
