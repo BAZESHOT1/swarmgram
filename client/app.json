@@ -49,6 +49,7 @@
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
       "react-native-background-fetch",
+      "./plugins/withModularHeaders",
       [
         "react-native-ble-plx",
         {
