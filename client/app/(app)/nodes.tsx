@@ -1,13 +1,21 @@
 /**
- * Страница «Вклад в сеть»: общая ёмкость сети, список своих узлов
- * и привязка нового узла через одноразовый токен (createClaim).
- * Узел — добровольный вклад в общее место для медиа и сообщений, а не личное хранилище.
+ * Страница «Сеть»: в центре — модули SwarmGram (mesh-связь, роли, заряд),
+ * а вклад в общее хранилище вынесен ниже как необязательная возможность.
  */
 import React, { useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
-import { useNodes, useNetwork, useCreateClaim, useNodeStatus, humanError } from '../../src/data/queries';
+import { useRouter } from 'expo-router';
+import {
+  useModules,
+  useNodes,
+  useNetwork,
+  useCreateClaim,
+  useNodeStatus,
+  humanError,
+} from '../../src/data/queries';
+import type { ModuleRow } from '../../src/data/api';
 import { EmptyState } from '../../src/components/EmptyState';
 import { Btn } from '../../src/components/Btn';
 import { useTheme } from '../../src/theme/useTheme';
@@ -46,7 +54,6 @@ type NodeRow = {
   credits?: number | null;
 };
 
-/** Публичная запись узла из GET /v1/nodes. */
 type NetworkNodeRow = {
   id: string;
   status: string;
@@ -54,6 +61,25 @@ type NetworkNodeRow = {
   free_bytes?: number | null;
   owner_username?: string | null;
 };
+
+const ROLE_META: Record<string, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  gateway: { label: 'Шлюз', icon: 'wifi-outline' },
+  repeater: { label: 'Репитер', icon: 'radio-outline' },
+  wearable: { label: 'Носимый', icon: 'watch-outline' },
+};
+
+const TRANSPORT_LABEL: Record<string, string> = {
+  wifi: 'Wi-Fi',
+  lora: 'LoRa',
+  ble: 'Bluetooth',
+  usb: 'USB',
+};
+
+function moduleName(module: ModuleRow): string {
+  if (module.publicId) return `Модуль ${module.publicId}`;
+  const hw = module.hardwareId ?? module.board_uuid ?? module.id;
+  return `Модуль ${hw.slice(-6)}`;
+}
 
 async function copyToClipboard(value: string): Promise<void> {
   if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -67,6 +93,8 @@ async function copyToClipboard(value: string): Promise<void> {
 export default function NodesScreen() {
   const theme = useTheme();
   const reduced = useReducedMotion();
+  const router = useRouter();
+  const modulesQuery = useModules();
   const nodes = useNodes();
   const network = useNetwork();
   const createClaim = useCreateClaim();
@@ -79,14 +107,36 @@ export default function NodesScreen() {
   const [claimError, setClaimError] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  /* ---------------------------------------------------------- модули --- */
+  const modules = (modulesQuery.data ?? []) as ModuleRow[];
+  const realModules = modules.filter((module) => !module.shadow);
+  const total = realModules.length;
+  const online = realModules.filter((module) => module.online === true && !module.blocked).length;
+  const gateways = realModules.filter((module) => (module.role ?? 'gateway') === 'gateway').length;
+  const repeaters = realModules.filter((module) => module.role === 'repeater').length;
+  const wearables = realModules.filter((module) => module.role === 'wearable').length;
+  const batteries = realModules
+    .filter((module) => module.online === true && Number(module.battery) > 0)
+    .map((module) => Number(module.battery));
+  const avgBattery = batteries.length
+    ? Math.round(batteries.reduce((sum, value) => sum + value, 0) / batteries.length)
+    : null;
+  const transports = [...new Set(realModules.map((module) => module.transport).filter(Boolean))] as string[];
+  const modulesLoading = modulesQuery.isLoading;
+
+  const refreshAll = () => {
+    void modulesQuery.refetch();
+    void nodes.refetch();
+    void network.refetch();
+  };
+
+  /* ---------------------------------------------------------- узлы ----- */
   const list = (nodes.data ?? []) as NodeRow[];
-  const total = list.length;
-  const online = list.filter((node) => node.status === 'online').length;
+  const myNodes = list.length;
   const capacity = list.reduce((sum, node) => sum + Number(node.capacity_bytes ?? 0), 0);
   const free = list.reduce((sum, node) => sum + Number(node.free_bytes ?? 0), 0);
   const loading = nodes.isLoading;
 
-  /* Сводка по всей сети: если публичный список ещё пуст — считаем по своим узлам. */
   const networkList = (network.data ?? []) as NetworkNodeRow[];
   const hasNetwork = networkList.length > 0;
   const statsLoading = loading || network.isLoading;
@@ -99,8 +149,8 @@ export default function NodesScreen() {
 
   const totalCapacity = hasNetwork ? networkCapacity : capacity;
   const totalFree = hasNetwork ? networkFree : free;
-  const totalOnline = hasNetwork ? networkOnline : online;
-  const totalNodes = hasNetwork ? networkList.length : total;
+  const totalOnline = hasNetwork ? networkOnline : list.filter((node) => node.status === 'online').length;
+  const totalNodes = hasNetwork ? networkList.length : myNodes;
 
   const openConnect = () => {
     setClaim(null);
@@ -137,30 +187,210 @@ export default function NodesScreen() {
 
   return (
     <SettingsPage
-      title="Вклад в сеть"
-      subtitle="Узлы увеличивают общее место для медиа и сообщений всех пользователей"
-      right={<HeaderIconButton icon="refresh-outline" label="Обновить список узлов" onPress={() => void nodes.refetch()} disabled={nodes.isFetching} />}
+      title="Сеть"
+      subtitle="Модули, mesh-связь и общий вклад сообщества"
+      right={<HeaderIconButton icon="refresh-outline" label="Обновить данные сети" onPress={refreshAll} disabled={modulesQuery.isFetching || nodes.isFetching} />}
     >
-      <View
-        style={{
-          flexDirection: 'row',
-          gap: 8,
-          alignItems: 'flex-start',
-          padding: 11,
-          borderRadius: 14,
-          borderWidth: 1,
-          borderColor: theme.glassBorder,
-          backgroundColor: theme.glass,
-          marginBottom: 16,
-        }}
+      {/* ---------------------------------------------------- hero ----- */}
+      <MotiView
+        from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10 }}
+        animate={{ opacity: 1, translateY: 0 }}
+        transition={reduced ? { type: 'timing', duration: 0 } : { type: 'timing', duration: 220 }}
       >
-        <Ionicons name="heart-outline" size={17} color={theme.accent} />
-        <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, flex: 1 }}>
-          Это вклад в развитие SwarmGram, а не личное хранилище. Ваш узел расширяет общее пространство для всех.
-        </Text>
-      </View>
+        <GlassCard>
+          <View style={{ padding: 16, gap: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 16,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: theme.accentSoft,
+                }}
+              >
+                <Ionicons name="git-network" size={26} color={theme.accent} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: theme.textPrimary, fontSize: 18, fontWeight: '800' }}>
+                  {total > 0 ? `${online} из ${total} модулей на связи` : 'Swarm-сеть'}
+                </Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18, marginTop: 3 }}>
+                  Модули держат mesh-связь и доставляют сообщения даже без интернета.
+                </Text>
+              </View>
+            </View>
 
-      <SettingsSection title="Общая сеть" delay={0}>
+            <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+              <View style={{ flex: 1, minWidth: 140 }}>
+                <Btn title="Добавить модуль" size="s" onPress={() => router.push('/modules' as never)} />
+              </View>
+              <View style={{ flex: 1, minWidth: 140 }}>
+                <Btn title="Прошить модуль" size="s" variant="ghost" onPress={() => router.push('/firmware' as never)} />
+              </View>
+            </View>
+          </View>
+        </GlassCard>
+      </MotiView>
+
+      <View style={{ height: 14 }} />
+
+      {/* ------------------------------------------------- сводка ----- */}
+      <SettingsSection title="Состояние сети" delay={0}>
+        <SummaryGrid>
+          {modulesLoading ? (
+            <SummaryTilesSkeleton count={4} />
+          ) : (
+            <>
+              <SummaryTile
+                icon="hardware-chip-outline"
+                label="Модулей"
+                value={String(total)}
+                sub={total > 0 ? `${online} онлайн` : 'пока нет'}
+                tone="accent"
+              />
+              <SummaryTile
+                icon="git-branch-outline"
+                label="Роли"
+                value={`${gateways} / ${repeaters}`}
+                sub={`шлюзы / репитеры${wearables ? ` · ${wearables} носимых` : ''}`}
+                tone="success"
+              />
+              <SummaryTile
+                icon="wifi-outline"
+                label="Транспорт"
+                value={transports.length ? transports.map((t) => TRANSPORT_LABEL[t] ?? t).join(', ') : '—'}
+                sub="активные каналы"
+                tone="warning"
+              />
+              <SummaryTile
+                icon="battery-half-outline"
+                label="Средний заряд"
+                value={avgBattery === null ? '—' : `${avgBattery}%`}
+                sub={avgBattery === null ? 'нет данных' : 'онлайн-модули'}
+                tone={avgBattery !== null && avgBattery < 20 ? 'danger' : 'accent'}
+              />
+            </>
+          )}
+        </SummaryGrid>
+      </SettingsSection>
+
+      {/* ------------------------------------------------- модули ----- */}
+      <SettingsSection
+        title="Ваши модули"
+        delay={motion.staggerStepMs}
+        right={
+          <Pressable onPress={() => router.push('/modules' as never)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Открыть все модули">
+            <Text style={{ color: theme.accent, fontSize: 12, fontWeight: '700' }}>Все модули</Text>
+          </Pressable>
+        }
+      >
+        {modulesLoading ? (
+          <CardsSkeleton count={3} />
+        ) : total === 0 ? (
+          <EmptyState
+            icon="hardware-chip-outline"
+            title="Модулей пока нет"
+            subtitle="Подключите модуль по Bluetooth или USB — он появится здесь и в mesh-сети."
+            actionLabel="Подключить модуль"
+            onAction={() => router.push('/modules' as never)}
+          />
+        ) : (
+          realModules.slice(0, 6).map((module, index) => {
+            const role = ROLE_META[module.role ?? 'gateway'] ?? ROLE_META.gateway;
+            const isOnline = module.online === true && !module.blocked;
+            const battery = Number(module.battery);
+            const batteryTone = battery >= 50 ? 'success' : battery >= 20 ? 'warning' : 'danger';
+            return (
+              <MotiView
+                key={module.id}
+                from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10, scale: 0.99 }}
+                animate={{ opacity: 1, translateY: 0, scale: 1 }}
+                transition={
+                  reduced
+                    ? { type: 'timing', duration: 0 }
+                    : { ...motion.spring, delay: Math.min(index, 5) * motion.staggerStepMs }
+                }
+                style={{ marginBottom: 8 }}
+              >
+                <Pressable
+                  onPress={() => router.push('/modules' as never)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Открыть ${moduleName(module)}`}
+                  style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
+                >
+                  <GlassCard>
+                    <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <View
+                        style={{
+                          width: 38,
+                          height: 38,
+                          borderRadius: 12,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: isOnline ? theme.accentSoft : theme.surfacePressed,
+                        }}
+                      >
+                        <Ionicons name={role.icon} size={19} color={isOnline ? theme.accent : theme.textDisabled} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700' }} numberOfLines={1}>
+                          {moduleName(module)}
+                        </Text>
+                        <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 2 }} numberOfLines={1}>
+                          {role.label}
+                          {module.transport ? ` · ${TRANSPORT_LABEL[module.transport] ?? module.transport}` : ''}
+                          {` · ${formatRelative(module.lastSeenAt ?? module.last_seen_at)}`}
+                        </Text>
+                        {battery > 0 ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                            <View style={{ flex: 1 }}>
+                              <ProgressBar pct={Math.min(100, battery)} tone={batteryTone} />
+                            </View>
+                            <Text style={{ color: theme.textDisabled, fontSize: 10.5, fontVariant: ['tabular-nums'] as never }}>
+                              {battery}%
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        <StatusBadge
+                          text={module.blocked ? 'blocked' : isOnline ? 'online' : 'offline'}
+                          tone={module.blocked ? 'danger' : isOnline ? 'success' : 'neutral'}
+                        />
+                        <Ionicons name="chevron-forward" size={16} color={theme.textDisabled} />
+                      </View>
+                    </View>
+                  </GlassCard>
+                </Pressable>
+              </MotiView>
+            );
+          })
+        )}
+      </SettingsSection>
+
+      {/* -------------------------------------- вклад сообщества ----- */}
+      <SettingsSection title="Хранилище сообщества" delay={motion.staggerStepMs * 2}>
+        <View
+          style={{
+            flexDirection: 'row',
+            gap: 8,
+            alignItems: 'flex-start',
+            padding: 11,
+            borderRadius: 14,
+            borderWidth: 1,
+            borderColor: theme.glassBorder,
+            backgroundColor: theme.glass,
+            marginBottom: 12,
+          }}
+        >
+          <Ionicons name="information-circle-outline" size={17} color={theme.textSecondary} />
+          <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, flex: 1 }}>
+            Это необязательно. Модули уже обеспечивают mesh-связь; узлы лишь добавляют общее место для медиа и истории.
+          </Text>
+        </View>
+
         <SummaryGrid>
           {statsLoading ? (
             <SummaryTilesSkeleton count={4} />
@@ -195,25 +425,23 @@ export default function NodesScreen() {
 
       <SettingsSection
         title="Ваши узлы"
-        delay={motion.staggerStepMs}
+        delay={motion.staggerStepMs * 3}
         right={
           <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
-            {loading ? 'загрузка…' : `${total} шт.`}
+            {loading ? 'загрузка…' : `${myNodes} шт.`}
           </Text>
         }
       >
         {loading ? (
-          <CardsSkeleton count={4} />
-        ) : total === 0 ? (
-          <View style={{ minHeight: 300, justifyContent: 'center' }}>
-            <EmptyState
-              icon="server-outline"
-              title="Вы ещё не в сети"
-              subtitle="Разверните узел docker-образом и привяжите его токеном — он увеличит общее место для всех."
-              actionLabel="Стать участником сети"
-              onAction={openConnect}
-            />
-          </View>
+          <CardsSkeleton count={3} />
+        ) : myNodes === 0 ? (
+          <EmptyState
+            icon="server-outline"
+            title="Свой узел не обязателен"
+            subtitle="Можно пользоваться модулями без собственного узла. Если хотите помочь общим хранилищем — создайте токен привязки."
+            actionLabel="Подключить свой узел"
+            onAction={openConnect}
+          />
         ) : (
           list.map((node, index) => {
             const used = Number(node.used_bytes ?? 0);
@@ -268,11 +496,9 @@ export default function NodesScreen() {
                       </Text>
                     </View>
 
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                      <Text style={{ color: theme.textSecondary, fontSize: 12, fontVariant: ['tabular-nums'] as never }}>
-                        Свободно {formatBytes(node.free_bytes)} · ёмкость {formatBytes(cap)}
-                      </Text>
-                    </View>
+                    <Text style={{ color: theme.textSecondary, fontSize: 12, fontVariant: ['tabular-nums'] as never }}>
+                      Свободно {formatBytes(node.free_bytes)} · ёмкость {formatBytes(cap)}
+                    </Text>
                     <ProgressBar pct={pct} tone={tone} />
 
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -296,15 +522,15 @@ export default function NodesScreen() {
         )}
       </SettingsSection>
 
-      <Btn title="Стать участником сети" onPress={openConnect} accessibilityLabel="Стать участником сети" />
+      <Btn title="Подключить свой узел" variant="ghost" onPress={openConnect} accessibilityLabel="Подключить свой узел" />
 
       <SettingsModal
         visible={connectOpen}
-        title={claim ? 'Токен привязки' : 'Стать участником сети'}
+        title={claim ? 'Токен привязки' : 'Подключить свой узел'}
         subtitle={
           claim
             ? 'Вставьте токен в конфигурацию узла и запустите контейнер. Токен действует 30 минут.'
-            : 'Разверните узел Docker-образом и привяжите его одноразовым токеном — он увеличит общее место для всех.'
+            : 'Необязательный шаг: узел добавляет общее место для медиа, но не нужен для работы модулей.'
         }
         onClose={() => setConnectOpen(false)}
       >

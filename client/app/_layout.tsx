@@ -428,6 +428,19 @@ function RealtimeBridge() {
     const onVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') reconnectNow();
     };
+    // Chrome ругается «Page entered Back-Forward Cache», если при уходе со
+    // страницы остаётся открытый WebSocket. Закрываем его на pagehide и
+    // поднимаем заново на pageshow.
+    const onPageHide = () => {
+      try {
+        socket?.close();
+      } catch {
+        /* ignore */
+      }
+      socket = null;
+      useStore.getState().setTransportOnline(false);
+    };
+    const onPageShow = () => reconnectNow();
 
     // В React Native есть глобальный window, но без addEventListener.
     const hasDomEvents =
@@ -439,6 +452,8 @@ function RealtimeBridge() {
     if (hasDomEvents) {
       window.addEventListener('online', onBrowserOnline);
       document.addEventListener('visibilitychange', onVisibility);
+      window.addEventListener('pagehide', onPageHide);
+      window.addEventListener('pageshow', onPageShow);
     }
 
     // Лёгкий фолбэк: только при видимой вкладке, offline-сокете и не чаще раза в 30 с.
@@ -502,6 +517,8 @@ function RealtimeBridge() {
       if (hasDomEvents) {
         window.removeEventListener('online', onBrowserOnline);
         document.removeEventListener('visibilitychange', onVisibility);
+        window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('pageshow', onPageShow);
       }
       socket?.close();
       useStore.getState().setTransportOnline(false);

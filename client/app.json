@@ -2,10 +2,12 @@
   "expo": {
     "name": "SwarmGram",
     "slug": "swarmgram",
-    "version": "1.3.4",
+    "version": "1.3.5",
     "orientation": "portrait",
     "scheme": "swarmgram",
     "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "jsEngine": "hermes",
     "platforms": [
       "ios",
       "android",
@@ -13,22 +15,46 @@
     ],
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "static",
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0A0E14",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#0A0E14",
+            "image": "./assets/splash-icon.png"
+          }
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
       [
         "react-native-ble-plx",
         {
           "bluetoothAlwaysPermission": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-build-properties"
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.swarmgram.app",
-      "buildNumber": "10304",
+      "buildNumber": "10305",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети.",
         "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями."
@@ -36,7 +62,11 @@
     },
     "android": {
       "package": "com.swarmgram.app",
-      "versionCode": 10304,
+      "versionCode": 10305,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0E14"
+      },
       "permissions": [
         "INTERNET",
         "BLUETOOTH",

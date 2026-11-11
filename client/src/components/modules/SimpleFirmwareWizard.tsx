@@ -132,38 +132,43 @@ export function SimpleFirmwareWizard({
 
   // Поллинг сборки. Core 3.x первая сборка может идти несколько минут;
   // после 15 минут показываем честную ошибку вместо вечного «сборка…».
+  // Важно: именно setInterval, а не один setTimeout — иначе статус
+  // «building» не меняется, эффект не перезапускается и опрос замирает.
   React.useEffect(() => {
     if (!build?.id || build.status === 'ready' || build.status === 'failed') return undefined;
     let cancelled = false;
-    const timer = setTimeout(() => {
+
+    const tick = async () => {
+      if (cancelled) return;
       const elapsed = Date.now() - (buildStartedAtRef.current || Date.now());
       if (elapsed > 15 * 60 * 1000) {
         setBuildError('Сборка идёт слишком долго (более 15 минут). Проверьте сборщик и попробуйте снова.');
         setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
         return;
       }
-      void api
-        .firmwareBuild(build.id)
-        .then((next) => {
-          if (cancelled) return;
-          buildErrorCountRef.current = 0;
-          setBuildError('');
-          setBuild(next);
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          buildErrorCountRef.current += 1;
-          if (buildErrorCountRef.current >= 5) {
-            setBuildError(
-              `Не удаётся получить статус сборки: ${error instanceof Error ? error.message : String(error)}. Нажмите «Повторить».`,
-            );
-            setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
-          }
-        });
-    }, 2000);
+      try {
+        const next = await api.firmwareBuild(build.id);
+        if (cancelled) return;
+        buildErrorCountRef.current = 0;
+        setBuildError('');
+        setBuild(next);
+      } catch (error) {
+        if (cancelled) return;
+        buildErrorCountRef.current += 1;
+        if (buildErrorCountRef.current >= 5) {
+          setBuildError(
+            `Не удаётся получить статус сборки: ${error instanceof Error ? error.message : String(error)}. Нажмите «Повторить».`,
+          );
+          setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
+        }
+      }
+    };
+
+    const timer = setInterval(() => void tick(), 2000);
+    void tick();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      clearInterval(timer);
     };
   }, [build?.id, build?.status]);
 

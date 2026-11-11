@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScrollView, View, Text, StyleSheet, useWindowDimensions } from 'react-native';
+import { ScrollView, View, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -86,10 +86,6 @@ export function AuthShell({ children, maxWidth = 460 }: { children: React.ReactN
         >
           {children}
         </MotiView>
-
-        <Text style={{ color: theme.textDisabled, fontSize: 11, marginTop: 14, textAlign: 'center' }} numberOfLines={2}>
-          E2E-SwarmGram · ключи остаются на устройстве
-        </Text>
       </View>
     </ScrollView>
   );
