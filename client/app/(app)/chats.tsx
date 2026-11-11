@@ -44,6 +44,7 @@ import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
 import { HeaderCreateMenu } from '../../src/components/HeaderCreateMenu';
 import { ModuleStatusPill } from '../../src/components/ModuleStatusPill';
+import { kv } from '../../src/crypto/storage';
 import { PressableScale } from '../../src/components/chat/PressableScale';
 import { ChatContextMenu } from '../../src/components/chat/ChatContextMenu';
 import { SelectionToolbar } from '../../src/components/chat/SelectionToolbar';
@@ -155,9 +156,14 @@ const readLegacyHistory = (): SearchHistoryEntry[] => {
 
 const writeHistory = (items: SearchHistoryEntry[]): void => {
   try {
-    if (typeof localStorage === 'undefined') return;
-    if (!items.length) localStorage.removeItem(HISTORY_KEY);
-    else localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+    const raw = items.length ? JSON.stringify(items) : '';
+    if (typeof localStorage !== 'undefined') {
+      if (!items.length) localStorage.removeItem(HISTORY_KEY);
+      else localStorage.setItem(HISTORY_KEY, raw);
+    }
+    // На native localStorage нет: история должна переживать перезапуск.
+    if (raw) void kv.set(HISTORY_KEY, raw).catch(() => undefined);
+    else void kv.remove(HISTORY_KEY).catch(() => undefined);
   } catch {
     /* приватный режим / квота — просто не сохраняем */
   }
@@ -568,6 +574,25 @@ export default function ChatsScreen() {
       }
     })().catch(() => undefined);
     setHistory(readLegacyHistory());
+    // Native: история лежит в kv (AsyncStorage), читаем асинхронно.
+    void kv
+      .get(HISTORY_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const items = parsed.filter(isHistoryEntry).slice(0, HISTORY_LIMIT);
+            if (items.length) {
+              setHistory(items);
+              historyRef.current = items;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => undefined);
     return () => {
       if (blurTimer.current) clearTimeout(blurTimer.current);
     };
