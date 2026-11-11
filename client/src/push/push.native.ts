@@ -15,18 +15,8 @@
  */
 
 import { Platform } from 'react-native';
-import {
+import messaging, {
   AuthorizationStatus as FirebaseAuthorizationStatus,
-  getMessaging,
-  getToken,
-  isDeviceRegisteredForRemoteMessages,
-  onMessage,
-  onTokenRefresh,
-  registerDeviceForRemoteMessages,
-  requestPermission,
-  setBackgroundMessageHandler,
-  type Messaging,
-  type RemoteMessage,
 } from '@react-native-firebase/messaging';
 import notifee, {
   AndroidImportance,
@@ -60,9 +50,15 @@ function warn(message: string, error?: unknown): void {
   else console.warn(`[push] ${message}`, error);
 }
 
-function getMessagingSafe(): Messaging | null {
+type MessagingInstance = ReturnType<typeof messaging>;
+type RemoteMessage = {
+  notification?: { title?: string; body?: string };
+  data?: Record<string, string | object>;
+};
+
+function getMessagingSafe(): MessagingInstance | null {
   try {
-    return getMessaging();
+    return messaging();
   } catch (error) {
     warn('Firebase messaging is not configured on this build', error);
     return null;
@@ -235,7 +231,7 @@ function ensureBackgroundMessageHandler(): boolean {
   const messaging = getMessagingSafe();
   if (!messaging) return false;
   try {
-    setBackgroundMessageHandler(messaging, async (message: RemoteMessage) => {
+    messaging.setBackgroundMessageHandler(async (message) => {
       // iOS displays the APNs notification itself; only Android needs a local
       // notification from the data/notification payload.
       if (Platform.OS !== 'android') return;
@@ -272,7 +268,7 @@ function registerForegroundMessageHandler(): PushCleanup {
   const messaging = getMessagingSafe();
   if (!messaging) return () => {};
   try {
-    return onMessage(messaging, (message) => {
+    return messaging.onMessage((message) => {
       void (async () => {
         try {
           await displayPushNotification(notificationFromMessage(message));
@@ -308,7 +304,7 @@ async function requestNativePermission(): Promise<boolean> {
   const messaging = getMessagingSafe();
   if (messaging) {
     try {
-      const status = await requestPermission(messaging);
+      const status = await messaging.requestPermission();
       if (
         status === FirebaseAuthorizationStatus.AUTHORIZED ||
         status === FirebaseAuthorizationStatus.PROVISIONAL ||
@@ -372,16 +368,16 @@ export async function registerNativePush(session: PushSession | null | undefined
   }
 
   try {
-    if (Platform.OS === 'ios' && !isDeviceRegisteredForRemoteMessages(messaging)) {
-      await registerDeviceForRemoteMessages(messaging).catch((error) => {
+    if (Platform.OS === 'ios' && !messaging.isDeviceRegisteredForRemoteMessages) {
+      await messaging.registerDeviceForRemoteMessages().catch((error) => {
         warn('registerDeviceForRemoteMessages failed', error);
       });
     }
 
-    const token = await getToken(messaging);
+    const token = await messaging.getToken();
     if (token) await registerToken(token);
 
-    const unsubscribe = onTokenRefresh(messaging, (nextToken: string) => {
+    const unsubscribe = messaging.onTokenRefresh((nextToken: string) => {
       void registerToken(nextToken);
     });
     cleanups.push(unsubscribe);
