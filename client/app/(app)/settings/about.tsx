@@ -15,7 +15,9 @@ import {
 import { ProfileModal } from '../../../src/components/profile/ProfileModal';
 import { useMe } from '../../../src/data/queries';
 
-const VERSION = '1.0.0';
+import { APP_VERSION_LABEL } from '../../../src/version';
+
+const VERSION = APP_VERSION_LABEL;
 
 type InfoKind = 'licenses' | 'privacy' | 'project' | null;
 
@@ -50,7 +52,7 @@ export default function AboutScreen() {
     <SettingsPage title="О приложении" subtitle="Версия, правовая информация и шифрование">
       <SettingsSection title="SwarmGram" delay={0}>
         <GlassCard>
-          <SettingsRow icon="layers-outline" title="Версия" subtitle="Стабильная сборка" right={<Text style={[styles.mono, { color: theme.textSecondary }]}>{VERSION}</Text>} />
+          <SettingsRow icon="layers-outline" title="Версия" subtitle="Beta-сборка" right={<Text style={[styles.mono, { color: theme.textSecondary }]}>{VERSION}</Text>} />
           <SettingsRow
             icon="document-text-outline"
             title="Лицензии"

@@ -231,6 +231,20 @@ function toDto(row: BuildRow) {
 
 const BUILD_COLUMNS = 'id, user_id, status, config, version, size_bytes, sha256, log, bin_path, merged, created_at, updated_at';
 
+/** Помечает зависшие сборки (после перезапуска Hub/сборщика) как failed. */
+async function failStaleBuilds(userId?: string): Promise<void> {
+  await query(
+    `UPDATE firmware_builds
+        SET status = 'failed',
+            log = CASE WHEN log = '' THEN '[hub] build timed out' ELSE log || E'\n[hub] build timed out' END,
+            updated_at = now()
+      WHERE status IN ('queued', 'building')
+        AND updated_at < now() - interval '20 minutes'
+        ${userId ? 'AND user_id = $1' : ''}`,
+    userId ? [userId] : [],
+  ).catch(() => undefined);
+}
+
 /* ------------------------------------------------------------- сборка ----- */
 
 interface BuilderResponse {
@@ -421,6 +435,7 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
   /** История сборок пользователя (без тяжёлого лога и путей). */
   app.get('/firmware/builds', { onRequest: [requireAuth()] }, async (req, reply) => {
     const me = req.auth!.userId;
+    await failStaleBuilds(me);
     const rows = await query<BuildRow>(
       `SELECT ${BUILD_COLUMNS} FROM firmware_builds
         WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
@@ -432,6 +447,7 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
   /** Детали одной сборки. */
   app.get('/firmware/builds/:id', { onRequest: [requireAuth()] }, async (req, reply) => {
     const me = req.auth!.userId;
+    await failStaleBuilds(me);
     const { id } = req.params as { id: string };
     const row = await one<BuildRow>(
       `SELECT ${BUILD_COLUMNS} FROM firmware_builds WHERE id = $1 AND user_id = $2`,

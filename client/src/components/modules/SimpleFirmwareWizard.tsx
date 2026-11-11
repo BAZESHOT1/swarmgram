@@ -89,12 +89,15 @@ export function SimpleFirmwareWizard({
   const [board, setBoard] = React.useState<FirmwareBoard>('esp32c3');
   const [link, setLink] = React.useState<LinkChoice>('wifi');
   const [battery, setBattery] = React.useState(true);
+  const [batteryPin, setBatteryPin] = React.useState<number>(recommendedBatteryPin('esp32c3'));
   const [ssid, setSsid] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [stepError, setStepError] = React.useState('');
 
   const [availableBoards, setAvailableBoards] = React.useState<FirmwareBoard[] | null>(null);
   const [build, setBuild] = React.useState<FirmwareBuild | null>(null);
+  const buildStartedAtRef = React.useRef(0);
+  const buildErrorCountRef = React.useRef(0);
   const [building, setBuilding] = React.useState(false);
   const [buildError, setBuildError] = React.useState('');
   const [result, setResult] = React.useState<SimpleFirmwareResult | null>(null);
@@ -127,18 +130,35 @@ export function SimpleFirmwareWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Поллинг сборки.
+  // Поллинг сборки. Core 3.x первая сборка может идти несколько минут;
+  // после 15 минут показываем честную ошибку вместо вечного «сборка…».
   React.useEffect(() => {
     if (!build?.id || build.status === 'ready' || build.status === 'failed') return undefined;
     let cancelled = false;
     const timer = setTimeout(() => {
+      const elapsed = Date.now() - (buildStartedAtRef.current || Date.now());
+      if (elapsed > 15 * 60 * 1000) {
+        setBuildError('Сборка идёт слишком долго (более 15 минут). Проверьте сборщик и попробуйте снова.');
+        setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
+        return;
+      }
       void api
         .firmwareBuild(build.id)
         .then((next) => {
-          if (!cancelled) setBuild(next);
+          if (cancelled) return;
+          buildErrorCountRef.current = 0;
+          setBuildError('');
+          setBuild(next);
         })
         .catch((error) => {
-          if (!cancelled) setBuildError(error instanceof Error ? error.message : String(error));
+          if (cancelled) return;
+          buildErrorCountRef.current += 1;
+          if (buildErrorCountRef.current >= 5) {
+            setBuildError(
+              `Не удаётся получить статус сборки: ${error instanceof Error ? error.message : String(error)}. Нажмите «Повторить».`,
+            );
+            setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
+          }
         });
     }, 2000);
     return () => {
@@ -229,7 +249,7 @@ export function SimpleFirmwareWizard({
         : undefined,
     battery: {
       enabled: battery,
-      pin: recommendedBatteryPin(board),
+      pin: batteryPin,
       ratio: 2,
       intervalSec: 900,
     },
@@ -247,6 +267,8 @@ export function SimpleFirmwareWizard({
     setBuilding(true);
     try {
       const created = await api.buildFirmware(makeConfig());
+      buildStartedAtRef.current = Date.now();
+      buildErrorCountRef.current = 0;
       setBuild({ id: created.id, status: created.status } as FirmwareBuild);
     } catch (buildFail) {
       setBuildError(buildFail instanceof Error ? buildFail.message : String(buildFail));
@@ -414,6 +436,7 @@ export function SimpleFirmwareWizard({
                       return;
                     }
                     setBoard(item.id);
+                    setBatteryPin(recommendedBatteryPin(item.id));
                     setStepError('');
                   }}
                 />
@@ -462,9 +485,23 @@ export function SimpleFirmwareWizard({
                 onValueChange={setBattery}
               />
               {battery ? (
-                <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, paddingHorizontal: 10, paddingBottom: 10 }}>
-                  Используется делитель 1:1 (коэффициент 2.0) и рекомендуемый АЦП-пин платы — ничего настраивать не нужно.
-                </Text>
+                <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
+                  <SettingsInput
+                    label="Пин делителя напряжения (ADC)"
+                    value={String(batteryPin)}
+                    onChangeText={(text) => {
+                      const parsed = Number(text.trim());
+                      if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) setBatteryPin(parsed);
+                    }}
+                    keyboardType="numeric"
+                    placeholder="0–48"
+                    accessibilityLabel="Пин делителя напряжения"
+                    maxLength={2}
+                  />
+                  <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: -4 }}>
+                    Рекомендуемый для платы: GPIO {recommendedBatteryPin(board)}. Делитель 1:1 (коэффициент 2.0).
+                  </Text>
+                </View>
               ) : null}
             </StepCard>
             <View style={{ height: 10 }} />

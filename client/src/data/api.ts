@@ -815,6 +815,17 @@ export const api = {
     );
   },
 
+  resetRequest: (email: string) =>
+    req<{ ok: true; devCode?: string }>('/v1/auth/reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  resetConfirm: (email: string, code: string, password: string) =>
+    req<{ ok: true }>('/v1/auth/reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, password }),
+    }),
+
   refresh: (refreshToken: string) =>
     req<{ accessToken: string; refreshToken: string; expiresIn: number }>('/v1/auth/refresh', {
       method: 'POST',

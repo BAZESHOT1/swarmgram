@@ -22,6 +22,7 @@ export function AuthShell({ children, maxWidth = 460 }: { children: React.ReactN
 
   return (
     <ScrollView
+      style={{ flex: 1, backgroundColor: theme.background }}
       contentContainerStyle={[
         styles.scroll,
         {

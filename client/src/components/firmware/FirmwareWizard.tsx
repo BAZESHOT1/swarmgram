@@ -212,6 +212,12 @@ export function FirmwareWizard() {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const tick = async () => {
+      if (buildStartedAt && Date.now() - buildStartedAt > 15 * 60 * 1000) {
+        setBuildError('Сборка идёт слишком долго (более 15 минут). Проверьте сборщик и попробуйте снова.');
+        setBuild((prev) => (prev ? { ...prev, status: 'failed' } : prev));
+        setPollActive(false);
+        return;
+      }
       try {
         let detail: FirmwareBuild | null = null;
         try {
@@ -242,7 +248,7 @@ export function FirmwareWizard() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [build?.id, pollActive]);
+  }, [build?.id, pollActive, buildStartedAt]);
 
   const patch = (next: Partial<FirmwareConfig>) => {
     setConfig((prev) => ({ ...prev, ...next }));

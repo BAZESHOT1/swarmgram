@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
@@ -12,7 +16,15 @@
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "noEmit": true,
-    "types": ["react-native"]
+    "types": [
+      "react-native"
+    ]
   },
-  "include": ["index.web.tsx", "index.native.tsx", "src", "vite.config.ts"]
+  "include": [
+    "index.web.tsx",
+    "index.native.tsx",
+    "src",
+    "vite.config.ts"
+  ],
+  "extends": "expo/tsconfig.base"
 }

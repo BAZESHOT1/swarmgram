@@ -3,11 +3,13 @@ import { Stack, usePathname, useRouter } from 'expo-router';
 import { View, StyleSheet } from 'react-native';
 import { AppShell } from '../../src/components/AppShell';
 import { useStore } from '../../src/state/useStore';
+import { useTheme } from '../../src/theme/useTheme';
 
 /** Каркас приложения: маршрут без сессии всегда уводит на /login. */
 export default function AppLayout() {
   const pathname = usePathname();
   const router = useRouter();
+  const theme = useTheme();
   const session = useStore((s) => s.session);
   const ready = useStore((s) => s.ready);
 
@@ -18,7 +20,7 @@ export default function AppLayout() {
 
   if (!ready || !session) {
     // корневой layout восстанавливает сессию и выставляет ready
-    return <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: 'transparent' }} />;
+    return <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: theme.background }} />;
   }
 
   return (
@@ -26,7 +28,7 @@ export default function AppLayout() {
       <Stack
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: 'transparent' },
+          contentStyle: { backgroundColor: theme.background },
           animation: 'slide_from_right',
           animationDuration: 240,
         }}

@@ -5,19 +5,23 @@
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
+import { MotiView } from 'moti';
+import { Ionicons } from '@expo/vector-icons';
 import { ThemeProvider, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
-import { AppState, View, ActivityIndicator, StyleSheet } from 'react-native';
+import { AppState, View, ActivityIndicator, StyleSheet, Text } from 'react-native';
 import { useTheme } from '../src/theme/useTheme';
 import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
 import { ToastHost } from '../src/components/Toast';
+import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { LoadingBar } from '../src/components/LoadingBar';
 import { GlobalHotkeys } from '../src/components/GlobalHotkeys';
 import { useSounds } from '../src/components/useSounds';
 import { useHaptics } from '../src/components/useHaptics';
 import { onMeshEnvelope } from '../src/modules/meshLink';
 import { decryptEnvelopeAuto } from '../src/data/messaging';
+import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
@@ -653,17 +657,18 @@ export default function RootLayout() {
   }, [ready, segments, router, params.next]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: 'transparent' }} suppressHydrationWarning>
+    <View style={{ flex: 1, backgroundColor: theme.background }} suppressHydrationWarning>
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <QueryClientProvider client={queryClient} suppressHydrationWarning>
         <ThemeProvider value={navTheme}>
         {/* Модуль восстанавливается сам при запуске; на экране логина не сканирует. */}
+        <ErrorBoundary>
         <ModuleProvider>
           {mounted ? (
             <>
               <RealtimeBridge />
               <GlobalHotkeys />
-              <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: 'transparent' } }}>
+              <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.background } }}>
                 <Stack.Screen name="index" />
                 <Stack.Screen name="(auth)" />
                 <Stack.Screen name="(app)" />
@@ -678,6 +683,7 @@ export default function RootLayout() {
             <FullSkeleton />
           )}
         </ModuleProvider>
+        </ErrorBoundary>
         </ThemeProvider>
       </QueryClientProvider>
     </View>
@@ -688,7 +694,33 @@ function FullSkeleton() {
   const theme = useTheme();
   return (
     <View style={[styles.center, { backgroundColor: theme.background }]}>
-      <ActivityIndicator color={theme.accent} />
+      <MotiView
+        from={{ scale: 0.88, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: 'spring', damping: 14, stiffness: 170 }}
+        style={{ alignItems: 'center', gap: 12 }}
+      >
+        <MotiView
+          animate={{ scale: [1, 1.06, 1] }}
+          transition={{ type: 'timing', duration: 1600, repeat: Infinity, repeatReverse: true }}
+          style={{
+            width: 68,
+            height: 68,
+            borderRadius: 22,
+            backgroundColor: theme.accent,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Ionicons name="git-network" size={34} color={theme.onAccent} />
+        </MotiView>
+        <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>SwarmGram</Text>
+        <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>{APP_VERSION_LABEL}</Text>
+        <View style={{ marginTop: 8 }}>
+          <ActivityIndicator color={theme.accent} />
+        </View>
+        <Text style={{ color: theme.textDisabled, fontSize: 11 }}>Проверяем сессию…</Text>
+      </MotiView>
     </View>
   );
 }
