@@ -1,0 +1,118 @@
+name: iOS unsigned IPA
+
+# Собирает unsigned IPA для установки через Sideloadly (с самоподписью
+# на вашем Apple ID). Apple Developer аккаунт не требуется.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/ios-unsigned.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-unsigned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc -p tsconfig.json --noEmit
+
+  build-ios:
+    runs-on: macos-15
+    needs: typecheck
+    defaults:
+      run:
+        working-directory: client
+    env:
+      EXPO_NO_TELEMETRY: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install JS dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Expo prebuild (iOS)
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: CocoaPods
+        working-directory: client/ios
+        run: |
+          pod install --repo-update
+          ls -la
+
+      - name: Build unsigned .app (device arm64)
+        working-directory: client/ios
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(ls -d *.xcworkspace | head -n 1)"
+          echo "Workspace: $WORKSPACE"
+          xcodebuild -list -workspace "$WORKSPACE" -json > schemes.json
+          SCHEME="$(python3 - <<'PY'
+import json
+print(json.load(open('schemes.json'))['workspace']['schemes'][0])
+PY
+)"
+          echo "Scheme: $SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            | tee xcodebuild.log
+
+      - name: Package unsigned IPA
+        working-directory: client/ios
+        run: |
+          set -euo pipefail
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
+          test -n "$APP"
+          echo "App: $APP"
+          rm -rf Payload SwarmGram-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry SwarmGram-unsigned.ipa Payload
+          ls -lh SwarmGram-unsigned.ipa
+          shasum -a 256 SwarmGram-unsigned.ipa | tee SwarmGram-unsigned.ipa.sha256
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwarmGram-unsigned-ipa
+          path: |
+            client/ios/SwarmGram-unsigned.ipa
+            client/ios/SwarmGram-unsigned.ipa.sha256
+            client/ios/xcodebuild.log
+          if-no-files-found: error
+          retention-days: 30

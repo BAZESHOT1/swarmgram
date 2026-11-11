@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "SwarmGram",
+    "slug": "swarmgram",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "swarmgram",
+    "userInterfaceStyle": "dark",
+    "platforms": ["ios", "android", "web"],
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "react-native-ble-plx",
+        {
+          "bluetoothAlwaysPermission": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети."
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.swarmgram.app",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети.",
+        "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями."
+      }
+    },
+    "android": {
+      "package": "com.swarmgram.app",
+      "permissions": [
+        "INTERNET",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "ACCESS_FINE_LOCATION"
+      ]
+    },
+    "extra": {
+      "apiUrl": "http://150.251.143.212:8080"
+    }
+  }
+}

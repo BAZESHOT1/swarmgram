@@ -1,0 +1,149 @@
+import { create } from 'zustand';
+import { kv } from '../crypto/storage';
+import type { Chat, SearchHistoryEntry, User } from '../data/api';
+import type { AccentName } from '../theme/theme';
+
+export type ThemeName = 'dark' | 'light' | 'system';
+
+export interface Toast {
+  id: string;
+  kind: 'info' | 'success' | 'error';
+  message: string;
+  actionLabel?: string;
+  action?: () => void;
+  durationMs?: number;
+}
+
+interface SessionSummary {
+  userId: string;
+  username: string;
+  deviceId: string;
+  accessToken: string;
+  refreshToken: string;
+  accessExp: number;
+}
+
+interface AppState {
+  themeName: ThemeName;
+  setThemeName: (t: ThemeName) => void;
+  accentName: AccentName;
+  setAccent: (name: AccentName) => void;
+  /** Язык интерфейса (синхронизируется через /me). */
+  locale: string;
+  setLocale: (locale: string) => void;
+  transportOnline: boolean;
+  setTransportOnline: (v: boolean) => void;
+  transportDirectPeer: boolean;
+  setTransportDirectPeer: (v: boolean) => void;
+  transportModule: { gateway: boolean; model: string } | null;
+  setTransportModule: (m: { gateway: boolean; model: string } | null) => void;
+  /** Есть ли путь к серверам через mesh-шлюз. */
+  transportGateway: boolean;
+  setTransportGateway: (v: boolean) => void;
+  /** Пользователи, видимые в mesh (profile presence). */
+  meshPeers: Record<string, { userId: string; username: string; publicId?: string; lastSeen: number }>;
+  setMeshPeer: (peer: { userId: string; username: string; publicId?: string }) => void;
+  pushEvent: { kind: string; payload: any } | null;
+  setPushEvent: (e: { kind: string; payload: any } | null) => void;
+  session: SessionSummary | null;
+  setSession: (s: SessionSummary | null) => void;
+  ready: boolean;
+  setReady: (v: boolean) => void;
+  me: User | null;
+  setMe: (u: User | null) => void;
+  activeChat: Chat | null;
+  setActiveChat: (c: Chat | null) => void;
+  typingByChat: Record<string, { username: string; at: number }>;
+  setTyping: (chatId: string, username: string) => void;
+  /** Чаты без звука и без бейджа непрочитанных. */
+  mutedChats: string[];
+  toggleMuted: (chatId: string) => void;
+  hydrateMuted: () => Promise<void>;
+  /** Серверная история поиска (последние 20); персист и синк — в preferences.ts. */
+  searchHistory: SearchHistoryEntry[];
+  setSearchHistory: (entries: SearchHistoryEntry[]) => void;
+  toasts: Toast[];
+  pushToast: (t: Omit<Toast, 'id'>) => void;
+  dismissToast: (id: string) => void;
+}
+
+export const useStore = create<AppState>((set, get) => ({
+  themeName: 'system',
+  setThemeName: (themeName) => {
+    set({ themeName });
+    void kv.set('sg:theme', themeName);
+  },
+  accentName: 'orange',
+  setAccent: (accentName) => {
+    set({ accentName });
+    void kv.set('sg:accent', accentName);
+  },
+  locale: 'ru',
+  setLocale: (locale) => {
+    set({ locale });
+    // Дублируем в kv для совместимости и мгновенного старта до ответа сервера.
+    void kv.set('sg:locale', locale).catch(() => undefined);
+  },
+  transportOnline: false,
+  setTransportOnline: (transportOnline) => set({ transportOnline }),
+  transportDirectPeer: false,
+  setTransportDirectPeer: (transportDirectPeer) => set({ transportDirectPeer }),
+  transportModule: null,
+  setTransportModule: (transportModule) => set({ transportModule }),
+  transportGateway: false,
+  setTransportGateway: (transportGateway) => set({ transportGateway }),
+  meshPeers: {},
+  setMeshPeer: (peer) => {
+    if (!peer?.username) return;
+    set({ meshPeers: { ...get().meshPeers, [peer.username.toLowerCase()]: { ...peer, lastSeen: Date.now() } } });
+  },
+  pushEvent: null,
+  setPushEvent: (pushEvent) => set({ pushEvent }),
+  session: null,
+  setSession: (session) => set({ session }),
+  ready: false,
+  setReady: (ready) => set({ ready }),
+  me: null,
+  setMe: (me) => set({ me }),
+  activeChat: null,
+  setActiveChat: (activeChat) => set({ activeChat }),
+  typingByChat: {},
+  setTyping: (chatId, username) =>
+    set({ typingByChat: { ...get().typingByChat, [chatId]: { username, at: Date.now() } } }),
+  mutedChats: [],
+  toggleMuted: (chatId) => {
+    const prev = get().mutedChats;
+    const next = prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [...prev, chatId];
+    set({ mutedChats: next });
+    // Персистим в kv; ошибки хранилища не должны ломать UI.
+    void kv.set('sg:muted-chats', JSON.stringify(next)).catch(() => undefined);
+  },
+  hydrateMuted: async () => {
+    try {
+      const raw = await kv.get('sg:muted-chats');
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        set({ mutedChats: parsed.filter((id): id is string => typeof id === 'string') });
+      }
+    } catch {
+      /* повреждённое значение игнорируем */
+    }
+  },
+  searchHistory: [],
+  // Только set: запись в kv и отправку на сервер делает preferences.ts.
+  setSearchHistory: (searchHistory) => set({ searchHistory }),
+  toasts: [],
+  pushToast: (t) => {
+    const id = `t-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    // Новые уведомления сверху, одновременно не больше двух.
+    // Авто-скрытие и паузу таймера ведёт ToastHost (reduced-motion friendly).
+    set({ toasts: [{ ...t, id }, ...get().toasts].slice(0, 2) });
+  },
+  dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+}));
+
+setTimeout(() => void kv.get('sg:theme').then?.((v: string | null) => {
+  // инициализация темы подхватывается в RootLayout — здесь только типы
+  void v;
+}), 0);

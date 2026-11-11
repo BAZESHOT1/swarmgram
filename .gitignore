@@ -1,0 +1,42 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# builds
+dist/
+client/dist/
+**/build/
+.expo/
+client/.expo/
+*.tsbuildinfo
+
+# generated native projects (prebuild in CI)
+client/ios/
+client/android/
+ios/
+android/
+
+# secrets / env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.keystore
+*.jks
+*.pass
+
+# backups (encrypted DB dumps stay local/offsite)
+backups/*.enc
+backups/*.tar.gz
+
+# firmware/local data
+services/firmware-builder/.data/
+**/firmware_data/
+
+# logs / OS
+*.log
+.DS_Store
+Thumbs.db
