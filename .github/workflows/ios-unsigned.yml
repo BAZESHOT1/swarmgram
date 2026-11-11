@@ -92,7 +92,9 @@ jobs:
         working-directory: client/ios
         run: |
           set -euo pipefail
-          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
+          echo "App products:"
+          find build -type d -name '*.app' | sort || true
+          APP="$(find build -type d -name '*.app' | head -n 1)"
           test -n "$APP"
           echo "App: $APP"
           rm -rf Payload SwarmGram-unsigned.ipa
