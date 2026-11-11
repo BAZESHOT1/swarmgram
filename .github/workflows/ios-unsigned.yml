@@ -70,7 +70,7 @@ jobs:
           WORKSPACE="$(ls -d *.xcworkspace | head -n 1)"
           echo "Workspace: $WORKSPACE"
           xcodebuild -list -workspace "$WORKSPACE" -json > schemes.json
-          SCHEME="$(python3 -c "import json; print(json.load(open('schemes.json'))['workspace']['schemes'][0])")"
+          SCHEME="$(python3 -c "import json; s=json.load(open('schemes.json'))['workspace']['schemes']; print('SwarmGram' if 'SwarmGram' in s else next((x for x in s if 'Pods' not in x and 'boost' not in x.lower()), s[0]))")"
           echo "Scheme: $SCHEME"
           xcodebuild \
             -workspace "$WORKSPACE" \
