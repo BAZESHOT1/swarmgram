@@ -70,11 +70,7 @@ jobs:
           WORKSPACE="$(ls -d *.xcworkspace | head -n 1)"
           echo "Workspace: $WORKSPACE"
           xcodebuild -list -workspace "$WORKSPACE" -json > schemes.json
-          SCHEME="$(python3 - <<'PY'
-import json
-print(json.load(open('schemes.json'))['workspace']['schemes'][0])
-PY
-)"
+          SCHEME="$(python3 -c "import json; print(json.load(open('schemes.json'))['workspace']['schemes'][0])")"
           echo "Scheme: $SCHEME"
           xcodebuild \
             -workspace "$WORKSPACE" \
