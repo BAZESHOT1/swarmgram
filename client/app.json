@@ -42,14 +42,14 @@
             "googleServicesFile": "./google-services.json"
           },
           "ios": {
-            "googleServicesFile": "./GoogleService-Info.plist"
+            "googleServicesFile": "./GoogleService-Info.plist",
+            "useFrameworks": "static"
           }
         }
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
       "react-native-background-fetch",
-      "./plugins/withModularHeaders",
       [
         "react-native-ble-plx",
         {
