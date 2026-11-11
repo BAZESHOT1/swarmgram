@@ -2,7 +2,7 @@
   "expo": {
     "name": "SwarmGram",
     "slug": "swarmgram",
-    "version": "1.4.4",
+    "version": "1.4.5",
     "orientation": "portrait",
     "scheme": "swarmgram",
     "userInterfaceStyle": "dark",
@@ -38,10 +38,17 @@
         {
           "android": {
             "enableProguardInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "googleServicesFile": "./google-services.json"
+          },
+          "ios": {
+            "googleServicesFile": "./GoogleService-Info.plist"
           }
         }
       ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
+      "react-native-background-fetch",
       [
         "react-native-ble-plx",
         {
@@ -53,22 +60,30 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.swarmgram.app",
-      "buildNumber": "10404",
+      "bundleIdentifier": "com.pink-project.kintoapp",
+      "buildNumber": "10405",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "entitlements": {
+        "aps-environment": "development"
+      },
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети.",
-        "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями."
+        "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями.",
+        "UIBackgroundModes": ["fetch", "remote-notification"],
+        "FirebaseAppDelegateProxyEnabled": true
       }
     },
     "android": {
-      "package": "com.swarmgram.app",
-      "versionCode": 10404,
+      "package": "com.pink_project.kintoapp",
+      "versionCode": 10405,
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0A0E14"
       },
       "permissions": [
         "INTERNET",
+        "POST_NOTIFICATIONS",
         "BLUETOOTH",
         "BLUETOOTH_ADMIN",
         "BLUETOOTH_SCAN",

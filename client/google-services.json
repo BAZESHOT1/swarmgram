@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1014607310889",
+    "project_id": "vdoh-crm",
+    "storage_bucket": "vdoh-crm.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1014607310889:android:3babfec579f1b3f05d6c38",
+        "android_client_info": {
+          "package_name": "com.pink_project.kintoapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCdcVXRdVll--MBd5i4_zIcrE20yKidpmM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

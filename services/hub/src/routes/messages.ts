@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import { uuid } from '../crypto.js';
 import { one, query } from '../db.js';
 import { publish, publishMany } from '../realtime.js';
+import { enqueueNotification } from '../push.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { can } from './chats.js';
 
@@ -25,8 +26,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     const membership = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chatId, me]);
     if (!membership) throw forbidden('not_a_member');
 
-    const chat = await one<{ type: string; owner_id: string | null; blocked_reason: string | null }>(
-      'SELECT type, owner_id, blocked_reason FROM chats WHERE id = $1',
+    const chat = await one<{ type: string; title: string; owner_id: string | null; blocked_reason: string | null }>(
+      'SELECT type, title, owner_id, blocked_reason FROM chats WHERE id = $1',
       [chatId],
     );
     if (!chat) throw notFound('chat');
@@ -168,6 +169,18 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       },
     };
     for (const m of members) publish(m.user_id, envelope);
+
+    // Push получателям — best-effort и без ожидания: отправка сообщения не
+    // должна зависеть от FCM. Текст уведомления не содержит содержимого.
+    void notifyMessageRecipients({
+      chatId,
+      chatTitle: chat.title,
+      messageId: id,
+      kind,
+      senderId: me,
+      senderUsername: user?.username ?? '',
+      members: members.map((m) => m.user_id),
+    }).catch(() => undefined);
 
     return reply.code(201).send(envelope.message);
   });
@@ -441,6 +454,49 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true });
   });
 };
+
+interface NotifyRecipientsInput {
+  chatId: string;
+  chatTitle: string;
+  messageId: string;
+  kind: string;
+  senderId: string;
+  senderUsername: string;
+  members: string[];
+}
+
+/**
+ * Ставит push-уведомления получателям сообщения. Приватный текст и содержимое
+ * не передаются — только факт нового сообщения и метаданные чата.
+ */
+async function notifyMessageRecipients(input: NotifyRecipientsInput): Promise<void> {
+  const recipients = input.members.filter((id) => id !== input.senderId);
+  if (!recipients.length) return;
+
+  const users = await query<{ id: string; status: string; muted_chats: unknown }>(
+    'SELECT id, status, muted_chats FROM users WHERE id = ANY($1::uuid[])',
+    [recipients],
+  );
+
+  const title = (input.chatTitle
+    ? `@${input.senderUsername || 'user'} в ${input.chatTitle}`
+    : 'Новое сообщение').slice(0, 200);
+  const body = input.kind === 'media' ? 'Медиа' : 'Новое сообщение';
+
+  for (const user of users) {
+    // Заблокированные/удалённые аккаунты уведомления не получают.
+    if (user.status !== 'active') continue;
+    const muted = Array.isArray(user.muted_chats) ? (user.muted_chats as unknown[]) : [];
+    if (muted.includes(input.chatId)) continue;
+
+    await enqueueNotification(user.id, {
+      kind: 'message',
+      title,
+      body,
+      data: { chatId: input.chatId, messageId: input.messageId, kind: input.kind },
+    });
+  }
+}
 
 function extractNonce(header: unknown): string {
   if (header && typeof header === 'object' && typeof (header as any).nonce === 'string') return (header as any).nonce;

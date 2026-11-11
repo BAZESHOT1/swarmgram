@@ -28,6 +28,7 @@ import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
 import { loadCaches, loadProfileCaches, getCachedMe } from '../src/data/cache';
+import { initPush } from '../src/push';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
 const queryClient = new QueryClient({
@@ -692,6 +693,26 @@ export default function RootLayout() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!sessionState) return undefined;
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    void initPush({
+      deviceId: sessionState.deviceId,
+      userId: sessionState.userId,
+      accessToken: sessionState.accessToken,
+    } as never)
+      .then((stop) => {
+        if (cancelled) stop?.();
+        else cleanup = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, [sessionState?.userId, sessionState?.deviceId]);
 
   useEffect(() => {
     if (!ready) return;

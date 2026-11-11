@@ -883,6 +883,17 @@ export const api = {
       body: JSON.stringify({ refreshToken }),
     }),
 
+  /* ---- push-уведомления ---- */
+  registerPushToken: (input: { token: string; platform: 'ios' | 'android' | 'web'; deviceId?: string }) =>
+    req<{ ok: true }>('/v1/push/token', { method: 'POST', body: JSON.stringify(input) }),
+  unregisterPushToken: (token: string) =>
+    req<{ ok: true }>('/v1/push/token', { method: 'DELETE', body: JSON.stringify({ token }) }),
+  pushHistory: () => req<any[]>('/v1/notifications'),
+  pendingNotifications: (platform: string, deviceId?: string) =>
+    req<any[]>(`/v1/notifications/pending?platform=${encodeURIComponent(platform)}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`),
+  markNotificationDelivered: (id: string) =>
+    req<{ ok: true }>(`/v1/notifications/${encodeURIComponent(id)}/delivered`, { method: 'POST' }),
+
   logout: (refreshToken?: string) => req('/v1/auth/logout', { method: 'POST', body: JSON.stringify({ refreshToken }) }),
 
   verifyEmail: (email: string, code: string) =>

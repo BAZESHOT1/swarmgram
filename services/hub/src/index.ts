@@ -14,6 +14,7 @@ import { migrate, pool, query } from './db.js';
 import { attachRealtime } from './realtime.js';
 import { startMonitor } from './monitor.js';
 import { startReplicator } from './replicator.js';
+import { startPushWorker } from './push.js';
 import { errorHandler, log } from './util.js';
 import { decryptSecret, keySecretWarning } from './secrets.js';
 
@@ -33,6 +34,7 @@ import keyBackupRoutes from './routes/keys.js';
 import accountKeyRoutes from './routes/accountKeys.js';
 import firmwareRoutes from './routes/firmware.js';
 import networkRoutes from './routes/network.js';
+import notificationRoutes from './routes/notifications.js';
 
 /**
  * Проверка при старте: предупреждаем, если HUB_KEY_SECRET не задан, и
@@ -110,6 +112,7 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
   await app.register(accountKeyRoutes, { prefix: '/v1' });
   await app.register(firmwareRoutes, { prefix: '/v1' });
   await app.register(networkRoutes, { prefix: '/v1' });
+  await app.register(notificationRoutes, { prefix: '/v1' });
 
   try {
     await app.listen({ host: '0.0.0.0', port: config.port });
@@ -122,6 +125,7 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
 
   startMonitor();
   startReplicator();
+  startPushWorker();
 
   const shutdown = async (signal: string): Promise<void> => {
     log('info', 'shutting_down', { signal });
