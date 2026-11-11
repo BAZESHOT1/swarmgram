@@ -6,7 +6,11 @@
     "orientation": "portrait",
     "scheme": "swarmgram",
     "userInterfaceStyle": "dark",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "web": {
       "bundler": "metro",
       "output": "static"
@@ -18,7 +22,8 @@
         {
           "bluetoothAlwaysPermission": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "ios": {
       "supportsTablet": true,
@@ -40,7 +45,7 @@
       ]
     },
     "extra": {
-      "apiUrl": "http://150.251.143.212:8080"
+      "apiUrl": "https://150-251-143-212.nip.io:3443/api"
     }
   }
 }
