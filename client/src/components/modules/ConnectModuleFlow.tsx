@@ -49,11 +49,17 @@ export function ConnectModuleFlow({
   visible,
   onClose,
   onComplete,
+  initialMode,
 }: {
   visible: boolean;
   onClose: () => void;
   /** Вызывается после успеха; список модулей уже инвалидируется провайдером/мутациями. */
   onComplete?: (result: FlowResult) => void;
+  /**
+   * С какого шага открыть мастер: сразу к прошивке, к добавлению прошитого
+   * или к поиску по 8-значному ID. Без значения — экран выбора сценария.
+   */
+  initialMode?: 'prepared' | 'flash' | 'claim';
 }) {
   const theme = useTheme();
   const qc = useQueryClient();
@@ -101,8 +107,11 @@ export function ConnectModuleFlow({
       return;
     }
     reset();
+    if (initialMode === 'flash') setStage('flash');
+    else if (initialMode === 'prepared') setStage('role');
+    else if (initialMode === 'claim') setStage('claim');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, initialMode]);
 
   React.useEffect(() => () => stopPolling(), [stopPolling]);
 
@@ -139,7 +148,7 @@ export function ConnectModuleFlow({
     if (info) {
       setResult({ publicId: info.publicId, hardwareId: info.hardwareId, role: info.role, source: 'local' });
     } else {
-      setLocalError(modules.error ?? 'Не удалось подключить модуль по USB.');
+      setLocalError(modules.getLastError() ?? modules.error ?? 'Не удалось подключить модуль по USB.');
     }
   };
 
@@ -149,7 +158,7 @@ export function ConnectModuleFlow({
     if (info) {
       setResult({ publicId: info.publicId, hardwareId: info.hardwareId, role: info.role, source: 'local' });
     } else {
-      setLocalError(modules.error ?? 'Не удалось подключить модуль по Bluetooth.');
+      setLocalError(modules.getLastError() ?? modules.error ?? 'Не удалось подключить модуль по Bluetooth.');
     }
   };
 
@@ -374,20 +383,28 @@ export function ConnectModuleFlow({
             {stage === 'prepared-or-flash' ? (
               <View>
                 <ChoiceCard
-                  icon="checkmark-done-outline"
-                  title="Уже подготовлен"
-                  subtitle="прошит и включается"
-                  description="Подключим по USB/Bluetooth или найдём по 8-значному ID."
-                  selected={false}
-                  onPress={() => setStage('role')}
-                />
-                <ChoiceCard
                   icon="build-outline"
-                  title="Нужно прошить"
+                  title="Прошить новый"
                   subtitle="соберём прошивку на Hub"
                   description="Выберем тип, плату, связь и батарею — без лишних настроек."
                   selected={false}
                   onPress={() => setStage('flash')}
+                />
+                <ChoiceCard
+                  icon="checkmark-done-outline"
+                  title="Добавить прошитый"
+                  subtitle="модуль уже включается"
+                  description="Носимый — по USB (компьютер) или BLE (телефон). Шлюз и ретранслятор — по 8-значному ID."
+                  selected={false}
+                  onPress={() => setStage('role')}
+                />
+                <ChoiceCard
+                  icon="keypad-outline"
+                  title="Найти по ID"
+                  subtitle="автономные шлюзы и ретрансляторы"
+                  description="Модуль уже в сети: опросим его 8-значный ID и привяжем к аккаунту."
+                  selected={false}
+                  onPress={() => setStage('claim')}
                 />
                 <Note icon="git-network-outline" tone="neutral">
                   {MESH_ALWAYS.networkLine}. Параметры сети подставляет сервер — менять их вручную не нужно.
@@ -421,23 +438,30 @@ export function ConnectModuleFlow({
                   selected={role === 'gateway'}
                   onPress={() => setRole('gateway')}
                 />
+                <Note icon={role === 'wearable' ? 'watch-outline' : 'globe-outline'} tone="accent">
+                  {role === 'wearable'
+                    ? 'Носимый модуль — адаптер в радио-сеть для этого клиента. Добавить его можно только физическим подключением: USB на компьютере или BLE на телефоне.'
+                    : 'Ретранслятор и шлюз работают автономно. После включения они сами выходят в mesh-сеть, поэтому добавляются по 8-значному ID.'}
+                </Note>
                 <Btn
-                  title="К подключению"
-                  onPress={() => setStage('wearable')}
+                  title={
+                    role === 'wearable'
+                      ? Platform.OS === 'web'
+                        ? 'Подключить по USB или BLE'
+                        : 'Подключить по BLE'
+                      : 'Найти по 8-значному ID'
+                  }
+                  onPress={() => setStage(role === 'wearable' ? 'wearable' : 'claim')}
                 />
-                <View style={{ marginTop: 8 }}>
-                  <Btn
-                    title="Добавить по 8-значному ID"
-                    variant="ghost"
-                    size="s"
-                    onPress={() => setStage('claim')}
-                  />
-                </View>
               </View>
             ) : null}
 
             {stage === 'wearable' ? (
               <View>
+                <Note icon="watch-outline" tone="accent">
+                  Носимый модуль — адаптер в радио-сеть. Его нельзя добавить по ID: подключите плату физически
+                  {Platform.OS === 'web' ? ' — по USB или BLE.' : ' по BLE.'}
+                </Note>
                 {Platform.OS === 'web' ? (
                   <>
                     <Note icon="desktop-outline" tone="accent">
@@ -546,8 +570,9 @@ export function ConnectModuleFlow({
                     paddingHorizontal: 2,
                   }}
                 >
-                  ID показывается на экране модуля или в прошивке. Для ретранслятора и шлюза это единственный способ
-                  добавить модуль — он работает автономно.
+                  ID показывается на экране модуля или в прошивке. По ID добавляются автономные ретрансляторы и
+                  шлюзы, которые сами вышли в сеть. Носимый модуль добавляется только физическим подключением по
+                  USB/BLE.
                 </Text>
                 {searching ? (
                   <View

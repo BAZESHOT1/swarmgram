@@ -47,6 +47,8 @@ export interface ModuleConnection {
   open(): Promise<ModuleInfo>;
   /** Подключиться к уже известному устройству без запроса (автовосстановление). */
   openKnown?(hardwareId?: string, timeoutMs?: number): Promise<ModuleInfo | null>;
+  /** Необязательный скан nearby-устройств (native BLE) для уведомлений. */
+  scan?(durationMs?: number): Promise<{ id: string; name: string; rssi: number }[]>;
   sendEnvelope(chatId: string, envelope: unknown): Promise<void>;
   /**
    * Передать шлюзу SSID/пароль Wi-Fi роутера (кадр SET_CONFIG).

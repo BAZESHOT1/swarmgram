@@ -74,6 +74,8 @@ interface Identity {
 
 let identity: Identity | null = null;
 let usedBytes = 0;
+/** Плановый вывод: Hub попросил больше не принимать новые фрагменты. */
+let draining = false;
 
 /* ------------------------------------------------------------------- логи - */
 
@@ -229,8 +231,8 @@ async function heartbeat(): Promise<void> {
       }),
       signal: AbortSignal.timeout(15_000),
     });
+    const body = (await res.json().catch(() => ({}))) as Record<string, any>;
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as Record<string, any>;
       if (body?.error === 'node_blocked') {
         log('error', 'node_blocked', { hint: 'Hub заблокировал узел по IP/железу' });
         identity = null;
@@ -238,10 +240,45 @@ async function heartbeat(): Promise<void> {
         return;
       }
       log('warn', 'heartbeat_failed', { status: res.status, error: body?.message ?? '' });
+      return;
+    }
+
+    // Hub начал плановый вывод: перестаём принимать новые фрагменты.
+    if (body?.drain === true && !draining) {
+      draining = true;
+      log('info', 'node_draining', { hint: 'new PUT /fragments requests are rejected with 503' });
+    }
+
+    // Вывод завершён: локальные фрагменты больше не нужны.
+    if (body?.stop === true) {
+      await stopAfterDrain();
     }
   } catch (e) {
     log('warn', 'heartbeat_error', { error: e instanceof Error ? e.message : String(e) });
   }
+}
+
+/**
+ * Плановое выключение после drain: удаляем только файлы фрагментов.
+ * node.json (identity) лежит в корне dataDir и сознательно сохраняется.
+ */
+async function stopAfterDrain(): Promise<void> {
+  try {
+    if (existsSync(FRAGMENT_DIR)) {
+      await fsp.rm(FRAGMENT_DIR, { recursive: true, force: true });
+    }
+    usedBytes = 0;
+    mkdirSync(FRAGMENT_DIR, { recursive: true });
+  } catch (e) {
+    // не гасим процесс, если не смогли почистить диск — попробуем на следующем heartbeat
+    log('error', 'drain_cleanup_failed', { error: e instanceof Error ? e.message : String(e) });
+    return;
+  }
+  log('info', 'node_stopped_after_drain', {
+    dataDir: config.dataDir,
+    identityKept: existsSync(IDENTITY_FILE),
+  });
+  process.exit(0);
 }
 
 /* ----------------------------------------------------------------- сервер - */
@@ -282,6 +319,7 @@ app.get('/health', async (_req, reply) => {
     version: config.version,
     registered: Boolean(identity),
     nodeId: identity?.nodeId ?? null,
+    draining,
     usedBytes,
     freeBytes: Math.max(0, capacityBytes - usedBytes),
     capacityBytes,
@@ -296,6 +334,9 @@ app.get('/n/ping', async (req, reply) => {
 });
 
 app.put('/fragments/:oid/:idx', async (req: FastifyRequest, reply: FastifyReply) => {
+  // узел выводится из эксплуатации: новые реплики не принимаем
+  if (draining) return reply.status(503).send({ error: 'draining' });
+
   const ticket = ticketFrom(req);
   if (!ticket || ticket.op !== 'put') return reply.status(401).send({ error: 'invalid_ticket' });
 

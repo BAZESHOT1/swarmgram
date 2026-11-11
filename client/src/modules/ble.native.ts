@@ -4,8 +4,9 @@
  * Этот файл попадает только в native-бандл: web-сборка использует ble.web.ts,
  * поэтому react-native-ble-plx никогда не тянется в браузер.
  */
-import { BleManager, type Device, type Subscription } from 'react-native-ble-plx';
+import { BleManager, State, type Device, type Subscription } from 'react-native-ble-plx';
 import {
+  BLE_SHORT_UUIDS,
   BLE_UUIDS,
   FrameDecoder,
   FrameType,
@@ -32,6 +33,34 @@ let sharedManager: BleManager | null = null;
 function manager(): BleManager {
   if (!sharedManager) sharedManager = new BleManager();
   return sharedManager;
+}
+
+const BLE_READY_TIMEOUT_MS = 8000;
+const HELLO_ATTEMPTS = 3;
+const HELLO_RETRY_DELAY_MS = 700;
+const INFO_TIMEOUT_MS = 5000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Сервис a5c0 в рекламе устройства (Android/iOS отдают UUID в разном виде). */
+function hasModuleService(device: Device): boolean {
+  const uuids = device.serviceUUIDs ?? [];
+  return uuids.some((uuid) => {
+    const value = uuid.toLowerCase().replace(/-/g, '');
+    return value === BLE_SHORT_UUIDS.service || value.startsWith('0000a5c0') || value.startsWith('a5c0');
+  });
+}
+
+/** Резервное сопоставление без фильтра: имя SG-* или сервис a5c0 в рекламе. */
+function looksLikeModule(device: Device): boolean {
+  const name = device.localName || device.name || '';
+  return /^SG-/i.test(name) || hasModuleService(device);
 }
 
 /* ------------------------------------------------------------ base64 ----- */
@@ -79,8 +108,8 @@ export interface ScannedModule {
 }
 
 /**
- * BLE-подключение к модулю. Сканирует по сервису a5c0, подключается,
- * поднимает MTU 185, слушает a5c2 и пишет в a5c1 чанками ≤ MTU-3.
+ * BLE-подключение к модулю. Сканирует по сервису a5c0 (при неудаче — без
+ * фильтра), подключается, слушает a5c2 и пишет в a5c1 чанками по 20 байт.
  */
 export class NativeBleTransport implements ModuleConnection {
   readonly kind: ConnectionKind = 'ble';
@@ -107,29 +136,147 @@ export class NativeBleTransport implements ModuleConnection {
     return Boolean(this.deviceId && !this.closing);
   }
 
-  /** Сканирование 4 секунды; устройства фильтруются по сервису a5c0. */
+  /** Сканирование 4 секунды; сначала по сервису a5c0, затем без фильтра. */
   async scan(durationMs = 4000): Promise<ScannedModule[]> {
-    const found = new Map<string, ScannedModule>();
+    await this.waitForPoweredOn();
+    const filteredMs = Math.max(2500, Math.min(durationMs, 4000));
+    const filtered = await this.scanPhase([BLE_UUIDS.service], filteredMs, () => true);
+    if (filtered.length) return filtered;
+    // iOS/Edge иногда не отдают сервис в рекламе — повторяем без фильтра.
+    const fallbackMs = Math.max(3000, Math.min(durationMs, 4000));
+    return this.scanPhase(null, fallbackMs, looksLikeModule);
+  }
+
+  /**
+   * Дожидается PoweredOn. Unknown/Resetting — ждём обновления состояния,
+   * PoweredOff/Unauthorized/Unsupported — сразу понятная ошибка.
+   */
+  private async waitForPoweredOn(timeoutMs = BLE_READY_TIMEOUT_MS): Promise<void> {
+    const ble = manager();
+    let current: State | null = null;
     try {
-      await manager().startDeviceScan([BLE_UUIDS.service], { allowDuplicates: false }, (error, device) => {
-        if (error || !device) return;
-        if (!found.has(device.id)) {
-          found.set(device.id, {
-            id: device.id,
-            name: device.localName || device.name || 'SG-модуль',
-            rssi: Number(device.rssi ?? 0),
-          });
-        }
-      });
-    } catch (error) {
+      current = await ble.state();
+    } catch {
+      current = null;
+    }
+    if (current === State.PoweredOn) return;
+    if (current === State.PoweredOff) {
       throw new ModuleTransportError(
-        `Не удалось начать сканирование Bluetooth: ${error instanceof Error ? error.message : String(error)}. ` +
-          'Проверьте разрешения Bluetooth.',
+        'Bluetooth выключен. Включите Bluetooth в настройках устройства и повторите.',
         'io',
       );
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
-    await manager().stopDeviceScan().catch(() => undefined);
+    if (current === State.Unauthorized) {
+      throw new ModuleTransportError(
+        'Приложению не разрешён доступ к Bluetooth. Разрешите его в настройках и повторите.',
+        'io',
+      );
+    }
+    if (current === State.Unsupported) {
+      throw new ModuleTransportError('Это устройство не поддерживает Bluetooth LE.', 'unsupported');
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let subscription: Subscription | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        try {
+          subscription?.remove();
+        } catch {
+          /* ignore */
+        }
+        subscription = null;
+      };
+      const finish = (action: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        action();
+      };
+      subscription = ble.onStateChange((state) => {
+        if (state === State.PoweredOn) {
+          finish(resolve);
+        } else if (state === State.PoweredOff) {
+          finish(() =>
+            reject(
+              new ModuleTransportError(
+                'Bluetooth выключен. Включите Bluetooth в настройках устройства и повторите.',
+                'io',
+              ),
+            ),
+          );
+        } else if (state === State.Unauthorized) {
+          finish(() =>
+            reject(
+              new ModuleTransportError(
+                'Приложению не разрешён доступ к Bluetooth. Разрешите его в настройках и повторите.',
+                'io',
+              ),
+            ),
+          );
+        } else if (state === State.Unsupported) {
+          finish(() => reject(new ModuleTransportError('Это устройство не поддерживает Bluetooth LE.', 'unsupported')));
+        }
+        // Unknown/Resetting — просто ждём следующего события.
+      }, true);
+      timer = setTimeout(() => {
+        finish(() =>
+          reject(
+            new ModuleTransportError(
+              `Bluetooth не включился за ${Math.round(timeoutMs / 1000)} с. Проверьте, что он включён и доступен приложению.`,
+              'timeout',
+            ),
+          ),
+        );
+      }, timeoutMs);
+      // Если onStateChange успел синхронно вызвать listener до присваивания sub/timer.
+      if (settled) cleanup();
+    });
+  }
+
+  /** Один скан с гарантированным stopDeviceScan в finally. */
+  private async scanPhase(
+    serviceUuids: string[] | null,
+    durationMs: number,
+    accept: (device: Device) => boolean,
+  ): Promise<ScannedModule[]> {
+    const ble = manager();
+    const found = new Map<string, ScannedModule>();
+    // Предыдущий скан не должен оставаться активным: iOS молча игнорирует новый.
+    await ble.stopDeviceScan().catch(() => undefined);
+    try {
+      await ble.startDeviceScan(serviceUuids, { allowDuplicates: false }, (error, device) => {
+        if (error || !device || !accept(device)) return;
+        const rssi = Number(device.rssi ?? 0);
+        const existing = found.get(device.id);
+        if (existing) {
+          existing.rssi = rssi;
+          if (!existing.name || existing.name === 'SG-модуль') {
+            existing.name = device.localName || device.name || existing.name;
+          }
+          return;
+        }
+        found.set(device.id, {
+          id: device.id,
+          name: device.localName || device.name || 'SG-модуль',
+          rssi,
+        });
+      });
+    } catch (error) {
+      await ble.stopDeviceScan().catch(() => undefined);
+      throw new ModuleTransportError(
+        `Не удалось начать сканирование Bluetooth: ${errorMessage(error)}. Проверьте разрешения Bluetooth.`,
+        'io',
+      );
+    }
+    try {
+      await delay(durationMs);
+    } finally {
+      await ble.stopDeviceScan().catch(() => undefined);
+    }
     return [...found.values()].sort((a, b) => b.rssi - a.rssi);
   }
 
@@ -183,7 +330,7 @@ export class NativeBleTransport implements ModuleConnection {
 
     let device: Device;
     try {
-      device = await manager().connectToDevice(deviceId, { requestMTU: 185, timeout: 10_000 });
+      device = await manager().connectToDevice(deviceId, { requestMTU: 185, timeout: 15_000 });
       this.deviceId = device.id;
       await device.discoverAllServicesAndCharacteristics();
       this.mtu = Math.max(23, Number(device.mtu || 185));
@@ -229,8 +376,24 @@ export class NativeBleTransport implements ModuleConnection {
       },
     );
 
-    await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
-    const info = await this.waitInfo(3000);
+    // iOS/Edge могут потерять первый HELLO при медленном старте GATT — повторяем.
+    let helloError: Error | null = null;
+    for (let attempt = 0; attempt < HELLO_ATTEMPTS; attempt += 1) {
+      if (this.info || this.closing) break;
+      if (attempt > 0) await delay(HELLO_RETRY_DELAY_MS);
+      if (this.info || this.closing) break;
+      try {
+        await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
+        helloError = null;
+      } catch (error) {
+        helloError = error instanceof Error ? error : new Error(String(error));
+        if (this.closing) break;
+      }
+    }
+    const info = await this.waitInfo(INFO_TIMEOUT_MS, helloError ?? undefined).catch(async (error: unknown) => {
+      await this.close().catch(() => undefined);
+      throw error;
+    });
     this.info = info;
     return info;
   }
@@ -298,14 +461,16 @@ export class NativeBleTransport implements ModuleConnection {
     };
   }
 
-  private waitInfo(timeoutMs: number): Promise<ModuleInfo> {
+  private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
     if (this.info) return Promise.resolve(this.info);
     return new Promise<ModuleInfo>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.infoWaiter = null;
         reject(
           new ModuleTransportError(
-            'Модуль не ответил на HELLO. Проверьте прошивку и поднесите модуль ближе.',
+            `Модуль не ответил на HELLO за ${Math.round(timeoutMs / 1000)} с. ` +
+              'Проверьте прошивку и поднесите модуль ближе.' +
+              (cause ? ` Причина: ${cause.message}` : ''),
             'timeout',
           ),
         );
@@ -314,14 +479,14 @@ export class NativeBleTransport implements ModuleConnection {
     });
   }
 
-  /** Чанк ≤ MTU-3 (минимум 20 байт для старых устройств). */
+  /** Чанк ровно 20 байт — как в web, чтобы не упираться в длинные write на iOS. */
   private async writeFrame(type: number, payload: Uint8Array): Promise<void> {
     const deviceId = this.deviceId;
     if (!deviceId || this.closing) {
       throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
     }
     const frame = encodeFrame(type, payload);
-    const chunkSize = Math.max(20, this.mtu - 3);
+    const chunkSize = 20;
     for (let offset = 0; offset < frame.length; offset += chunkSize) {
       const chunk = frame.slice(offset, offset + chunkSize);
       await manager().writeCharacteristicWithResponseForDevice(

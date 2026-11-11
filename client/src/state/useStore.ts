@@ -43,6 +43,9 @@ interface AppState {
   /** Пользователи, видимые в mesh (profile presence). */
   meshPeers: Record<string, { userId: string; username: string; publicId?: string; lastSeen: number }>;
   setMeshPeer: (peer: { userId: string; username: string; publicId?: string }) => void;
+  /** Найденные рядом носимые модули (для предложения подключения). */
+  nearbyModules: { id: string; name: string; rssi: number; seenAt: number }[];
+  setNearbyModules: (list: { id: string; name: string; rssi: number }[]) => void;
   pushEvent: { kind: string; payload: any } | null;
   setPushEvent: (e: { kind: string; payload: any } | null) => void;
   session: SessionSummary | null;
@@ -97,6 +100,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (!peer?.username) return;
     set({ meshPeers: { ...get().meshPeers, [peer.username.toLowerCase()]: { ...peer, lastSeen: Date.now() } } });
   },
+  nearbyModules: [],
+  setNearbyModules: (list) =>
+    set({
+      nearbyModules: (Array.isArray(list) ? list : []).map((item) => ({ ...item, seenAt: Date.now() })),
+    }),
   pushEvent: null,
   setPushEvent: (pushEvent) => set({ pushEvent }),
   session: null,

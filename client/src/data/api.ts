@@ -1193,6 +1193,8 @@ export const api = {
     req<{ claimToken: string; expiresAt: string }>('/v1/nodes/claim', { method: 'POST', body: JSON.stringify({ nodeName }) }),
   setNodeStatus: (id: string, status: string) =>
     req(`/v1/nodes/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) }),
+  drainNode: (id: string) =>
+    req<{ ok: true; status: string }>(`/v1/nodes/${id}/drain`, { method: 'POST' }),
 
   /* ---- esp32 модули ---- */
   pairModule: (input: {

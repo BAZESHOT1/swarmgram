@@ -43,6 +43,7 @@ import { Avatar } from '../../src/components/Avatar';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
 import { HeaderCreateMenu } from '../../src/components/HeaderCreateMenu';
+import { ModuleStatusPill } from '../../src/components/ModuleStatusPill';
 import { PressableScale } from '../../src/components/chat/PressableScale';
 import { ChatContextMenu } from '../../src/components/chat/ChatContextMenu';
 import { SelectionToolbar } from '../../src/components/chat/SelectionToolbar';
@@ -1213,9 +1214,7 @@ export default function ChatsScreen() {
         >
           <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: theme.fontXl }}>Чаты</Text>
         </MotiView>
-        <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '800', letterSpacing: 0.4 }} numberOfLines={1}>
-          SwarmGram
-        </Text>
+        <ModuleStatusPill />
         <MotiView
           from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -6, scale: 0.96 }}
           animate={{ opacity: 1, translateY: 0, scale: 1 }}

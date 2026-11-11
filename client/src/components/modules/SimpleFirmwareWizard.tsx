@@ -355,7 +355,7 @@ export function SimpleFirmwareWizard({
     setReadError('');
     const info = await moduleConnection.connectUsb();
     if (!info) {
-      setReadError(moduleConnection.error ?? 'Не удалось прочитать ID модуля.');
+      setReadError(moduleConnection.getLastError() ?? moduleConnection.error ?? 'Не удалось прочитать ID модуля.');
       return;
     }
     setResult((prev) => ({

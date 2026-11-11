@@ -29,6 +29,20 @@ import {
 
 /* ------------------------------------------------------- общие события --- */
 
+const USB_INFO_TIMEOUT_MS = 8000;
+const USB_HELLO_RETRY_MS = 1000;
+const BLE_INFO_TIMEOUT_MS = 5000;
+const HELLO_ATTEMPTS = 3;
+const HELLO_RETRY_DELAY_MS = 700;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 abstract class BaseModuleConnection implements ModuleConnection {
   abstract readonly kind: ConnectionKind;
   abstract readonly supported: boolean;
@@ -97,6 +111,7 @@ interface SerialPortLike {
   addEventListener?(type: string, listener: () => void): void;
   removeEventListener?(type: string, listener: () => void): void;
   getInfo?(): { usbVendorId?: number; usbProductId?: number };
+  setSignals?(signals: { dataTerminalReady?: boolean; requestToSend?: boolean; break?: boolean }): Promise<void>;
   forget?(): Promise<void>;
 }
 
@@ -125,6 +140,8 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
   private decoder = new FrameDecoder();
   private closing = false;
   private writeChain: Promise<void> = Promise.resolve();
+  private helloTimer: ReturnType<typeof setInterval> | null = null;
+  private lastHelloError: Error | null = null;
   private infoWaiter: {
     resolve: (info: ModuleInfo) => void;
     reject: (error: Error) => void;
@@ -200,18 +217,19 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
     return first;
   }
 
-  private async openPort(port: SerialPortLike, timeoutMs = 3000): Promise<ModuleInfo> {
+  private async openPort(port: SerialPortLike, timeoutMs = USB_INFO_TIMEOUT_MS): Promise<ModuleInfo> {
     if (this.openState) await this.close();
     this.closing = false;
     this.disconnected = false;
     this.decoder = new FrameDecoder();
     this.info = null;
+    this.lastHelloError = null;
 
     try {
       await port.open({ baudRate: 115200, bufferSize: 4096 });
     } catch (error) {
       throw new ModuleTransportError(
-        `Не удалось открыть USB-порт: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Не удалось открыть USB-порт: ${errorMessage(error)}. ` +
           'Закройте Arduino IDE/PlatformIO и проверьте кабель.',
         'io',
       );
@@ -226,13 +244,62 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
     this.writer = writable.getWriter();
     this.startReadLoop(port);
 
-    await this.sendFrame(
-      FrameType.HELLO,
-      encodeJson(helloPayload('web', this.expectedHardwareId)),
-    );
-    const info = await this.waitInfo(timeoutMs);
-    this.info = info;
-    return info;
+    // Открытие порта может перезагрузить ESP32 — даём ему подняться.
+    await delay(300);
+    if (this.closing) throw new ModuleTransportError('USB-порт закрыт во время подключения.', 'closed');
+    try {
+      await port.setSignals?.({ dataTerminalReady: false, requestToSend: false });
+    } catch {
+      /* setSignals поддерживается не везде — не критично */
+    }
+
+    try {
+      await this.sendFrame(FrameType.HELLO, encodeJson(helloPayload('web', this.expectedHardwareId)));
+    } catch (error) {
+      await this.close().catch(() => undefined);
+      throw new ModuleTransportError(`Не удалось отправить HELLO по USB: ${errorMessage(error)}`, 'io');
+    }
+
+    // Первый HELLO мог прийти до готовности модуля — повторяем до INFO.
+    this.startHelloRetry();
+    try {
+      const info = await this.waitInfo(Math.max(timeoutMs, USB_INFO_TIMEOUT_MS));
+      this.info = info;
+      return info;
+    } catch (error) {
+      await this.close().catch(() => undefined);
+      throw error;
+    } finally {
+      this.stopHelloRetry();
+    }
+  }
+
+  /** Повтор HELLO каждую секунду, пока не пришёл INFO (максимум 8 с). */
+  private startHelloRetry(): void {
+    this.stopHelloRetry();
+    const startedAt = Date.now();
+    this.helloTimer = setInterval(() => {
+      if (this.closing || this.info || Date.now() - startedAt >= USB_INFO_TIMEOUT_MS) {
+        this.stopHelloRetry();
+        return;
+      }
+      void this.sendFrame(
+        FrameType.HELLO,
+        encodeJson(helloPayload('web', this.expectedHardwareId)),
+      )
+        .then(() => {
+          this.lastHelloError = null;
+        })
+        .catch((error: unknown) => {
+          this.lastHelloError = error instanceof Error ? error : new Error(String(error));
+        });
+    }, USB_HELLO_RETRY_MS);
+  }
+
+  private stopHelloRetry(): void {
+    if (!this.helloTimer) return;
+    clearInterval(this.helloTimer);
+    this.helloTimer = null;
   }
 
   private startReadLoop(port: SerialPortLike): void {
@@ -270,6 +337,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
         if (parsed) {
           const info = normalizeInfo(parsed);
           this.info = info;
+          this.stopHelloRetry();
           if (this.infoWaiter) {
             clearTimeout(this.infoWaiter.timer);
             this.infoWaiter.resolve(info);
@@ -317,14 +385,17 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
     };
   }
 
-  private waitInfo(timeoutMs: number): Promise<ModuleInfo> {
+  private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
     if (this.info) return Promise.resolve(this.info);
     return new Promise<ModuleInfo>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.infoWaiter = null;
+        const reason = cause ?? this.lastHelloError ?? undefined;
         reject(
           new ModuleTransportError(
-            'Модуль не ответил на HELLO за 3 секунды. Проверьте питание, кабель и что прошивка поддерживает USB-протокол.',
+            `Модуль не ответил на HELLO за ${Math.round(timeoutMs / 1000)} с. ` +
+              'Проверьте питание, кабель и что прошивка поддерживает USB-протокол.' +
+              (reason ? ` Причина: ${reason.message}` : ''),
             'timeout',
           ),
         );
@@ -366,6 +437,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    this.stopHelloRetry();
     if (this.infoWaiter) {
       clearTimeout(this.infoWaiter.timer);
       this.infoWaiter.reject(new ModuleTransportError('Подключение закрыто.', 'closed'));
@@ -524,7 +596,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
     }
   }
 
-  private async openDevice(device: WebBluetoothDeviceLike, timeoutMs = 3000): Promise<ModuleInfo> {
+  private async openDevice(device: WebBluetoothDeviceLike, timeoutMs = BLE_INFO_TIMEOUT_MS): Promise<ModuleInfo> {
     if (this.openState) await this.close();
     this.closing = false;
     this.disconnected = false;
@@ -557,8 +629,26 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
       );
     }
 
-    await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('web-ble')));
-    const info = await this.waitInfo(timeoutMs);
+    // iOS/Edge могут потерять первый HELLO после включения notifications.
+    let helloError: Error | null = null;
+    for (let attempt = 0; attempt < HELLO_ATTEMPTS; attempt += 1) {
+      if (this.info || this.closing) break;
+      if (attempt > 0) await delay(HELLO_RETRY_DELAY_MS);
+      if (this.info || this.closing) break;
+      try {
+        await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('web-ble')));
+        helloError = null;
+      } catch (error) {
+        helloError = error instanceof Error ? error : new Error(String(error));
+        if (this.closing) break;
+      }
+    }
+    const info = await this.waitInfo(Math.max(timeoutMs, BLE_INFO_TIMEOUT_MS), helloError ?? undefined).catch(
+      async (error: unknown) => {
+        await this.close().catch(() => undefined);
+        throw error;
+      },
+    );
     this.info = info;
     return info;
   }
@@ -626,14 +716,16 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
     };
   }
 
-  private waitInfo(timeoutMs: number): Promise<ModuleInfo> {
+  private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
     if (this.info) return Promise.resolve(this.info);
     return new Promise<ModuleInfo>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.infoWaiter = null;
         reject(
           new ModuleTransportError(
-            'Модуль не ответил по Bluetooth за 3 секунды. Поднесите его ближе и переподключитесь.',
+            `Модуль не ответил по Bluetooth за ${Math.round(timeoutMs / 1000)} с. ` +
+              'Поднесите его ближе и переподключитесь.' +
+              (cause ? ` Причина: ${cause.message}` : ''),
             'timeout',
           ),
         );

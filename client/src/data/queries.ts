@@ -229,6 +229,18 @@ export function useNodeStatus() {
   });
 }
 
+/** Плавный вывод узла: drain → миграция реплик → удаление данных → стоп. */
+export function useDrainNode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.api.drainNode(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [NODES_KEY] });
+      void qc.invalidateQueries({ queryKey: ['network'] });
+    },
+  });
+}
+
 export function useUnbindModule() {
   const qc = useQueryClient();
   return useMutation({

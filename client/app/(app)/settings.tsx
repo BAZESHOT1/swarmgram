@@ -72,12 +72,20 @@ const SECTION_ROWS: SectionRow[] = [
     keywords: ['безопасность', 'пароль', 'сессии', 'устройства', 'удаление', 'аккаунт'],
   },
   {
+    key: 'modules',
+    icon: 'hardware-chip-outline',
+    title: 'Модули',
+    subtitle: 'Карта сети, подключение, прошивка',
+    route: '/modules',
+    keywords: ['модули', 'esp32', 'ble', 'bluetooth', 'usb', 'прошивка', 'карта', 'mesh', 'носимый', 'шлюз'],
+  },
+  {
     key: 'network',
     icon: 'server-outline',
     title: 'Сеть',
-    subtitle: 'Узлы, модули, статистика, хранилище',
-    route: '/settings/network',
-    keywords: ['сеть', 'узлы', 'модули', 'статистика', 'хранилище', 'квота', 'трафик', 'вклад'],
+    subtitle: 'Монитор узлов, вклад и частые вопросы',
+    route: '/nodes',
+    keywords: ['сеть', 'узлы', 'монитор', 'статистика', 'хранилище', 'квота', 'трафик', 'вклад'],
   },
   {
     key: 'about',

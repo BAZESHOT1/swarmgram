@@ -1,8 +1,10 @@
 /**
- * Карта mesh-сети аккаунта: Hub в центре, вокруг шлюзы, затем ретрансляторы
- * и носимые модули. Рисуем только реальные модули из списка — никаких
- * выдуманных узлов и связей. Связи строятся по иерархии ролей; если сервер
- * когда-нибудь отдаст явных соседей, их можно передать через `linkTargets`.
+ * Карта mesh-сети вокруг носимого модуля, подключённого к клиенту.
+ *
+ * Центр карты — всегда реальный носимый модуль, который сейчас подключён
+ * напрямую (USB/BLE). Вокруг него — ретрансляторы и другие носимые, внешним
+ * уровнем — шлюзы с выходом в интернет. Никаких выдуманных узлов: рисуем
+ * только модули из списка и связи по ролям.
  */
 import React from 'react';
 import { Platform, Pressable, Text, View } from 'react-native';
@@ -13,35 +15,38 @@ import { moduleRoleLabel, moduleStatusView } from './moduleUi';
 
 interface Props {
   modules: ModuleRow[];
+  /** Носимый модуль, подключённый к клиенту. Он в центре карты. */
+  focus: ModuleRow | null;
   selectedId: string | null;
   onSelect: (module: ModuleRow) => void;
-  /**
-   * Явные связи: id модуля → id соседей. Необязательно; при отсутствии
-   * используется иерархия «шлюз → Hub, ретранслятор → шлюз, носимый → ретранслятор».
-   */
-  linkTargets?: Record<string, string[]>;
+  /** Развёрнутый вид карты: больше высоты и больше узлов. */
+  expanded?: boolean;
 }
+
+type NodeKind = 'focus' | 'inner' | 'gateway';
 
 interface PlacedNode {
   module: ModuleRow;
   x: number;
   y: number;
-  level: 0 | 1 | 2;
+  kind: NodeKind;
+  size: number;
   color: string;
   icon: keyof typeof Ionicons.glyphMap;
+  faded: boolean;
 }
 
-const HUB_ID = '__hub__';
+function roleOf(module: ModuleRow): string {
+  return module.role ?? 'gateway';
+}
 
-function roleLevel(module: ModuleRow): 0 | 1 | 2 {
-  if ((module.role ?? 'gateway') === 'gateway') return 0;
-  if (module.role === 'repeater') return 1;
-  return 2;
+function isGateway(module: ModuleRow): boolean {
+  return roleOf(module) === 'gateway';
 }
 
 function roleIcon(module: ModuleRow): keyof typeof Ionicons.glyphMap {
-  if ((module.role ?? 'gateway') === 'gateway') return 'git-network-outline';
-  if (module.role === 'repeater') return 'radio-outline';
+  if (isGateway(module)) return module.gateway === false ? 'git-network-outline' : 'globe-outline';
+  if (roleOf(module) === 'repeater') return 'radio-outline';
   return 'watch-outline';
 }
 
@@ -111,180 +116,168 @@ function Link({
   );
 }
 
-export function ModulesNetworkMap({ modules, selectedId, onSelect, linkTargets }: Props) {
+function nodeColor(
+  module: ModuleRow,
+  theme: ReturnType<typeof useTheme>,
+): string {
+  const status = moduleStatusView(module);
+  if (status.tone === 'danger') return theme.danger;
+  if (status.tone === 'warning') return theme.warning;
+  if (isGateway(module)) return module.gateway === false ? theme.textDisabled : theme.warning;
+  if (status.tone === 'success') return theme.success;
+  return theme.textDisabled;
+}
+
+export function ModulesNetworkMap({ modules, focus, selectedId, onSelect, expanded = false }: Props) {
   const theme = useTheme();
   const [width, setWidth] = React.useState(0);
   const widthRef = React.useRef(0);
-  const fallbackWidth = Platform.OS === 'web' && typeof window !== 'undefined' ? Math.min(680, window.innerWidth - 64) : 320;
+  const fallbackWidth =
+    Platform.OS === 'web' && typeof window !== 'undefined' ? Math.min(680, window.innerWidth - 64) : 320;
   const mapWidth = width > 0 ? width : fallbackWidth;
   const compact = mapWidth < 520;
-  const height = compact ? 200 : 280;
-  const nodeSize = compact ? 32 : 40;
+  const height = expanded ? (compact ? 300 : 340) : compact ? 190 : 200;
+  const nodeSize = compact ? 32 : 38;
+  const centerSize = compact ? 48 : 56;
   const ios = Platform.OS === 'ios';
 
-  const placed = React.useMemo<PlacedNode[]>(() => {
-    const groups: ModuleRow[][] = [[], [], []];
-    for (const module of modules) groups[roleLevel(module)].push(module);
+  const layout = React.useMemo(() => {
+    const others = modules.filter((module) => module.id !== focus?.id);
+    const innerAll = others.filter((module) => !isGateway(module));
+    const gatewayAll = others.filter(isGateway);
+    const innerLimit = expanded ? 10 : 6;
+    const gatewayLimit = expanded ? 8 : 4;
+    const inner = innerAll.slice(0, innerLimit);
+    const gateways = gatewayAll.slice(0, gatewayLimit);
 
     const cx = mapWidth / 2;
     const cy = height / 2;
-    const maxRx = Math.max(60, mapWidth / 2 - nodeSize / 2 - 8);
-    const radii = compact
-      ? [
-          { rx: Math.min(maxRx * 0.58, 140), ry: height * 0.24 },
-          { rx: Math.min(maxRx * 0.84, 210), ry: height * 0.36 },
-          { rx: maxRx * 0.98, ry: height * 0.43 },
-        ]
-      : [
-          { rx: Math.min(maxRx * 0.58, 210), ry: height * 0.24 },
-          { rx: Math.min(maxRx * 0.84, 300), ry: height * 0.36 },
-          { rx: maxRx * 0.98, ry: height * 0.44 },
-        ];
+    const maxRx = Math.max(56, mapWidth / 2 - nodeSize / 2 - 10);
+    const minY = nodeSize / 2 + 6;
+    const maxY = height - nodeSize / 2 - 26;
 
-    const result: PlacedNode[] = [];
-    groups.forEach((group, level) => {
-      if (!group.length) return;
-      const ring = radii[level];
-      // Один узел — сверху; несколько — равномерно по эллипсу со сдвигом уровня.
-      const start = -Math.PI / 2 + level * 0.45;
-      const step = (Math.PI * 2) / Math.max(1, group.length);
-      group.forEach((module, index) => {
-        const angle = group.length === 1 ? -Math.PI / 2 : start + step * index;
-        const rawX = cx + ring.rx * Math.cos(angle);
-        const rawY = cy + ring.ry * Math.sin(angle);
+    const place = (
+      group: ModuleRow[],
+      kind: NodeKind,
+      rx: number,
+      ry: number,
+      startAngle: number,
+      size: number,
+    ): PlacedNode[] =>
+      group.map((module, index) => {
+        const angle = group.length === 1 ? -Math.PI / 2 : startAngle + ((Math.PI * 2) / group.length) * index;
+        const rawX = cx + rx * Math.cos(angle);
+        const rawY = cy + ry * Math.sin(angle);
         const x = Math.max(nodeSize / 2 + 2, Math.min(mapWidth - nodeSize / 2 - 2, rawX));
-        const y = Math.max(nodeSize / 2 + 2, Math.min(height - nodeSize / 2 - 10, rawY));
-        const status = moduleStatusView(module);
-        const color =
-          status.tone === 'danger'
-            ? theme.danger
-            : status.tone === 'warning'
-              ? theme.warning
-              : status.tone === 'success'
-                ? theme.success
-                : theme.textDisabled;
-        result.push({
+        const y = Math.max(minY, Math.min(maxY, rawY));
+        return {
           module,
           x,
           y,
-          level: level as 0 | 1 | 2,
-          color,
+          kind,
+          size,
+          color: nodeColor(module, theme),
           icon: roleIcon(module),
-        });
+          // Носимые без прямого подключения к клиенту и всё офлайн — бледнее.
+          faded:
+            kind === 'gateway'
+              ? module.online !== true || module.blocked === true || module.gateway === false
+              : roleOf(module) === 'wearable' || module.online !== true || module.blocked === true,
+        };
       });
-    });
-    // Слишком близкие узлы одного уровня слегка раздвигаем по вертикали.
-    for (let i = 0; i < result.length; i += 1) {
-      for (let j = i + 1; j < result.length; j += 1) {
-        const a = result[i];
-        const b = result[j];
-        if (a.level !== b.level) continue;
-        if (Math.abs(a.x - b.x) < nodeSize + 4 && Math.abs(a.y - b.y) < nodeSize + 4) {
-          b.y = Math.min(height - nodeSize / 2 - 10, b.y + nodeSize * 0.55);
-        }
-      }
-    }
-    return result;
-  }, [compact, height, mapWidth, modules, nodeSize, theme.danger, theme.success, theme.textDisabled, theme.warning]);
 
-  const byId = React.useMemo(() => {
-    const map = new Map<string, PlacedNode>();
-    for (const node of placed) map.set(node.module.id, node);
-    return map;
-  }, [placed]);
+    const innerNodes = place(
+      inner,
+      'inner',
+      Math.min(maxRx * (expanded ? 0.72 : 0.6), 170),
+      height * (expanded ? 0.3 : 0.24),
+      -Math.PI / 2 + 0.35,
+      nodeSize,
+    );
+    const gatewayNodes = place(
+      gateways,
+      'gateway',
+      Math.min(maxRx * 0.98, 260),
+      height * (expanded ? 0.44 : 0.4),
+      -Math.PI / 2 + 0.15,
+      nodeSize + (compact ? 2 : 4),
+    );
 
-  const hub = { x: mapWidth / 2, y: height / 2 };
+    return {
+      center: { x: cx, y: cy + (expanded ? 0 : 2) },
+      innerNodes,
+      gatewayNodes,
+      hidden: innerAll.length - inner.length + (gatewayAll.length - gateways.length),
+    };
+  }, [compact, expanded, focus?.id, height, mapWidth, modules, nodeSize, theme]);
+
+  const { center, innerNodes, gatewayNodes, hidden } = layout;
 
   const edges = React.useMemo(() => {
-    const list: Array<{ from: PlacedNode; to: PlacedNode; dashed: boolean }> = [];
-    const nextHubPoint = (node: PlacedNode) => {
-      // Линия к Hub заканчивается на границе его круга, а не в центре.
-      const dx = hub.x - node.x;
-      const dy = hub.y - node.y;
-      const length = Math.sqrt(dx * dx + dy * dy) || 1;
-      const r = compact ? 19 : 23;
-      return { x: hub.x - (dx / length) * r, y: hub.y - (dy / length) * r };
-    };
-    const hubNode: PlacedNode = {
-      module: { id: HUB_ID } as ModuleRow,
-      x: hub.x,
-      y: hub.y,
-      level: 0,
-      color: theme.accent,
-      icon: 'cloud-outline',
-    };
-
-    const explicit = linkTargets ?? {};
-    let usedExplicit = false;
-    for (const node of placed) {
-      const targets = explicit[node.module.id];
-      if (!targets?.length) continue;
-      for (const targetId of targets) {
-        if (targetId === HUB_ID) {
-          const point = nextHubPoint(node);
-          list.push({
-            from: node,
-            to: { ...hubNode, x: point.x, y: point.y },
-            dashed: !node.module.online,
-          });
-          usedExplicit = true;
-          continue;
-        }
-        const target = byId.get(targetId);
-        if (!target) continue;
-        list.push({ from: node, to: target, dashed: !(node.module.online && target.module.online) });
-        usedExplicit = true;
-      }
-    }
-    if (usedExplicit) return list;
-
-    // Иерархия: шлюзы — к Hub, остальные — к ближайшему старшему уровню.
-    const gateways = placed.filter((node) => node.level === 0);
-    const repeaters = placed.filter((node) => node.level === 1);
-    const nearest = (node: PlacedNode, candidates: PlacedNode[]): PlacedNode | null => {
+    const list: Array<{ from: { x: number; y: number }; to: { x: number; y: number }; dashed: boolean; tone: 'accent' | 'success' }> = [];
+    const nearestGateway = (node: PlacedNode): PlacedNode | null => {
       let best: PlacedNode | null = null;
       let bestDistance = Infinity;
-      for (const candidate of candidates) {
-        const distance = (candidate.x - node.x) ** 2 + (candidate.y - node.y) ** 2;
+      for (const gateway of gatewayNodes) {
+        const distance = (gateway.x - node.x) ** 2 + (gateway.y - node.y) ** 2;
         if (distance < bestDistance) {
-          best = candidate;
+          best = gateway;
           bestDistance = distance;
         }
       }
       return best;
     };
 
-    for (const gateway of gateways) {
-      const point = nextHubPoint(gateway);
+    for (const node of innerNodes) {
       list.push({
-        from: gateway,
-        to: { ...hubNode, x: point.x, y: point.y },
-        dashed: !gateway.module.online,
+        from: node,
+        to: center,
+        dashed: node.module.online !== true,
+        tone: 'accent',
       });
-    }
-    for (const node of placed) {
-      if (node.level === 0) continue;
-      const parent =
-        node.level === 1
-          ? nearest(node, gateways)
-          : nearest(node, repeaters) ?? nearest(node, gateways);
-      if (parent) {
+      const gateway = nearestGateway(node);
+      if (gateway) {
         list.push({
           from: node,
-          to: parent,
-          dashed: !(node.module.online && parent.module.online),
+          to: gateway,
+          dashed: !(node.module.online && gateway.module.online),
+          tone: 'success',
         });
-      } else {
-        const point = nextHubPoint(node);
+      }
+    }
+
+    // Без ретрансляторов шлюзы подключаем прямо к носимому модулю.
+    if (innerNodes.length === 0) {
+      for (const gateway of gatewayNodes) {
         list.push({
-          from: node,
-          to: { ...hubNode, x: point.x, y: point.y },
-          dashed: true,
+          from: gateway,
+          to: center,
+          dashed: gateway.module.online !== true,
+          tone: 'accent',
         });
       }
     }
     return list;
-  }, [byId, compact, hub.x, hub.y, linkTargets, placed, theme.accent]);
+  }, [center, gatewayNodes, innerNodes]);
+
+  if (!focus) {
+    return (
+      <View
+        style={{
+          width: '100%',
+          height,
+          borderRadius: 16,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: theme.dark ? 'rgba(255,255,255,0.015)' : 'rgba(16,24,40,0.02)',
+        }}
+      >
+        <Text style={{ color: theme.textDisabled, fontSize: 12 }}>Нет подключённого носимого модуля</Text>
+      </View>
+    );
+  }
+
+  const centerColor = theme.accent;
 
   return (
     <View
@@ -303,54 +296,93 @@ export function ModulesNetworkMap({ modules, selectedId, onSelect, linkTargets }
         overflow: 'hidden',
         backgroundColor: theme.dark ? 'rgba(255,255,255,0.015)' : 'rgba(16,24,40,0.02)',
       }}
-      accessibilityLabel="Карта mesh-сети"
+      accessibilityLabel="Карта mesh-сети от подключённого носимого модуля"
     >
       {edges.map((edge, index) => (
         <Link
-          key={`edge-${edge.from.module.id}-${edge.to.module.id}-${index}`}
+          key={`edge-${index}`}
           x1={edge.from.x}
           y1={edge.from.y}
           x2={edge.to.x}
           y2={edge.to.y}
-          color={edge.dashed ? theme.textDisabled : theme.accent}
+          color={edge.dashed ? theme.textDisabled : edge.tone === 'success' ? theme.success : theme.accent}
           dashed={edge.dashed}
           width={edge.dashed ? 1 : 1.4}
         />
       ))}
 
-      {/* Центральный узел Hub. */}
-      <View
-        style={{
+      {/* Центр — носимый модуль, который подключён к этому клиенту. */}
+      <Pressable
+        onPress={() => onSelect(focus)}
+        accessibilityRole="button"
+        accessibilityLabel={`${moduleRoleLabel(focus.role)}${
+          focus.publicId ? `, ID ${focus.publicId}` : ''
+        }, подключён к клиенту`}
+        style={({ pressed }) => ({
           position: 'absolute',
-          left: hub.x - (compact ? 19 : 23),
-          top: hub.y - (compact ? 19 : 23),
-          width: compact ? 38 : 46,
-          height: compact ? 38 : 46,
-          borderRadius: 999,
+          left: center.x - centerSize / 2 - 10,
+          top: center.y - centerSize / 2,
+          width: centerSize + 20,
           alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: 1.5,
-          borderColor: theme.accent,
-          backgroundColor: theme.accentSoft,
-        }}
+          opacity: pressed ? 0.8 : 1,
+        })}
       >
-        <Ionicons name="cloud-outline" size={compact ? 17 : 21} color={theme.accent} />
-        <Text
+        <View
           style={{
-            position: 'absolute',
-            top: (compact ? 38 : 46) + 1,
-            color: theme.textSecondary,
-            fontSize: 9,
-            fontWeight: '700',
+            width: centerSize,
+            height: centerSize,
+            borderRadius: 999,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: 2.5,
+            borderColor: centerColor,
+            backgroundColor: theme.accentSoft,
+            ...(ios
+              ? {}
+              : Platform.OS === 'web'
+                ? ({ boxShadow: `0 0 0 4px ${theme.accentSoft}` } as object)
+                : {}),
           }}
         >
-          Hub
+          <Ionicons name="watch-outline" size={compact ? 20 : 24} color={centerColor} />
+          <View
+            style={{
+              position: 'absolute',
+              right: 1,
+              bottom: 1,
+              width: 11,
+              height: 11,
+              borderRadius: 999,
+              backgroundColor: theme.success,
+              borderWidth: 2,
+              borderColor: theme.surfaceElevated,
+            }}
+          />
+        </View>
+        <Text
+          numberOfLines={1}
+          style={{
+            color: theme.textPrimary,
+            fontSize: 9.5,
+            fontWeight: '800',
+            marginTop: 2,
+            maxWidth: 78,
+            textAlign: 'center',
+            fontVariant: ['tabular-nums'] as never,
+          }}
+        >
+          {focus.publicId || moduleRoleLabel(focus.role)}
         </Text>
-      </View>
+        <Text style={{ color: theme.accent, fontSize: 8, fontWeight: '800', marginTop: 1 }}>КЛИЕНТ</Text>
+      </Pressable>
 
-      {placed.map((node) => {
+      {[...innerNodes, ...gatewayNodes].map((node) => {
         const selected = selectedId === node.module.id;
         const status = moduleStatusView(node.module);
+        const gatewayWithInternet = node.kind === 'gateway' && node.module.gateway !== false;
+        const neighbors = Math.max(0, Number(node.module.neighbors ?? 0));
+        const caption = node.kind === 'gateway' ? (gatewayWithInternet ? 'Интернет' : 'без выхода') : `${neighbors} соседей`;
+        const iconSize = compact ? 14 : node.kind === 'gateway' ? 19 : 17;
         return (
           <Pressable
             key={node.module.id}
@@ -358,34 +390,34 @@ export function ModulesNetworkMap({ modules, selectedId, onSelect, linkTargets }
             accessibilityRole="button"
             accessibilityLabel={`${moduleRoleLabel(node.module.role)}${
               node.module.publicId ? `, ID ${node.module.publicId}` : ''
-            }, ${status.text}`}
+            }, ${status.text}${neighbors ? `, ${neighbors} соседей` : ''}`}
             style={({ pressed }) => ({
               position: 'absolute',
-              left: node.x - (compact ? 17 : 21),
-              top: node.y - (compact ? 17 : 21),
-              width: compact ? 34 : 42,
+              left: node.x - 32,
+              top: node.y - node.size / 2,
+              width: 64,
               alignItems: 'center',
-              opacity: pressed ? 0.75 : 1,
+              opacity: pressed ? 0.7 : node.faded ? 0.55 : 1,
             })}
           >
             <View
               style={{
-                width: nodeSize,
-                height: nodeSize,
+                width: node.size,
+                height: node.size,
                 borderRadius: 999,
                 alignItems: 'center',
                 justifyContent: 'center',
                 borderWidth: selected ? 2.5 : 1.5,
                 borderColor: selected ? theme.accent : node.color,
-                backgroundColor: theme.surfaceElevated,
+                backgroundColor: gatewayWithInternet ? theme.warningSoft : theme.surfaceElevated,
                 ...(ios
                   ? {}
-                  : Platform.OS === 'web'
-                    ? ({ boxShadow: selected ? `0 0 0 3px ${theme.accentSoft}` : undefined } as object)
+                  : Platform.OS === 'web' && selected
+                    ? ({ boxShadow: `0 0 0 3px ${theme.accentSoft}` } as object)
                     : {}),
               }}
             >
-              <Ionicons name={node.icon} size={compact ? 14 : 18} color={node.color} />
+              <Ionicons name={node.icon} size={iconSize} color={node.color} />
               <View
                 style={{
                   position: 'absolute',
@@ -394,7 +426,7 @@ export function ModulesNetworkMap({ modules, selectedId, onSelect, linkTargets }
                   width: 9,
                   height: 9,
                   borderRadius: 999,
-                  backgroundColor: node.color,
+                  backgroundColor: node.module.online ? theme.success : node.color,
                   borderWidth: 1.5,
                   borderColor: theme.surfaceElevated,
                 }}
@@ -403,20 +435,59 @@ export function ModulesNetworkMap({ modules, selectedId, onSelect, linkTargets }
             <Text
               numberOfLines={1}
               style={{
-                color: selected ? theme.accent : theme.textDisabled,
+                color: selected ? theme.accent : theme.textPrimary,
                 fontSize: 8.5,
-                fontWeight: selected ? '700' : '500',
+                fontWeight: selected ? '800' : '600',
                 marginTop: 1,
-                maxWidth: 56,
+                maxWidth: 64,
                 textAlign: 'center',
                 fontVariant: ['tabular-nums'] as never,
               }}
             >
               {node.module.publicId || '—'}
             </Text>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 2,
+                maxWidth: 64,
+              }}
+            >
+              {gatewayWithInternet ? (
+                <Ionicons name="globe-outline" size={7} color={theme.warning} />
+              ) : null}
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: gatewayWithInternet ? theme.warning : theme.textDisabled,
+                  fontSize: 7.5,
+                  fontWeight: '600',
+                  textAlign: 'center',
+                }}
+              >
+                {caption}
+              </Text>
+            </View>
           </Pressable>
         );
       })}
+
+      {hidden > 0 ? (
+        <View
+          style={{
+            position: 'absolute',
+            right: 8,
+            bottom: 6,
+            paddingHorizontal: 7,
+            paddingVertical: 2,
+            borderRadius: 999,
+            backgroundColor: theme.surfacePressed,
+          }}
+        >
+          <Text style={{ color: theme.textSecondary, fontSize: 9, fontWeight: '700' }}>+{hidden} узлов</Text>
+        </View>
+      ) : null}
     </View>
   );
 }

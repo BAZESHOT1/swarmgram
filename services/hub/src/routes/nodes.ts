@@ -8,6 +8,7 @@ import { requireAdmin, requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { hashCode, randomCode, signToken, uuid, verifyToken } from '../crypto.js';
 import { one, query } from '../db.js';
+import { drainNode } from '../drain.js';
 import { nodeEvent, resolveSubnet } from '../nodes.js';
 import { badRequest, clientIp, forbidden, log, notFound, rateLimit, str, unauthorized } from '../util.js';
 
@@ -187,7 +188,13 @@ const nodeRoutes: FastifyPluginAsync = async (app) => {
                 subnet = COALESCE(NULLIF($6,''), subnet),
                 last_ip = $7,
                 hw_hash = COALESCE(NULLIF($8,''), hw_hash),
-                status = CASE WHEN status IN ('pending','degraded','offline') THEN 'online' ELSE status END
+                status = CASE
+                  WHEN status = 'draining' THEN status
+                  WHEN status IN ('pending','degraded') THEN 'online'
+                  -- планово выведенный узел не должен «воскресать» от heartbeat
+                  WHEN status = 'offline' AND drain_requested_at IS NULL THEN 'online'
+                  ELSE status
+                END
           WHERE id = $1`,
         [nodeId, freeBytes, usedBytes, String(body.version ?? ''), String(body.publicUrl ?? ''), subnet, ip, hwHash],
       );
@@ -202,10 +209,18 @@ const nodeRoutes: FastifyPluginAsync = async (app) => {
         [nodeId, usedBytes, config.nodeHeartbeatIntervalSec],
       );
 
-      const node = await one<{ status: string; owner_id: string | null }>('SELECT status, owner_id FROM nodes WHERE id = $1', [nodeId]);
+      const node = await one<{ status: string; owner_id: string | null; drain_requested_at: string | null }>(
+        'SELECT status, owner_id, drain_requested_at FROM nodes WHERE id = $1',
+        [nodeId],
+      );
+      const status = node?.status ?? 'online';
       return reply.send({
         ok: true,
-        status: node?.status ?? 'online',
+        status,
+        // плановый вывод: узел больше не принимает новые фрагменты
+        drain: status === 'draining',
+        // вывод завершён: можно удалять локальные фрагменты и выключаться
+        stop: status === 'offline' && node?.drain_requested_at != null,
         heartbeatIntervalSec: config.nodeHeartbeatIntervalSec,
         serverTime: new Date().toISOString(),
       });
@@ -250,6 +265,7 @@ const nodeRoutes: FastifyPluginAsync = async (app) => {
     const rows = await query(
       `SELECT n.id, n.name, n.public_url, n.status, n.region, n.reputation, n.capacity_bytes, n.used_bytes,
               n.free_bytes, n.total_puts, n.total_gets, n.bytes_served, n.last_heartbeat_at, n.registered_at,
+              n.drain_requested_at, n.drained_at,
               COALESCE((SELECT SUM(credits) FROM node_contributions nc WHERE nc.node_id = n.id),0) AS credits
          FROM nodes n WHERE n.owner_id = $1 ORDER BY n.registered_at DESC`,
       [me],
@@ -272,6 +288,53 @@ const nodeRoutes: FastifyPluginAsync = async (app) => {
       [id],
     );
     return reply.send({ node, events, contributions: contrib });
+  });
+
+  /**
+   * Плавный вывод узла: реплики переносятся на живые узлы, после чего узел
+   * гасится. Ответ отдаём сразу (202), миграция идёт в фоне.
+   * Идемпотентно: повторный вызов не создаёт дублей и не ломает вывод.
+   */
+  app.post('/nodes/:id/drain', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const node = await one<{
+      owner_id: string | null;
+      status: string;
+      drain_requested_at: string | null;
+      drained_at: string | null;
+    }>(
+      'SELECT owner_id, status, drain_requested_at, drained_at FROM nodes WHERE id = $1',
+      [id],
+    );
+    if (!node) throw notFound('node');
+    if (node.owner_id !== req.auth!.userId) throw forbidden('not_owner');
+    if (node.status === 'banned') throw forbidden('node_banned');
+
+    // уже выведен — просто подтверждаем результат
+    if (node.status === 'offline' && node.drained_at) {
+      return reply.code(202).send({ ok: true, status: 'offline' });
+    }
+
+    // событие пишем только на первый запрос, повторный вызов — идемпотентен
+    const alreadyRequested = node.status === 'draining' || node.drain_requested_at !== null;
+
+    await query(
+      `UPDATE nodes
+          SET status = 'draining',
+              drain_requested_at = COALESCE(drain_requested_at, now())
+        WHERE id = $1`,
+      [id],
+    );
+
+    if (!alreadyRequested) {
+      await nodeEvent(id, 'drain_requested', 'requested by owner');
+      log('info', 'node_drain_requested', { nodeId: id, ownerId: req.auth!.userId });
+    }
+
+    // Не ждём миграцию: ответ уходит сразу, работа продолжается в фоне.
+    void drainNode(id);
+
+    return reply.code(202).send({ ok: true, status: 'draining' });
   });
 
   app.post('/nodes/:id/status', { onRequest: [requireAuth()] }, async (req, reply) => {

@@ -46,6 +46,8 @@ interface ModuleContextValue {
   /** Отправить SSID/пароль Wi-Fi активному шлюзу (USB/BLE). Пароль не логируется. */
   configureGateway: (ssid: string, password: string) => Promise<boolean>;
   clearError: () => void;
+  /** Последняя ошибка подключения синхронно (контекст может быть ещё не обновлён). */
+  getLastError: () => string | null;
   /** Ручной повтор автовосстановления (например, после включения модуля). */
   restore: () => Promise<void>;
 }
@@ -69,12 +71,14 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const setMeshPeer = useStore((s) => s.setMeshPeer);
   const setTransportModule = useStore((s) => s.setTransportModule);
   const setTransportGateway = useStore((s) => s.setTransportGateway);
+  const setNearbyModules = useStore((s) => s.setNearbyModules);
 
   const [connection, setConnection] = useState<ModuleConnection | null>(null);
   const [info, setInfo] = useState<ModuleInfo | null>(null);
   const [busy, setBusy] = useState<ConnectionKind | null>(null);
   const [configuring, setConfiguring] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastErrorRef = useRef<string | null>(null);
 
   const connectionRef = useRef<ModuleConnection | null>(null);
   const infoRef = useRef<ModuleInfo | null>(null);
@@ -85,8 +89,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
   const mountedRef = useRef(true);
+  const connectedToastRef = useRef('');
+  const foundToastRef = useRef('');
 
-  const clearError = useCallback(() => setError(null), []);
+  const clearError = useCallback(() => {
+    lastErrorRef.current = null;
+    setError(null);
+  }, []);
 
   const detachCurrent = useCallback(async () => {
     unsubEnvelopeRef.current?.();
@@ -228,6 +237,15 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
       }
       refreshLists();
+      // Уведомление о подключении (не чаще раза в 5 минут на устройство).
+      const deviceKey = `${nextInfo.hardwareId}:${Math.floor(Date.now() / 300_000)}`;
+      if (connectedToastRef.current !== deviceKey) {
+        connectedToastRef.current = deviceKey;
+        useStore.getState().pushToast({
+          kind: 'success',
+          message: `Модуль подключён${nextInfo.publicId ? ` · ${nextInfo.publicId}` : ''}`,
+        });
+      }
     },
     [refreshLists, setTransportModule],
   );
@@ -256,6 +274,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         await transport.close().catch(() => undefined);
         const message =
           connectError instanceof Error ? connectError.message : 'Не удалось подключить модуль.';
+        lastErrorRef.current = message;
         if (mountedRef.current) setError(message);
         return null;
       } finally {
@@ -336,6 +355,24 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     const last = await readLastModule(kv);
     lastRecordRef.current = last;
     if (!last?.hardwareId) {
+      // Нет сохранённого модуля — ищем рядом и предлагаем список в «Модулях».
+      if (Platform.OS !== 'web') {
+        const transport = getModuleTransport('ble');
+        if (transport.scan) {
+          const nearby = await transport.scan(2500).catch(() => []);
+          setNearbyModules(nearby);
+          if (nearby[0]) {
+            const key = `nearby:${nearby[0].id}:${Math.floor(Date.now() / 300_000)}`;
+            if (foundToastRef.current !== key) {
+              foundToastRef.current = key;
+              useStore.getState().pushToast({
+                kind: 'info',
+                message: `Найден модуль ${nearby[0].name}. Откройте «Модули», чтобы подключить.`,
+              });
+            }
+          }
+        }
+      }
       inFlightRef.current = false;
       return;
     }
@@ -356,7 +393,20 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const transport = getModuleTransport(kind);
         if (!transport.supported || !transport.openKnown) continue;
         try {
-          const nextInfo = await transport.openKnown(last.hardwareId, Platform.OS === 'web' ? 3000 : 4000);
+          // На смартфоне сначала короткий скан, чтобы показать «найден модуль».
+          if (Platform.OS !== 'web' && kind === 'ble' && transport.scan) {
+            const nearby = await transport.scan(2200).catch(() => []);
+            setNearbyModules(nearby);
+            const match = nearby[0];
+            if (match) {
+              const key = `${match.id}:${Math.floor(Date.now() / 300_000)}`;
+              if (foundToastRef.current !== key) {
+                foundToastRef.current = key;
+                useStore.getState().pushToast({ kind: 'info', message: `Найден модуль ${match.name}` });
+              }
+            }
+          }
+          const nextInfo = await transport.openKnown(last.hardwareId, Platform.OS === 'web' ? 3000 : 5000);
           if (nextInfo) {
             await adopt(transport, nextInfo);
             return;
@@ -371,7 +421,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       inFlightRef.current = false;
       if (mountedRef.current) setBusy(null);
     }
-  }, [adopt]);
+  }, [adopt, setNearbyModules]);
 
   // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
   useEffect(() => {
@@ -385,6 +435,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       sub.remove();
     };
   }, [session?.userId, restore, session]);
+
+  // Пока приложение открыто на смартфоне — периодически ищем носимый модуль
+  // и подключаемся к ранее привязанному. В фоне не сканируем (экономия батареи).
+  useEffect(() => {
+    if (!session || Platform.OS === 'web') return undefined;
+    const timer = setInterval(() => {
+      if (AppState.currentState !== 'active') return;
+      if (connectionRef.current || inFlightRef.current) return;
+      void restore();
+    }, 35_000);
+    return () => clearInterval(timer);
+  }, [session, restore]);
 
   // При выходе из аккаунта закрываем модуль, чтобы не висеть с чужой привязкой.
   useEffect(() => {
@@ -422,6 +484,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       disconnect,
       configureGateway,
       clearError,
+      getLastError: () => lastErrorRef.current,
       restore,
     }),
     [connection, info, busy, configuring, error, connectUsb, connectBle, disconnect, configureGateway, clearError, restore],

@@ -131,6 +131,11 @@ export function PhoneDock() {
 
   /** Переход по разделу: навигация без блокировки по «уже активен». */
   const navigateTo = (href: string) => {
+    if (href === '/chats') {
+      // Возврат из «Настроек» в «Чаты» — слева; в остальных случаях обычно справа.
+      router.navigate({ pathname: '/chats', params: { __nav: activeId === 'settings' ? 'left' : 'right' } } as never);
+      return;
+    }
     if (typeof router.navigate === 'function') router.navigate(href as never);
     else router.push(href as never);
   };

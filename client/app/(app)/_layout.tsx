@@ -33,7 +33,15 @@ export default function AppLayout() {
           animationDuration: 240,
         }}
       >
-        <Stack.Screen name="chats" />
+        <Stack.Screen
+          name="chats"
+          options={({ route }) => ({
+            // Из «Настроек» в «Чаты» на телефоне — анимация слева.
+            animation: (route.params as { __nav?: string } | undefined)?.__nav === 'left'
+              ? 'slide_from_left'
+              : 'slide_from_right',
+          })}
+        />
         <Stack.Screen name="settings" />
         <Stack.Screen name="settings/params" />
         <Stack.Screen name="settings/notifications" />
