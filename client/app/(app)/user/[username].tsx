@@ -1,5 +1,5 @@
 import React from 'react';
-import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -28,12 +28,23 @@ import {
   useSetBlock,
   useReportUser,
   useCreateChat,
+  useUpdateProfile,
   humanError,
 } from '../../../src/data/queries';
 import * as api from '../../../src/data/api';
 import type { UserProfile } from '../../../src/data/api';
 import { useStore } from '../../../src/state/useStore';
 import { formatBytes } from '../../../src/components/settings/SettingsWidgets';
+
+type EditField = 'displayName' | 'status' | 'bio' | 'location' | 'birthday';
+
+const EDIT_LABELS: Record<EditField, string> = {
+  displayName: 'Имя',
+  status: 'Статус',
+  bio: 'О себе',
+  location: 'Адрес',
+  birthday: 'День рождения',
+};
 
 /** «был(а) недавно» / точная дата последнего визита. */
 function lastSeenLabel(iso: string | null): string {
@@ -78,6 +89,7 @@ export default function UserProfileScreen() {
   const setBlock = useSetBlock();
   const reportUser = useReportUser();
   const createChat = useCreateChat();
+  const updateProfile = useUpdateProfile();
 
   const [refreshing, setRefreshing] = React.useState(false);
   const [reportOpen, setReportOpen] = React.useState(false);
@@ -85,6 +97,8 @@ export default function UserProfileScreen() {
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [qrOpen, setQrOpen] = React.useState(false);
   const [creating, setCreating] = React.useState<'' | 'server' | 'e2e'>('');
+  const [editField, setEditField] = React.useState<EditField | null>(null);
+  const [editValue, setEditValue] = React.useState('');
 
   const isSelf = Boolean(profile?.isSelf);
   const blockedByMe = Boolean(profile?.blockedByMe);
@@ -315,6 +329,27 @@ export default function UserProfileScreen() {
     });
   }
 
+  const startEdit = (field: EditField, value: string) => {
+    setEditField(field);
+    setEditValue(value ?? '');
+  };
+
+  const saveEdit = async () => {
+    if (!editField) return;
+    const value = editValue.trim();
+    try {
+      const patch =
+        editField === 'birthday'
+          ? { birthday: value || null }
+          : { [editField]: value };
+      await updateProfile.mutateAsync(patch as never);
+      pushToast({ kind: 'success', message: 'Профиль обновлён' });
+      setEditField(null);
+    } catch (e) {
+      pushToast({ kind: 'error', message: humanError(e) });
+    }
+  };
+
   return (
     <>
       <ScrollView
@@ -358,6 +393,7 @@ export default function UserProfileScreen() {
           }}
           onOpenChat={(id) => router.push(`/chat/${id}` as never)}
           forceMobile={compactParam === '1'}
+          onEdit={startEdit}
         />
       </ScrollView>
 
@@ -398,245 +434,53 @@ export default function UserProfileScreen() {
         onClose={() => setBlockOpen(false)}
         onConfirm={() => void toggleBlock()}
       />
-    </>
-  );
 
-  return (
-    <>
-      <ScrollView
-        contentContainerStyle={
-          compact
-            ? { paddingBottom: 120, flexGrow: 1, backgroundColor: bannerPreset(banner).colors[1] }
-            : { paddingBottom: 120 }
-        }
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={() => void refreshProfile()}
-            tintColor={theme.accent}
-            colors={[theme.accent]}
-          />
-        }
-      >
-        <View style={styles.center}>
-          {compact ? (
-            <MobileProfile
-              profile={profile}
-              isSelf={isSelf}
-              title={title}
-              username={profile.username}
-              avatar={avatar}
-              banner={banner}
-              roleLabel={roleLabel}
-              status={status}
-              statusText={statusText}
-              online={isSelf ? true : profile.online}
-              bio={profile.bio}
-              links={links}
-              location={location}
-              birthday={birthday}
-              badgeFacts={badgeFacts}
-              actions={mobileActions}
-              blockedByMe={blockedByMe}
-              blockedMe={blockedMe}
-              nodeOnline={nodeOnline}
-              moduleOnline={moduleOnline}
-              onBack={() => router.back()}
-              onQr={() => setQrOpen(true)}
-              onShare={() => void share()}
-              onCopyUsername={() => {
-                void copyText(profile.username)
-                  .then(() => pushToast({ kind: 'success', message: 'Username скопирован' }))
-                  .catch(() => pushToast({ kind: 'error', message: 'Не удалось скопировать username' }));
+      {/* Inline-редактирование полей профиля. */}
+      <Modal visible={Boolean(editField)} transparent animationType="fade" onRequestClose={() => setEditField(null)}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', padding: 20 }} onPress={() => setEditField(null)}>
+          <Pressable
+            onPress={(event) => event.stopPropagation()}
+            style={{ backgroundColor: theme.surfaceElevated, borderRadius: 18, borderWidth: 1, borderColor: theme.line, padding: 16 }}
+          >
+            <Text style={{ color: theme.textPrimary, fontSize: 17, fontWeight: '800' }}>
+              {editField ? EDIT_LABELS[editField] : ''}
+            </Text>
+            <TextInput
+              value={editValue}
+              onChangeText={setEditValue}
+              autoFocus
+              multiline={editField === 'bio'}
+              placeholder={editField === 'birthday' ? 'ГГГГ-ММ-ДД' : editField === 'status' ? 'Короткий статус' : ''}
+              placeholderTextColor={theme.textDisabled}
+              keyboardType={editField === 'birthday' ? 'numbers-and-punctuation' : 'default'}
+              style={{
+                marginTop: 12,
+                minHeight: editField === 'bio' ? 110 : 46,
+                maxHeight: 220,
+                borderWidth: 1,
+                borderColor: theme.line,
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                color: theme.textPrimary,
+                backgroundColor: theme.surface,
+                textAlignVertical: editField === 'bio' ? 'top' : 'center',
               }}
-              onOpenChat={(id) => router.push(`/chat/${id}` as never)}
             />
-          ) : (
-          <>
-          <ProfileHero
-            name={title}
-            username={profile.username}
-            avatar={avatar}
-            banner={banner}
-            location={location}
-            birthday={birthday}
-            bio={isSelf ? undefined : profile.bio}
-            status={status || undefined}
-            statusText={statusText}
-            online={isSelf ? true : profile.online}
-            isSelf={isSelf}
-            nodeOnline={nodeOnline}
-            moduleOnline={moduleOnline}
-            onBack={() => router.back()}
-            onShare={() => void share()}
-            onQr={() => setQrOpen(true)}
-            onEdit={isSelf ? () => router.push(`/user/${profile.username}/edit` as never) : undefined}
-          />
-
-          <View style={styles.body}>
-            {blockedByMe ? (
-              <View style={[styles.notice, { backgroundColor: theme.dangerSoft, borderColor: theme.danger }]}>
-                <Ionicons name="ban" size={17} color={theme.danger} />
-                <Text style={{ color: theme.danger, fontSize: 12.5, flex: 1, fontWeight: '600' }}>
-                  Вы заблокировали этого пользователя. Переписка недоступна.
-                </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
+              <View style={{ flex: 1 }}>
+                <Btn title="Отмена" size="s" variant="ghost" onPress={() => setEditField(null)} />
               </View>
-            ) : null}
-            {!blockedByMe && blockedMe ? (
-              <View style={[styles.notice, { backgroundColor: theme.warningSoft, borderColor: theme.warning }]}>
-                <Ionicons name="lock-closed-outline" size={17} color={theme.warning} />
-                <Text style={{ color: theme.warning, fontSize: 12.5, flex: 1, fontWeight: '600' }}>
-                  Пользователь ограничил возможность писать ему.
-                </Text>
+              <View style={{ flex: 1 }}>
+                <Btn title="Сохранить" size="s" loading={updateProfile.isPending} onPress={() => void saveEdit()} />
               </View>
-            ) : null}
-
-            {isSelf ? (
-              <OverviewSelf
-                profile={profile}
-                links={links}
-                badgeFacts={badgeFacts}
-                onQr={() => setQrOpen(true)}
-                onShare={() => void share()}
-                onCopy={() => void copyLink()}
-                reduced={reduced}
-              />
-            ) : (
-              <>
-                {/* -------------------------------------------------- чужой профиль */}
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10, scale: 0.99 }}
-                  animate={{ opacity: 1, translateY: 0, scale: 1 }}
-                  transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs }}
-                  style={{ marginTop: 12 }}
-                >
-                  <GlassCard>
-                    <GlassSectionTitle title={links?.length ? 'Ссылки' : 'Аккаунт'} />
-                    {links?.length ? (
-                      <ProfileLinks links={links} />
-                    ) : (
-                      <Text style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                        Пользователь не добавил ссылок.
-                      </Text>
-                    )}
-                  </GlassCard>
-                </MotiView>
-
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10, scale: 0.99 }}
-                  animate={{ opacity: 1, translateY: 0, scale: 1 }}
-                  transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs * 2 }}
-                  style={{ marginTop: 12 }}
-                >
-                  <ProfileBadges facts={badgeFacts} />
-                </MotiView>
-
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10, scale: 0.99 }}
-                  animate={{ opacity: 1, translateY: 0, scale: 1 }}
-                  transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs * 3 }}
-                  style={{ marginTop: 12 }}
-                >
-                  <ProfileActions actions={actions} />
-                </MotiView>
-
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10, scale: 0.99 }}
-                  animate={{ opacity: 1, translateY: 0, scale: 1 }}
-                  transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs * 4 }}
-                  style={{ marginTop: 12 }}
-                >
-                  <GlassCard>
-                    <GlassSectionTitle
-                      title="Общие чаты"
-                      right={<Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>{profile.sharedChats.length}</Text>}
-                    />
-                    <SharedChatsList chats={profile.sharedChats} onOpen={(id) => router.push(`/chat/${id}` as never)} />
-                  </GlassCard>
-                </MotiView>
-
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10 }}
-                  animate={{ opacity: 1, translateY: 0 }}
-                  transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs * 5 }}
-                  style={{ marginTop: 12, gap: 8 }}
-                >
-                  <PressableScale
-                    onPress={() => setBlockOpen(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel={blockedByMe ? 'Разблокировать пользователя' : 'Заблокировать пользователя'}
-                    style={[
-                      styles.dangerRow,
-                      {
-                        backgroundColor: blockedByMe ? theme.successSoft : theme.dangerSoft,
-                        borderColor: blockedByMe ? theme.success : theme.danger,
-                      },
-                    ]}
-                  >
-                    <Ionicons name={blockedByMe ? 'lock-open-outline' : 'ban-outline'} size={17} color={blockedByMe ? theme.success : theme.danger} />
-                    <Text style={{ color: blockedByMe ? theme.success : theme.danger, fontSize: 13.5, fontWeight: '600', flex: 1 }}>
-                      {blockedByMe ? 'Разблокировать' : 'Заблокировать'}
-                    </Text>
-                  </PressableScale>
-                  <PressableScale
-                    onPress={() => setReportOpen(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Пожаловаться на пользователя"
-                    style={[styles.dangerRow, { backgroundColor: 'transparent', borderColor: theme.line }]}
-                  >
-                    <Ionicons name="flag-outline" size={17} color={theme.textSecondary} />
-                    <Text style={{ color: theme.textSecondary, fontSize: 13.5, fontWeight: '600', flex: 1 }}>Пожаловаться</Text>
-                    <Ionicons name="chevron-forward" size={15} color={theme.textDisabled} />
-                  </PressableScale>
-                </MotiView>
-              </>
-            )}
-          </View>
-          </>
-          )}
-        </View>
-      </ScrollView>
-
-      {!isSelf ? (
-        <InviteToChatModal
-          visible={inviteOpen}
-          username={profile.username}
-          displayName={profile.displayName}
-          onClose={() => setInviteOpen(false)}
-        />
-      ) : null}
-
-      <ProfileQrModal
-        visible={qrOpen}
-        username={profile.username}
-        displayName={profile.displayName}
-        onClose={() => setQrOpen(false)}
-      />
-
-      <ReportModal
-        visible={reportOpen}
-        loading={reportUser.isPending}
-        onClose={() => setReportOpen(false)}
-        onSubmit={(reason, note) => void sendReport(reason, note)}
-      />
-
-      <ConfirmModal
-        visible={blockOpen}
-        title={blockedByMe ? 'Разблокировать пользователя?' : 'Заблокировать пользователя?'}
-        message={
-          blockedByMe
-            ? 'Пользователь снова сможет писать вам и видеть ваш профиль.'
-            : 'Пользователь не сможет писать вам, а переписка будет скрыта. Разблокировать можно в любой момент.'
-        }
-        confirmLabel={blockedByMe ? 'Разблокировать' : 'Заблокировать'}
-        danger={!blockedByMe}
-        loading={setBlock.isPending}
-        onClose={() => setBlockOpen(false)}
-        onConfirm={() => void toggleBlock()}
-      />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </>
   );
+
 }
 
 /* --------------------------------------------------------- свой профиль -- */
@@ -1155,6 +999,7 @@ function BrightProfile({
   onCopyUsername,
   onOpenChat,
   forceMobile,
+  onEdit,
 }: {
   profile: UserProfile;
   isSelf: boolean;
@@ -1180,6 +1025,7 @@ function BrightProfile({
   onCopyUsername: () => void;
   onOpenChat: (id: string) => void;
   forceMobile?: boolean;
+  onEdit?: (field: EditField, value: string) => void;
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -1203,14 +1049,21 @@ function BrightProfile({
       <Avatar
         name={title || '?'}
         size={desktop ? 132 : 112}
-        radius={24}
+        radius={10}
         avatar={avatar ?? null}
         nodeOnline={nodeOnline}
         moduleOnline={moduleOnline}
       />
-      <Text style={[styles.bName, desktop ? { textAlign: 'left' } : null]} numberOfLines={2}>
-        {title || 'Пользователь'}
-      </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: desktop ? 'flex-start' : 'center' }}>
+        <Text style={[styles.bName, { marginTop: 0, textAlign: desktop ? 'left' : 'center' }]} numberOfLines={2}>
+          {title || 'Пользователь'}
+        </Text>
+        {isSelf && onEdit ? (
+          <Pressable onPress={() => onEdit('displayName', title)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить имя">
+            <Ionicons name="pencil-outline" size={16} color="rgba(255,255,255,0.75)" />
+          </Pressable>
+        ) : null}
+      </View>
       <Text style={styles.bUsername} numberOfLines={1}>
         @{profile.username}
       </Text>
@@ -1305,13 +1158,35 @@ function BrightProfile({
           <View style={styles.bInfoRow}>
             <Ionicons name="location-outline" size={16} color={theme.textSecondary} />
             <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{location}</Text>
+            {isSelf && onEdit ? (
+              <Pressable onPress={() => onEdit('location', location)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить адрес">
+                <Ionicons name="pencil-outline" size={14} color={theme.accent} />
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
         {birthday ? (
           <View style={styles.bInfoRow}>
             <Ionicons name="gift-outline" size={16} color={theme.textSecondary} />
             <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{birthdayLabel(birthday)}</Text>
+            {isSelf && onEdit ? (
+              <Pressable onPress={() => onEdit('birthday', birthday ?? '')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить день рождения">
+                <Ionicons name="pencil-outline" size={14} color={theme.accent} />
+              </Pressable>
+            ) : null}
           </View>
+        ) : null}
+        {isSelf && onEdit && !location ? (
+          <Pressable onPress={() => onEdit('location', '')} accessibilityRole="button" accessibilityLabel="Добавить адрес" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }}>
+            <Ionicons name="add-circle-outline" size={16} color={theme.accent} />
+            <Text style={{ color: theme.accent, fontSize: 13 }}>Добавить адрес</Text>
+          </Pressable>
+        ) : null}
+        {isSelf && onEdit && !birthday ? (
+          <Pressable onPress={() => onEdit('birthday', '')} accessibilityRole="button" accessibilityLabel="Добавить день рождения" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }}>
+            <Ionicons name="add-circle-outline" size={16} color={theme.accent} />
+            <Text style={{ color: theme.accent, fontSize: 13 }}>Добавить день рождения</Text>
+          </Pressable>
         ) : null}
         <PressableScale
           onPress={onQr}
@@ -1473,7 +1348,17 @@ function BrightProfile({
           <View style={styles.bDesktopRow}>
             <View style={styles.bDesktopLeft}>{identity}</View>
             <View style={styles.bDesktopRight}>
-              <BSection title="О себе" icon="reader-outline">
+              <BSection
+                title="О себе"
+                icon="reader-outline"
+                right={
+                  isSelf && onEdit ? (
+                    <Pressable onPress={() => onEdit('bio', bio)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить описание">
+                      <Ionicons name="pencil-outline" size={15} color={theme.accent} />
+                    </Pressable>
+                  ) : undefined
+                }
+              >
                 {bio ? (
                   <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
                 ) : (
@@ -1482,8 +1367,13 @@ function BrightProfile({
                   </Text>
                 )}
                 {status ? (
-                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent }}>
-                    <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>{status}</Text>
+                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18, flex: 1 }}>{status}</Text>
+                    {isSelf && onEdit ? (
+                      <Pressable onPress={() => onEdit('status', status)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить статус">
+                        <Ionicons name="pencil-outline" size={14} color={theme.accent} />
+                      </Pressable>
+                    ) : null}
                   </View>
                 ) : null}
               </BSection>
@@ -1496,7 +1386,17 @@ function BrightProfile({
         ) : (
           <View style={styles.bMobile}>
             <View style={{ paddingTop: 18, paddingBottom: 16 }}>{identity}</View>
-            <BSection title="О себе" icon="reader-outline">
+            <BSection
+              title="О себе"
+              icon="reader-outline"
+              right={
+                isSelf && onEdit ? (
+                  <Pressable onPress={() => onEdit('bio', bio)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить описание">
+                    <Ionicons name="pencil-outline" size={15} color={theme.accent} />
+                  </Pressable>
+                ) : undefined
+              }
+            >
               {bio ? (
                 <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
               ) : (
@@ -1505,8 +1405,13 @@ function BrightProfile({
                 </Text>
               )}
               {status ? (
-                <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent }}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>{status}</Text>
+                <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18, flex: 1 }}>{status}</Text>
+                  {isSelf && onEdit ? (
+                    <Pressable onPress={() => onEdit('status', status)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить статус">
+                      <Ionicons name="pencil-outline" size={14} color={theme.accent} />
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : null}
             </BSection>

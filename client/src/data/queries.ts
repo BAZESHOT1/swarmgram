@@ -346,7 +346,13 @@ export function useUserProfile(username: string | null) {
 export function useUpdateProfile() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { displayName?: string; bio?: string; status?: string }) => api.api.patchMe(input),
+    mutationFn: (input: {
+      displayName?: string;
+      bio?: string;
+      status?: string;
+      location?: string;
+      birthday?: string | null;
+    }) => api.api.patchMe(input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['me'] });
       void qc.invalidateQueries({ queryKey: ['profile'] });
