@@ -429,7 +429,14 @@ function RealtimeBridge() {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') reconnectNow();
     };
 
-    if (typeof window !== 'undefined') {
+    // В React Native есть глобальный window, но без addEventListener.
+    const hasDomEvents =
+      typeof window !== 'undefined' &&
+      typeof (window as unknown as { addEventListener?: unknown }).addEventListener === 'function' &&
+      typeof document !== 'undefined' &&
+      typeof (document as unknown as { addEventListener?: unknown }).addEventListener === 'function';
+
+    if (hasDomEvents) {
       window.addEventListener('online', onBrowserOnline);
       document.addEventListener('visibilitychange', onVisibility);
     }
@@ -492,7 +499,7 @@ function RealtimeBridge() {
       unsubMesh();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (fallbackTimer) clearInterval(fallbackTimer);
-      if (typeof window !== 'undefined') {
+      if (hasDomEvents) {
         window.removeEventListener('online', onBrowserOnline);
         document.removeEventListener('visibilitychange', onVisibility);
       }

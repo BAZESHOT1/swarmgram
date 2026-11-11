@@ -4,7 +4,7 @@
  * RU/EN для экранов авторизации.
  */
 import React from 'react';
-import { Modal, Pressable, Switch, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useRouter } from 'expo-router';
@@ -12,7 +12,6 @@ import { Btn } from '../Btn';
 import { AuthShell } from '../AuthShell';
 import { useTheme } from '../../theme/useTheme';
 import { useStore } from '../../state/useStore';
-import { kv } from '../../crypto/storage';
 import { login as doLogin, register as doRegister } from '../../data/auth';
 import * as api from '../../data/api';
 import { humanError } from '../../data/queries';
@@ -25,8 +24,7 @@ const T = {
   ru: {
     login: 'Вход',
     register: 'Регистрация',
-    loginSub: 'Конверты шифруются на устройстве. Маршруты — только на сервере.',
-    registerSub: 'Username — публичный идентификатор. Смена не чаще раза в 90 дней.',
+    authTitle: 'Авторизация',
     identifier: 'Email или username',
     password: 'Пароль',
     newPassword: 'Пароль (минимум 8 символов)',
@@ -34,7 +32,6 @@ const T = {
     email: 'Email',
     username: 'Username (a-z, 0-9, _)',
     displayName: 'Отображаемое имя',
-    remember: 'Запомнить меня',
     forgot: 'Забыли пароль?',
     submitLogin: 'Войти',
     submitRegister: 'Создать аккаунт',
@@ -60,8 +57,7 @@ const T = {
   en: {
     login: 'Sign in',
     register: 'Sign up',
-    loginSub: 'Envelopes are encrypted on device. Routes stay on the server.',
-    registerSub: 'Username is public. It can be changed once every 90 days.',
+    authTitle: 'Authorization',
     identifier: 'Email or username',
     password: 'Password',
     newPassword: 'Password (min 8 characters)',
@@ -69,7 +65,6 @@ const T = {
     email: 'Email',
     username: 'Username (a-z, 0-9, _)',
     displayName: 'Display name',
-    remember: 'Remember me',
     forgot: 'Forgot password?',
     submitLogin: 'Sign in',
     submitRegister: 'Create account',
@@ -173,7 +168,6 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [showPassword, setShowPassword] = React.useState(false);
-  const [remember, setRemember] = React.useState(true);
 
   const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
@@ -192,14 +186,6 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
   const [resetPassword, setResetPassword] = React.useState('');
   const [resetBusy, setResetBusy] = React.useState(false);
   const [resetNote, setResetNote] = React.useState('');
-
-  React.useEffect(() => {
-    void kv.get('sg:auth-remember').then((v) => setRemember(v !== '0')).catch(() => undefined);
-  }, []);
-
-  React.useEffect(() => {
-    void kv.set('sg:auth-remember', remember ? '1' : '0').catch(() => undefined);
-  }, [remember]);
 
   // Автогенерация username из email, пока пользователь не изменил вручную.
   React.useEffect(() => {
@@ -303,13 +289,24 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
 
   const score = passwordScore(password);
   const strengthColor = score >= 4 ? theme.success : score >= 3 ? theme.warning : theme.danger;
+  const loginValid = identifier.trim().length >= 3 && password.length > 0;
+  const registerValid =
+    /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim()) &&
+    USERNAME_RE.test(username) &&
+    available !== false &&
+    password.length >= 8 &&
+    confirm === password &&
+    terms;
 
   return (
     <AuthShell maxWidth={470}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 21 }}>
-          {mode === 'login' ? t.login : t.register}
-        </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <View>
+          <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 24, letterSpacing: 0.2 }}>SwarmGram</Text>
+          <Text style={{ color: theme.accent, fontWeight: '700', fontSize: 14, marginTop: 2 }}>
+            {mode === 'login' ? t.authTitle : t.register}
+          </Text>
+        </View>
         <View style={{ flexDirection: 'row', gap: 3, backgroundColor: theme.surfacePressed, borderRadius: 999, padding: 3 }}>
           {(['ru', 'en'] as const).map((value) => (
             <Pressable
@@ -327,9 +324,7 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
         </View>
       </View>
 
-      <Text style={{ color: theme.textSecondary, fontSize: 12.5, marginTop: 4, marginBottom: 10, lineHeight: 18 }}>
-        {mode === 'login' ? t.loginSub : t.registerSub}
-      </Text>
+      <View style={{ height: 10 }} />
 
       <View style={{ flexDirection: 'row', backgroundColor: theme.surfacePressed, borderRadius: 14, padding: 3, marginBottom: 4 }}>
         {(['login', 'register'] as const).map((value) => (
@@ -377,24 +372,14 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
               autoComplete="current-password"
               textContentType="password"
             />
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Switch
-                  value={remember}
-                  onValueChange={setRemember}
-                  trackColor={{ false: theme.surfacePressed, true: theme.accent }}
-                  thumbColor={theme.onAccent}
-                  accessibilityLabel={t.remember}
-                />
-                <Text style={{ color: theme.textSecondary, fontSize: 12.5 }}>{t.remember}</Text>
-              </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 12 }}>
               <Pressable onPress={() => { setResetEmail(identifier.includes('@') ? identifier : ''); setResetOpen(true); }} hitSlop={6}>
                 <Text style={{ color: theme.accent, fontSize: 12.5, fontWeight: '600' }}>{t.forgot}</Text>
               </Pressable>
             </View>
             {error ? <Text style={{ color: theme.danger, fontSize: 12.5, marginTop: 10 }}>{error}</Text> : null}
             <View style={{ marginTop: 16 }}>
-              <Btn title={t.submitLogin} loading={busy} onPress={() => void submitLogin()} />
+              <Btn title={t.submitLogin} loading={busy} disabled={!loginValid} onPress={() => void submitLogin()} />
             </View>
             <Pressable onPress={() => { setMode('register'); setError(''); }} style={{ marginTop: 14, alignItems: 'center' }}>
               <Text style={{ color: theme.accent, fontSize: 13.5 }}>{t.toRegister}</Text>
@@ -469,7 +454,7 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
             </Pressable>
             {error ? <Text style={{ color: theme.danger, fontSize: 12.5, marginTop: 10 }}>{error}</Text> : null}
             <View style={{ marginTop: 15 }}>
-              <Btn title={t.submitRegister} loading={busy} onPress={() => void submitRegister()} />
+              <Btn title={t.submitRegister} loading={busy} disabled={!registerValid} onPress={() => void submitRegister()} />
             </View>
             <Pressable onPress={() => { setMode('login'); setError(''); }} style={{ marginTop: 14, alignItems: 'center' }}>
               <Text style={{ color: theme.accent, fontSize: 13.5 }}>{t.toLogin}</Text>

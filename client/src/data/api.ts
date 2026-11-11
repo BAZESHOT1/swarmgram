@@ -9,10 +9,16 @@ import { beginRequest, endRequest } from './loading';
 
 export type { Session } from '../crypto/core';
 
-const DEFAULT_NATIVE_API = 'https://150-251-143-212.nip.io:3443/api';
+const DEFAULT_NATIVE_API = 'https://api.swarmgram.io/api';
+const NATIVE_API_FALLBACK = 'https://150-251-143-212.nip.io:3443/api';
 const BASE = (process.env.EXPO_PUBLIC_API_URL ?? (Platform.OS === 'web' ? '/api' : DEFAULT_NATIVE_API)).replace(/\/+$/, '');
 
-export const apiBase = BASE;
+/**
+ * Живой base: при недоступности api.swarmgram.io автоматически
+ * переключаемся на рабочий fallback, не роняя UI.
+ */
+export let apiBase = BASE;
+let fallbackTried = false;
 
 export class ApiError extends Error {
   constructor(
@@ -105,7 +111,7 @@ export async function ensureAccessToken(force = false): Promise<string | null> {
 
   const task = (async () => {
     try {
-      const res = await fetch(`${BASE}/v1/auth/refresh`, {
+      const res = await fetch(`${apiBase}/v1/auth/refresh`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ refreshToken: current.refreshToken }),
@@ -150,12 +156,13 @@ export function nodeUrl(url: string): string {
 
 export function wsUrl(token: string): string {
   const q = `token=${encodeURIComponent(token)}`;
-  if (BASE.startsWith('/')) {
+  const base = apiBase;
+  if (base.startsWith('/')) {
     if (typeof location === 'undefined') return `ws:///ws?${q}`;
     return `${location.protocol.startsWith('https') ? 'wss' : 'ws'}://${location.host}/ws?${q}`;
   }
-  const proto = BASE.startsWith('https') ? 'wss' : 'ws';
-  const host = BASE.replace(/^https?:\/\//, '').replace(/\/api$/, '');
+  const proto = base.startsWith('https') ? 'wss' : 'ws';
+  const host = base.replace(/^https?:\/\//, '').replace(/\/api$/, '');
   return `${proto}://${host}/ws?${q}`;
 }
 
@@ -170,7 +177,7 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
     beginRequest();
     try {
-      return await fetch(`${BASE}${path}`, { ...init, headers });
+      return await fetch(`${apiBase}${path}`, { ...init, headers });
     } finally {
       endRequest();
     }
@@ -180,6 +187,17 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     try {
       return await run();
     } catch (networkError) {
+      // api.swarmgram.io может быть ещё не настроен — переключаемся на рабочий
+      // fallback один раз, чтобы нативный клиент не оставался на чёрном экране.
+      if (!fallbackTried && !apiBase.startsWith('/') && apiBase !== NATIVE_API_FALLBACK) {
+        fallbackTried = true;
+        apiBase = NATIVE_API_FALLBACK;
+        try {
+          return await run();
+        } catch {
+          /* пойдём в mesh/ошибку */
+        }
+      }
       if (!isAuthCall) {
         // Интернета нет — пробуем тот же запрос через mesh-шлюз.
         const meshHttp = await import('../modules/meshHttp').catch(() => null);
