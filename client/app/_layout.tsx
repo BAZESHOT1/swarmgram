@@ -673,12 +673,10 @@ export default function RootLayout() {
               useStore.getState().setMe(u2);
               applyServerPreferences(u2);
             } catch (refreshError) {
-              const status = Number((refreshError as { status?: number } | null)?.status ?? (meError as { status?: number } | null)?.status ?? 0);
-              // 401/403 — сессия действительно недействительна; сеть/5xx — оставляем вход.
-              if (status === 401 || status === 403) {
-                await setSession(null);
-                useStore.getState().setSession(null);
-              }
+              // НИКОГДА не сбрасываем сессию автоматически: без интернета
+              // пользователь продолжает общаться через подключённый модуль.
+              // Выход из аккаунта — только вручную в настройках.
+              void refreshError;
             }
           }
         })();

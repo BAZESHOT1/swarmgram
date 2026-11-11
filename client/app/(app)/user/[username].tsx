@@ -1,5 +1,5 @@
 import React from 'react';
-import { Platform, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -314,6 +314,92 @@ export default function UserProfileScreen() {
       onPress: () => setReportOpen(true),
     });
   }
+
+  return (
+    <>
+      <ScrollView
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void refreshProfile()}
+            tintColor="#FFFFFF"
+            colors={[theme.accent]}
+          />
+        }
+      >
+        <BrightProfile
+          profile={profile}
+          isSelf={isSelf}
+          title={title}
+          avatar={avatar}
+          banner={banner}
+          roleLabel={roleLabel}
+          status={status}
+          statusText={statusText}
+          online={isSelf ? true : profile.online}
+          bio={profile.bio}
+          location={location}
+          birthday={birthday}
+          badgeFacts={badgeFacts}
+          actions={mobileActions}
+          blockedByMe={blockedByMe}
+          blockedMe={blockedMe}
+          nodeOnline={nodeOnline}
+          moduleOnline={moduleOnline}
+          onBack={() => router.back()}
+          onQr={() => setQrOpen(true)}
+          onShare={() => void share()}
+          onCopyUsername={() => {
+            void copyText(profile.username)
+              .then(() => pushToast({ kind: 'success', message: 'Username скопирован' }))
+              .catch(() => pushToast({ kind: 'error', message: 'Не удалось скопировать username' }));
+          }}
+          onOpenChat={(id) => router.push(`/chat/${id}` as never)}
+          forceMobile={compactParam === '1'}
+        />
+      </ScrollView>
+
+      {!isSelf ? (
+        <InviteToChatModal
+          visible={inviteOpen}
+          username={profile.username}
+          displayName={profile.displayName}
+          onClose={() => setInviteOpen(false)}
+        />
+      ) : null}
+
+      <ProfileQrModal
+        visible={qrOpen}
+        username={profile.username}
+        displayName={profile.displayName}
+        onClose={() => setQrOpen(false)}
+      />
+
+      <ReportModal
+        visible={reportOpen}
+        loading={reportUser.isPending}
+        onClose={() => setReportOpen(false)}
+        onSubmit={(reason, note) => void sendReport(reason, note)}
+      />
+
+      <ConfirmModal
+        visible={blockOpen}
+        title={blockedByMe ? 'Разблокировать пользователя?' : 'Заблокировать пользователя?'}
+        message={
+          blockedByMe
+            ? 'Пользователь снова сможет писать вам и видеть ваш профиль.'
+            : 'Пользователь не сможет писать вам, а переписка будет скрыта. Разблокировать можно в любой момент.'
+        }
+        confirmLabel={blockedByMe ? 'Разблокировать' : 'Заблокировать'}
+        danger={!blockedByMe}
+        loading={setBlock.isPending}
+        onClose={() => setBlockOpen(false)}
+        onConfirm={() => void toggleBlock()}
+      />
+    </>
+  );
 
   return (
     <>
@@ -1007,6 +1093,434 @@ function MobileProfile({
   );
 }
 
+/* ---------------------------------------------------------- яркий профиль -- */
+
+function BSection({
+  title,
+  icon,
+  children,
+  right,
+}: {
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  children: React.ReactNode;
+  right?: React.ReactNode;
+}) {
+  const theme = useTheme();
+  return (
+    <View
+      style={[
+        styles.bCard,
+        {
+          backgroundColor: theme.dark ? '#111821' : '#FFFFFF',
+          borderColor: theme.dark ? 'rgba(255,255,255,0.08)' : 'rgba(16,24,40,0.08)',
+        },
+        theme.dark ? null : { shadowColor: '#0A1628' },
+      ]}
+    >
+      <View style={styles.bCardHead}>
+        <View style={[styles.bCardIcon, { backgroundColor: theme.accentSoft }]}>
+          <Ionicons name={icon} size={15} color={theme.accent} />
+        </View>
+        <Text style={{ color: theme.textPrimary, fontSize: 15, fontWeight: '800', flex: 1 }}>{title}</Text>
+        {right}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function BrightProfile({
+  profile,
+  isSelf,
+  title,
+  avatar,
+  banner,
+  roleLabel,
+  status,
+  statusText,
+  online,
+  bio,
+  location,
+  birthday,
+  badgeFacts,
+  actions,
+  blockedByMe,
+  blockedMe,
+  nodeOnline,
+  moduleOnline,
+  onBack,
+  onQr,
+  onShare,
+  onCopyUsername,
+  onOpenChat,
+  forceMobile,
+}: {
+  profile: UserProfile;
+  isSelf: boolean;
+  title: string;
+  avatar?: UserProfile['avatar'];
+  banner?: string;
+  roleLabel: string;
+  status: string;
+  statusText: string;
+  online: boolean;
+  bio: string;
+  location: string;
+  birthday?: string | null;
+  badgeFacts: ProfileBadgeFacts;
+  actions: ProfileAction[];
+  blockedByMe: boolean;
+  blockedMe: boolean;
+  nodeOnline: boolean;
+  moduleOnline: boolean;
+  onBack: () => void;
+  onQr: () => void;
+  onShare: () => void;
+  onCopyUsername: () => void;
+  onOpenChat: (id: string) => void;
+  forceMobile?: boolean;
+}) {
+  const theme = useTheme();
+  const reduced = useReducedMotion();
+  const { width } = useWindowDimensions();
+  const desktop = width >= 900 && !forceMobile;
+  const badges = buildProfileBadges(badgeFacts, theme);
+  const [badgesOpen, setBadgesOpen] = React.useState(false);
+
+  const primary = actions[0] ?? null;
+  const secondary = actions.slice(1);
+
+  const modulesTotal = Number(profile.modulesTotal ?? 0);
+  const modulesOnline = Number(profile.modulesOnline ?? 0);
+  const nodesTotal = Number(profile.nodesTotal ?? 0);
+  const nodesOnline = Number(profile.nodesOnline ?? 0);
+  const contribution = Number(profile.nodeCapacityBytes ?? 0);
+  const hasActivity = modulesTotal > 0 || nodesTotal > 0 || nodesOnline > 0 || contribution > 0;
+
+  const identity = (
+    <View style={{ alignItems: desktop ? 'flex-start' : 'center' }}>
+      <Avatar
+        name={title || '?'}
+        size={desktop ? 132 : 112}
+        radius={24}
+        avatar={avatar ?? null}
+        nodeOnline={nodeOnline}
+        moduleOnline={moduleOnline}
+      />
+      <Text style={[styles.bName, desktop ? { textAlign: 'left' } : null]} numberOfLines={2}>
+        {title || 'Пользователь'}
+      </Text>
+      <Text style={styles.bUsername} numberOfLines={1}>
+        @{profile.username}
+      </Text>
+      {roleLabel ? (
+        <View style={styles.bRolePill}>
+          <Ionicons name="shield-checkmark-outline" size={11} color="#FFFFFF" />
+          <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>{roleLabel}</Text>
+        </View>
+      ) : null}
+      <View style={styles.bStatusRow}>
+        <View style={[styles.bStatusDot, { backgroundColor: online ? theme.success : 'rgba(255,255,255,0.55)' }]} />
+        <Text style={styles.bStatusText} numberOfLines={1}>
+          {statusText}
+        </Text>
+      </View>
+
+      {primary ? (
+        <Pressable
+          onPress={primary.onPress}
+          disabled={primary.disabled || primary.loading}
+          accessibilityRole="button"
+          accessibilityLabel={primary.label}
+          style={({ pressed }) => ({
+            marginTop: 14,
+            width: desktop ? '100%' : '100%',
+            minHeight: 44,
+            borderRadius: 14,
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexDirection: 'row',
+            gap: 7,
+            backgroundColor: primary.danger ? theme.danger : theme.accent,
+            opacity: primary.disabled ? 0.5 : pressed ? 0.86 : 1,
+          })}
+        >
+          <Ionicons name={primary.loading ? 'hourglass-outline' : primary.icon} size={17} color={primary.danger ? '#FFFFFF' : theme.onAccent} />
+          <Text style={{ color: primary.danger ? '#FFFFFF' : theme.onAccent, fontSize: 14, fontWeight: '800' }}>
+            {primary.loading ? 'Подождите…' : primary.label}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {secondary.length ? (
+        <View style={[styles.bSecondary, desktop ? { justifyContent: 'flex-start' } : null]}>
+          {secondary.map((action) => (
+            <PressableScale
+              key={action.key}
+              onPress={action.onPress}
+              disabled={action.disabled || action.loading}
+              accessibilityRole="button"
+              accessibilityLabel={action.label}
+              style={[
+                styles.bSecondaryBtn,
+                {
+                  backgroundColor: 'rgba(10,14,20,0.34)',
+                  borderColor: 'rgba(255,255,255,0.20)',
+                  opacity: action.disabled ? 0.5 : 1,
+                },
+              ]}
+            >
+              <Ionicons
+                name={action.loading ? 'hourglass-outline' : action.icon}
+                size={15}
+                color={action.danger ? '#FFB4B8' : '#FFFFFF'}
+              />
+              <Text style={{ color: action.danger ? '#FFB4B8' : '#FFFFFF', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
+                {action.label}
+              </Text>
+            </PressableScale>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+
+  const contacts = (
+    <BSection title="Контакты" icon="person-circle-outline">
+      <PressableScale
+        onPress={onCopyUsername}
+        accessibilityRole="button"
+        accessibilityLabel={`Скопировать username @${profile.username}`}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 4 }}
+      >
+        <Text style={{ color: theme.accent, fontSize: 15, fontWeight: '700', flex: 1 }} numberOfLines={1}>
+          @{profile.username}
+        </Text>
+        <Ionicons name="copy-outline" size={14} color={theme.textSecondary} />
+      </PressableScale>
+      <View style={{ height: 1, backgroundColor: theme.line, marginVertical: 8 }} />
+      <View style={{ gap: 9 }}>
+        {location ? (
+          <View style={styles.bInfoRow}>
+            <Ionicons name="location-outline" size={16} color={theme.textSecondary} />
+            <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{location}</Text>
+          </View>
+        ) : null}
+        {birthday ? (
+          <View style={styles.bInfoRow}>
+            <Ionicons name="gift-outline" size={16} color={theme.textSecondary} />
+            <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{birthdayLabel(birthday)}</Text>
+          </View>
+        ) : null}
+        <PressableScale
+          onPress={onQr}
+          accessibilityRole="button"
+          accessibilityLabel="QR-код профиля"
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}
+        >
+          <Ionicons name="qr-code-outline" size={16} color={theme.accent} />
+          <Text style={{ color: theme.accent, fontSize: 13.5, fontWeight: '600', flex: 1 }}>QR-код и ссылка</Text>
+          <Ionicons name="chevron-forward" size={14} color={theme.textDisabled} />
+        </PressableScale>
+        <PressableScale
+          onPress={onShare}
+          accessibilityRole="button"
+          accessibilityLabel="Поделиться профилем"
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}
+        >
+          <Ionicons name="share-social-outline" size={16} color={theme.accent} />
+          <Text style={{ color: theme.accent, fontSize: 13.5, fontWeight: '600', flex: 1 }}>Поделиться профилем</Text>
+        </PressableScale>
+      </View>
+    </BSection>
+  );
+
+  const activity = hasActivity ? (
+    <BSection title="Активность" icon="pulse-outline">
+      <View style={{ gap: 10 }}>
+        {modulesTotal > 0 ? (
+          <View style={styles.bStatRow}>
+            <Ionicons name="hardware-chip-outline" size={17} color={theme.accent} />
+            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Модули</Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
+              {modulesTotal} · онлайн {modulesOnline}
+            </Text>
+          </View>
+        ) : null}
+        {nodesTotal > 0 || nodesOnline > 0 ? (
+          <View style={styles.bStatRow}>
+            <Ionicons name="server-outline" size={17} color={theme.success} />
+            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Узлы сети</Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
+              {nodesOnline} из {nodesTotal} онлайн
+            </Text>
+          </View>
+        ) : null}
+        {contribution > 0 ? (
+          <View style={styles.bStatRow}>
+            <Ionicons name="cloud-upload-outline" size={17} color={theme.warning} />
+            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Вклад в сеть</Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>{formatBytes(contribution)}</Text>
+          </View>
+        ) : null}
+      </View>
+    </BSection>
+  ) : null;
+
+  const achievements = badges.length ? (
+    <BSection
+      title="Достижения"
+      icon="trophy-outline"
+      right={
+        <Pressable
+          onPress={() => setBadgesOpen((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={badgesOpen ? 'Свернуть достижения' : 'Показать достижения'}
+          hitSlop={8}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+        >
+          <Text style={{ color: theme.accent, fontSize: 12, fontWeight: '700' }}>{badgesOpen ? 'Свернуть' : `Показать (${badges.length})`}</Text>
+          <Ionicons name={badgesOpen ? 'chevron-up' : 'chevron-down'} size={14} color={theme.accent} />
+        </Pressable>
+      }
+    >
+      {badgesOpen ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+          {badges.map((badge) => (
+            <View
+              key={badge.key}
+              style={[
+                styles.bBadge,
+                {
+                  borderColor: theme.line,
+                  backgroundColor: theme.dark ? 'rgba(255,255,255,0.04)' : 'rgba(16,24,40,0.03)',
+                },
+              ]}
+            >
+              <View style={[styles.bBadgeIcon, { backgroundColor: badge.soft, borderColor: badge.color }]}>
+                <Ionicons name={badge.icon} size={15} color={badge.color} />
+              </View>
+              <View style={{ minWidth: 0, flex: 1 }}>
+                <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }} numberOfLines={1}>
+                  {badge.title}
+                </Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 10.5 }} numberOfLines={1}>
+                  {badge.description}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </BSection>
+  ) : null;
+
+  const shared = !isSelf && profile.sharedChats.length ? (
+    <BSection title="Общие чаты" icon="chatbubbles-outline" right={<Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>{profile.sharedChats.length}</Text>}>
+      <View style={{ gap: 2 }}>
+        {profile.sharedChats.slice(0, 8).map((chat) => (
+          <PressableScale
+            key={chat.id}
+            onPress={() => onOpenChat(chat.id)}
+            accessibilityRole="button"
+            accessibilityLabel={`Открыть ${chat.title}`}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}
+          >
+            <Ionicons
+              name={chat.type === 'channel' ? 'megaphone-outline' : chat.type === 'group' ? 'people-outline' : 'chatbubble-outline'}
+              size={16}
+              color={theme.textSecondary}
+            />
+            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }} numberOfLines={1}>
+              {chat.title}
+            </Text>
+            <Ionicons name="chevron-forward" size={14} color={theme.textDisabled} />
+          </PressableScale>
+        ))}
+      </View>
+    </BSection>
+  ) : null;
+
+  return (
+    <View style={[styles.bPage, bannerBackground(banner)]}>
+      <View pointerEvents="none" style={styles.bOverlay} />
+      <View style={[styles.bInner, desktop ? styles.bInnerDesktop : null]}>
+        <PressableScale
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Назад"
+          hitSlop={10}
+          style={styles.bBack}
+        >
+          <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
+        </PressableScale>
+
+        {blockedByMe ? (
+          <View style={[styles.bNotice, { backgroundColor: 'rgba(180,32,42,0.35)', borderColor: 'rgba(255,180,184,0.4)' }]}>
+            <Ionicons name="ban" size={16} color="#FFD0D3" />
+            <Text style={styles.bNoticeText}>Вы заблокировали этого пользователя. Переписка недоступна.</Text>
+          </View>
+        ) : null}
+        {!blockedByMe && blockedMe ? (
+          <View style={[styles.bNotice, { backgroundColor: 'rgba(150,110,0,0.35)', borderColor: 'rgba(255,220,150,0.4)' }]}>
+            <Ionicons name="lock-closed-outline" size={16} color="#FFE2B0" />
+            <Text style={styles.bNoticeText}>Пользователь ограничил возможность писать ему.</Text>
+          </View>
+        ) : null}
+
+        {desktop ? (
+          <View style={styles.bDesktopRow}>
+            <View style={styles.bDesktopLeft}>{identity}</View>
+            <View style={styles.bDesktopRight}>
+              <BSection title="О себе" icon="reader-outline">
+                {bio ? (
+                  <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
+                ) : (
+                  <Text style={{ color: theme.textDisabled, fontSize: 13, fontStyle: 'italic' }}>
+                    {isSelf ? 'Добавьте пару слов о себе в редактировании профиля.' : 'Пользователь пока ничего не рассказал о себе.'}
+                  </Text>
+                )}
+                {status ? (
+                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>{status}</Text>
+                  </View>
+                ) : null}
+              </BSection>
+              {contacts}
+              {activity}
+              {achievements}
+              {shared}
+            </View>
+          </View>
+        ) : (
+          <View style={styles.bMobile}>
+            <View style={{ paddingTop: 18, paddingBottom: 16 }}>{identity}</View>
+            <BSection title="О себе" icon="reader-outline">
+              {bio ? (
+                <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
+              ) : (
+                <Text style={{ color: theme.textDisabled, fontSize: 13, fontStyle: 'italic' }}>
+                  {isSelf ? 'Добавьте пару слов о себе в редактировании профиля.' : 'Пользователь пока ничего не рассказал о себе.'}
+                </Text>
+              )}
+              {status ? (
+                <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>{status}</Text>
+                </View>
+              ) : null}
+            </BSection>
+            {contacts}
+            {activity}
+            {achievements}
+            {shared}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   center: { width: '100%', maxWidth: 720, alignSelf: 'center' },
   body: { paddingHorizontal: 12 },
@@ -1041,4 +1555,30 @@ const styles = StyleSheet.create({
   mStatIcon: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   mBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 8, flexGrow: 1, flexBasis: '46%', minWidth: 140 },
   mBadgeIcon: { width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  bPage: { flexGrow: 1, minHeight: '100%' },
+  bOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,10,18,0.30)' },
+  bInner: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 14, paddingTop: 46, paddingBottom: 24 },
+  bInnerDesktop: { paddingHorizontal: 24, paddingTop: 56 },
+  bBack: { position: 'absolute', top: 8, left: 14, width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,14,20,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', zIndex: 5 },
+  bDesktopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 22 },
+  bDesktopLeft: { width: 350, flexShrink: 0 },
+  bDesktopRight: { flex: 1, minWidth: 0, gap: 12 },
+  bMobile: { gap: 12 },
+  bName: { color: '#FFFFFF', fontSize: 26, fontWeight: '800', marginTop: 12, textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.35)', textShadowRadius: 6 },
+  bUsername: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, marginTop: 2, textAlign: 'center' },
+  bRolePill: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 7, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.28)' },
+  bStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  bStatusDot: { width: 7, height: 7, borderRadius: 4 },
+  bStatusText: { color: 'rgba(255,255,255,0.9)', fontSize: 12.5, fontWeight: '600' },
+  bSecondary: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10, justifyContent: 'center' },
+  bSecondaryBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 6, maxWidth: '48%' },
+  bCard: { borderRadius: 20, borderWidth: 1, padding: 16, gap: 10, shadowOpacity: 0.12, shadowRadius: 18, shadowOffset: { width: 0, height: 8 } },
+  bCardHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bCardIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  bInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bStatRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  bBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 8, flexGrow: 1, flexBasis: '46%', minWidth: 150 },
+  bBadgeIcon: { width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  bNotice: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 12 },
+  bNoticeText: { color: '#FFFFFF', fontSize: 12.5, flex: 1, fontWeight: '600' },
 });
