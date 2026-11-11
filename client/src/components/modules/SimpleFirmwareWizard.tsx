@@ -34,6 +34,8 @@ export interface SimpleFirmwareResult {
   hardwareId: string;
   publicId?: string;
   moduleId?: string;
+  /** Роль, выбранная в мастере прошивки. */
+  role: FirmwareRole;
 }
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
@@ -345,7 +347,7 @@ export function SimpleFirmwareWizard({
       role,
       kind: 'usb',
     });
-    setResult({ hardwareId, publicId, moduleId });
+    setResult({ hardwareId, publicId, moduleId, role });
     // Сразу показываем ID, не дожидаясь авто-перехода FlashStep.
     go(8);
   };
@@ -362,6 +364,7 @@ export function SimpleFirmwareWizard({
       hardwareId: info.hardwareId,
       publicId: info.publicId,
       moduleId: prev?.moduleId,
+      role: (prev?.role ?? role) as FirmwareRole,
     }));
   };
 
@@ -615,7 +618,7 @@ export function SimpleFirmwareWizard({
             onDone={() => {
               // Если MAC прочитать не удалось, всё равно показываем итог:
               // ID можно прочитать по USB отдельной кнопкой.
-              if (!result) setResult({ hardwareId: '' });
+              if (!result) setResult({ hardwareId: '', role });
               go(8);
             }}
             onFlashed={handleFlashed}

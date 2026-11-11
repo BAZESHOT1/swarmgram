@@ -602,7 +602,10 @@ export default function RootLayout() {
   const theme = useTheme();
   const segments = useSegments();
   const router = useRouter();
+  const pathname = usePathname();
   const params = useLocalSearchParams<{ next?: string }>();
+  const sessionState = useStore((s) => s.session);
+  const lastNavRef = React.useRef<{ to: string; at: number }>({ to: '', at: 0 });
   useBodyBackground();
   const [ready, setReady] = React.useState(false);
   const [mounted, setMounted] = React.useState(false);
@@ -674,11 +677,22 @@ export default function RootLayout() {
     if (!ready) return;
     const inAuth = segments.length === 0 || segments[0] === 'auth' || segments[0] === '(auth)';
     const isJoin = segments[0] === 'join';
-    const hasSession = getSession() !== null;
+    const hasSession = Boolean(sessionState) || getSession() !== null;
     const nextPath = typeof params.next === 'string' && params.next.startsWith('/') ? params.next : '/chats';
-    if (hasSession && inAuth) router.replace(nextPath as never);
-    else if (!hasSession && !inAuth && !isJoin) router.replace('/login');
-  }, [ready, segments, router, params.next]);
+
+    // Один переход за раз: повторный replace во время анимации нативного
+    // стека мог привести к зависанию интерфейса после входа/регистрации.
+    const go = (to: string) => {
+      if (pathname === to) return;
+      const now = Date.now();
+      if (lastNavRef.current.to === to && now - lastNavRef.current.at < 1200) return;
+      lastNavRef.current = { to, at: now };
+      router.replace(to as never);
+    };
+
+    if (hasSession && inAuth) go(nextPath);
+    else if (!hasSession && !inAuth && !isJoin) go('/login');
+  }, [ready, segments, router, params.next, pathname, sessionState]);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }} suppressHydrationWarning>

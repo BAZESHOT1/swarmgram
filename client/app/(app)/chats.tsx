@@ -1381,6 +1381,11 @@ export default function ChatsScreen() {
               if (openRowId) setOpenRowId(null);
             }}
             scrollEventThrottle={32}
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            updateCellsBatchingPeriod={40}
+            windowSize={9}
+            removeClippedSubviews={Platform.OS === 'android'}
             contentContainerStyle={{ paddingBottom: 130 }}
             ListFooterComponent={
               archivedChats.length ? (

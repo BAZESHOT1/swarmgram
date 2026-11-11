@@ -606,7 +606,6 @@ export function ConnectModuleFlow({
 
             {stage === 'flash' ? (
               <SimpleFirmwareWizard
-                initialRole={role}
                 onStepChange={setWizardStep}
                 onCancel={close}
                 onComplete={(flashed: SimpleFirmwareResult) => {
@@ -614,7 +613,7 @@ export function ConnectModuleFlow({
                     publicId: flashed.publicId,
                     hardwareId: flashed.hardwareId,
                     moduleId: flashed.moduleId,
-                    role,
+                    role: flashed.role,
                     source: 'flashed',
                   };
                   setResult(nextResult);

@@ -11,7 +11,7 @@
  * Подключение и прошивка идут через полноэкранный мастер ConnectModuleFlow.
  */
 import React, { useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import type { ModuleRow } from '../../src/data/api';
@@ -26,7 +26,6 @@ import {
   useUnbindModule,
   useUnblockModule,
 } from '../../src/data/queries';
-import { EmptyState } from '../../src/components/EmptyState';
 import { Btn } from '../../src/components/Btn';
 import { useTheme } from '../../src/theme/useTheme';
 import { motion } from '../../src/theme/motion';
@@ -503,7 +502,11 @@ export default function ModulesScreen() {
       subtitle={subtitle}
       right={
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <HeaderIconButton icon="add" label="Добавить модуль" onPress={() => openFlow()} />
+          {Platform.OS === 'web' ? (
+            <Btn title="Подключить модуль" size="s" onPress={() => openFlow('prepared')} />
+          ) : (
+            <HeaderIconButton icon="add" label="Добавить модуль" onPress={() => openFlow()} />
+          )}
           <HeaderIconButton
             icon="refresh-outline"
             label="Обновить список модулей"
@@ -627,7 +630,14 @@ export default function ModulesScreen() {
               >
                 Подключите носимый модуль, чтобы построить карту
               </Text>
-              <Btn title="Добавить модуль" size="s" onPress={() => openFlow('prepared')} />
+              {Platform.OS === 'web' ? (
+                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <Btn title="Подключить модуль" size="s" onPress={() => openFlow('prepared')} />
+                  <Btn title="Прошить модуль" size="s" variant="ghost" onPress={() => openFlow('flash')} />
+                </View>
+              ) : (
+                <Btn title="Добавить модуль" size="s" onPress={() => openFlow()} />
+              )}
             </View>
           </GlassCard>
         )}
@@ -896,18 +906,6 @@ export default function ModulesScreen() {
                 );
               })}
         </SettingsSection>
-      ) : null}
-
-      {!loading && total === 0 ? (
-        <View style={{ minHeight: 300, justifyContent: 'center' }}>
-          <EmptyState
-            icon="hardware-chip-outline"
-            title="Модулей пока нет"
-            subtitle="Прошейте новый модуль, добавьте уже прошитый по USB/BLE — или найдите автономный шлюз по 8-значному ID."
-            actionLabel="Добавить модуль"
-            onAction={() => openFlow()}
-          />
-        </View>
       ) : null}
 
       {loading ? <CardsSkeleton count={2} /> : null}

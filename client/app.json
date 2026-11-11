@@ -2,7 +2,7 @@
   "expo": {
     "name": "SwarmGram",
     "slug": "swarmgram",
-    "version": "1.3.7",
+    "version": "1.3.8",
     "orientation": "portrait",
     "scheme": "swarmgram",
     "userInterfaceStyle": "dark",
@@ -54,7 +54,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.swarmgram.app",
-      "buildNumber": "10307",
+      "buildNumber": "10308",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети.",
         "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями."
@@ -62,7 +62,7 @@
     },
     "android": {
       "package": "com.swarmgram.app",
-      "versionCode": 10307,
+      "versionCode": 10308,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0A0E14"

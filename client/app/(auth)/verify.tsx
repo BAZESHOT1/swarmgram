@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { verifyEmail } from '../../src/data/auth';
+import { getSession } from '../../src/data/api';
 import { humanError } from '../../src/data/queries';
 import { Btn } from '../../src/components/Btn';
 import { useTheme } from '../../src/theme/useTheme';
@@ -9,7 +10,6 @@ import { AuthShell } from '../../src/components/AuthShell';
 import { useStore } from '../../src/state/useStore';
 
 export default function VerifyScreen() {
-  const router = useRouter();
   const theme = useTheme();
   const params = useLocalSearchParams<{ email?: string }>();
   const email = params.email ?? '';
@@ -32,8 +32,12 @@ export default function VerifyScreen() {
     setError('');
     try {
       await verifyEmail(email, code);
+      // После регистрации сессия уже есть в api, но не в store — иначе
+      // (app)-layout сразу уводит обратно на логин.
+      const session = getSession();
+      if (session) useStore.getState().setSession(session);
       useStore.getState().pushToast({ kind: 'success', message: 'Email подтверждён' });
-      router.replace('/chats' as never);
+      // Навигацию на /chats выполнит RootLayout после появления сессии в store.
     } catch (e) {
       setError(humanError(e));
     } finally {

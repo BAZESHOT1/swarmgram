@@ -426,7 +426,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
   useEffect(() => {
     if (!session) return undefined;
-    const timer = setTimeout(() => void restore(), 600);
+    // Небольшая задержка: даём нативному стеку завершить переход после входа,
+    // и только потом трогаем BLE (скан не конкурирует с анимацией).
+    const timer = setTimeout(() => void restore(), 1500);
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') void restore();
     });

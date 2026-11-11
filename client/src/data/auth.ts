@@ -165,7 +165,9 @@ export async function login(login: string, password: string): Promise<AuthResult
   // публикуем ключ аккаунта и догружаем резерв в фоне — не задерживаем переход
   void ensureAccountKey();
   keyBackupPasswordStash.value = password;
-  void tryUploadBackup(password);
+  // PBKDF2 (210k итераций) синхронный: запускаем после анимации перехода,
+  // чтобы вход не подвисал на первом экране.
+  setTimeout(() => void tryUploadBackup(password), 2500);
   return { session, user: res.user, keys, needEmailVerify: !res.user.emailVerified };
 }
 
@@ -197,7 +199,7 @@ export async function register(input: {
   applyMe(res.user);
   void ensureAccountKey();
   keyBackupPasswordStash.value = input.password;
-  void tryUploadBackup(input.password);
+  setTimeout(() => void tryUploadBackup(input.password), 2500);
   return { session, user: res.user, keys: generated.stored, needEmailVerify: !res.user.emailVerified };
 }
 

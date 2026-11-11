@@ -215,7 +215,8 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
     try {
       await doLogin(identifier.trim(), password);
       useStore.getState().pushToast({ kind: 'success', message: t.login });
-      router.replace('/chats' as never);
+      // Навигацию выполняет RootLayout по появлению сессии — один replace,
+      // без гонки двух переходов (из-за неё нативный стек мог зависнуть).
     } catch (e) {
       const message = humanError(e);
       setError(message);
@@ -245,7 +246,8 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
       if (res.needEmailVerify) {
         router.replace(`/verify?email=${encodeURIComponent(res.user.email)}` as never);
       } else {
-        router.replace('/chats' as never);
+        // RootLayout уведёт на /chats после появления сессии в store.
+        useStore.getState().setSession(res.session);
       }
     } catch (e) {
       const message = humanError(e);
