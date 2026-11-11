@@ -64,6 +64,8 @@ let unlockInstalled = false;
  */
 function installUnlock(): void {
   if (unlockInstalled || typeof window === 'undefined') return;
+  // В React Native window есть, но без DOM-методов — не трогаем его.
+  if (typeof window.addEventListener !== 'function') return;
   unlockInstalled = true;
 
   const events: (keyof WindowEventMap)[] = ['pointerdown', 'touchstart', 'keydown', 'click'];
