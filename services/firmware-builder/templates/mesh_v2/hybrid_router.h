@@ -14,7 +14,6 @@
 #define KINTO_TTL_LORA 8
 
 typedef enum { KINTO_IFACE_NONE = 0, KINTO_IFACE_WIFI = 1, KINTO_IFACE_LORA = 2 } kinto_iface_t;
-typedef enum { KINTO_ROUTE_NONE = 0, KINTO_ROUTE_WIFI = 1, KINTO_ROUTE_LORA = 2 } kinto_route_t;
 typedef enum { KINTO_TRAFFIC_TEXT = 0, KINTO_TRAFFIC_MEDIA, KINTO_TRAFFIC_OTA, KINTO_TRAFFIC_TELEMETRY, KINTO_TRAFFIC_SEARCH } kinto_traffic_t;
 
 typedef struct {
