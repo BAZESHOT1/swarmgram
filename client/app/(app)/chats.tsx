@@ -605,7 +605,7 @@ export default function ChatsScreen() {
 
   const searchRef = useRef<TextInput | null>(null);
   const searchHostRef = useRef<View | null>(null);
-  const searchBottomRef = useRef(220);
+  const searchRectRef = useRef({ x: 0, y: 0, w: 999, h: 220 });
   const openRowRef = useRef<(row: SearchRow) => void>(() => undefined);
   const historyRef = useRef<SearchHistoryEntry[]>([]);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -617,19 +617,26 @@ export default function ChatsScreen() {
   }, []);
 
   const measureSearch = useCallback(() => {
-    searchHostRef.current?.measureInWindow((_x, y, _w, h) => {
-      searchBottomRef.current = y + h;
+    searchHostRef.current?.measureInWindow((x, y, w, h) => {
+      searchRectRef.current = { x, y, w, h };
     });
   }, []);
 
-  // На native тап по любой точке ниже окна поиска закрывает клавиатуру.
+  // На native тап вне окна поиска закрывает клавиатуру. Панель истории
+  // (пустой запрос, ниже поля) не считается «вне», чтобы выбор не срывался.
   const onScreenTouch = useCallback(
-    (event: { nativeEvent?: { pageY?: number } }) => {
+    (event: { nativeEvent?: { pageX?: number; pageY?: number } }) => {
       if (!searchFocused) return;
+      const pageX = Number(event?.nativeEvent?.pageX ?? 0);
       const pageY = Number(event?.nativeEvent?.pageY ?? 0);
-      if (pageY > 0 && pageY > searchBottomRef.current + 6) blurSearch();
+      if (pageX <= 0 || pageY <= 0) return;
+      const { x, y, w, h } = searchRectRef.current;
+      const inside = pageX >= x - 4 && pageX <= x + w + 4 && pageY >= y - 4 && pageY <= y + h + 4;
+      if (inside) return;
+      if (!search.trim() && pageY > y + h) return;
+      blurSearch();
     },
-    [searchFocused, blurSearch],
+    [searchFocused, search, blurSearch],
   );
 
   // На web надёжнее обычный mousedown: target вне окна поиска.
