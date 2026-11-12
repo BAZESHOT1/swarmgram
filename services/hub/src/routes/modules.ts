@@ -1478,6 +1478,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       border?: boolean | number;
       wifi?: boolean | number;
       lora?: boolean | number;
+      pins?: Record<string, unknown>;
     };
 
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId, 'hardwareId', { max: 64 }));
@@ -1571,18 +1572,21 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
                 neighbors = $13,
                 owner_id = COALESCE($10, owner_id),
                 cluster_id = $14, border = $15, transports = $16::text[],
-                last_neighbors = $17::jsonb
+                last_neighbors = $17::jsonb,
+                firmware_config = CASE WHEN $18::jsonb IS NULL THEN firmware_config ELSE $18::jsonb END
           WHERE id = $1`,
         [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner, rssi, uptime, neighbors.length,
-          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32))],
+          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32)),
+          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null],
       );
       publicId = existing.public_id || (await assignPublicId(moduleId, hardwareId));
     } else {
       const inserted = await one<{ id: string }>(
-        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors, cluster_id, border, transports, last_neighbors)
-         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12,$13,$14,$15,$16::jsonb) RETURNING id`,
+        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors, cluster_id, border, transports, last_neighbors, firmware_config)
+         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb) RETURNING id`,
         [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, rssi, uptime, neighbors.length,
-          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32))],
+          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32)),
+          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null],
       );
       moduleId = inserted!.id;
       publicId = await assignPublicId(moduleId, hardwareId);

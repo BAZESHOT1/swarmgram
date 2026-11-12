@@ -3281,6 +3281,15 @@ static void hubRegister() {
                 ",\"border\":" + String(gBorderNode ? 1 : 0) +
                 ",\"wifi\":" + String(gWifiReady ? 1 : 0) +
                 ",\"lora\":" + String(gLoraReady ? 1 : 0) +
+                ",\"pins\":{\"led\":" + String(SG_LED_PIN) +
+                ",\"battery\":" + String(SG_BATT_PIN) +
+                ",\"batteryRatio\":" + String(SG_BATT_RATIO, 2) +
+                ",\"lora\":{\"sck\":" + String(SG_LORA_SCK) +
+                ",\"miso\":" + String(SG_LORA_MISO) +
+                ",\"mosi\":" + String(SG_LORA_MOSI) +
+                ",\"cs\":" + String(SG_LORA_CS) +
+                ",\"rst\":" + String(SG_LORA_RST) +
+                ",\"busy\":" + String(SG_LORA_BUSY) + "}}" +
                 ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
                 ",\"uptime\":" + String((unsigned long)(millis() / 1000UL)) +
                 ",\"claimToken\":\"" SG_CLAIM_TOKEN "\"}";
