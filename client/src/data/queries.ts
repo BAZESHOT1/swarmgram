@@ -9,11 +9,13 @@ import { loadChatMessages, type ViewMessage } from './messaging';
 import { useStore } from '../state/useStore';
 import {
   getCachedChats,
+  getCachedChannelSubs,
   getCachedMe,
   getCachedProfile,
   loadCachedProfile,
   getCachedMessages,
   loadCachedMessages,
+  saveChannelSubs,
   saveMessages,
   saveChats,
   saveMe,
@@ -165,6 +167,7 @@ export function useChatMessages(chat: Chat | null) {
         // Без интернета показываем последние сохранённые сообщения чата.
         const cached = await loadCachedMessages(chat.id);
         if (cached) return cached as ViewMessage[];
+        if (!useStore.getState().transportOnline) return [];
         throw error;
       }
     },
@@ -189,13 +192,35 @@ export function useChannels(search: string) {
 }
 
 export function useMySubscriptions() {
-  return useQuery({
-    queryKey: [CHANNELS_KEY, 'subs'],
-    queryFn: () => api.api.mySubscriptions(),
+  const me = useStore((s) => s.me);
+  const username = me?.username;
+  const query = useQuery({
+    queryKey: [CHANNELS_KEY, 'subs', username],
+    queryFn: async () => {
+      try {
+        return await api.api.mySubscriptions();
+      } catch (error) {
+        const cached = getCachedChannelSubs(username);
+        if (cached) return cached;
+        if (!useStore.getState().transportOnline) return [];
+        throw error;
+      }
+    },
+    enabled: Boolean(me),
     staleTime: STALE.directory,
     gcTime: 15 * 60_000,
-    placeholderData: (prev) => prev,
+    initialData: () => getCachedChannelSubs(username) ?? undefined,
+    initialDataUpdatedAt: 0,
+    placeholderData: (prev) => prev ?? getCachedChannelSubs(username) ?? undefined,
   });
+
+  // Каналы кэшируем отдельно: серверный /v1/chats их не возвращает.
+  const data = query.data;
+  useEffect(() => {
+    if (username && data) saveChannelSubs(username, data);
+  }, [username, data]);
+
+  return query;
 }
 
 export function useNodes() {

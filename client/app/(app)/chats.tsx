@@ -401,7 +401,8 @@ function SwipeChatRow(props: {
 
   useEffect(() => {
     if (!open) close();
-  }, [open, close]);
+    else translateX.setValue(-ACTIONS_WIDTH);
+  }, [open, close, translateX]);
 
   // Смена закрепления переносит ряд в другую секцию: закрываем свайп,
   // чтобы открытые действия не «переезжали» вместе с чатом.
@@ -415,8 +416,10 @@ function SwipeChatRow(props: {
 
   const pan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.3,
+      // Захватываем жест только при явно горизонтальном движении: вертикальный
+      // скролл списка не должен «съедаться» строкой.
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.7,
+      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.9,
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: () => {
@@ -425,20 +428,30 @@ function SwipeChatRow(props: {
       },
       onPanResponderMove: (_e, g) => {
         const base = openRef.current ? -ACTIONS_WIDTH : 0;
-        translateX.setValue(Math.min(0, Math.max(-ACTIONS_WIDTH, base + g.dx)));
+        // Небольшой коэффициент сопротивления за пределами диапазона — жест
+        // ощущается предсказуемо, но не «рвётся».
+        const raw = base + g.dx;
+        const clamped = Math.max(-ACTIONS_WIDTH, Math.min(0, raw));
+        translateX.setValue(clamped);
       },
       onPanResponderRelease: (_e, g) => {
         const base = openRef.current ? -ACTIONS_WIDTH : 0;
-        const next = base + g.dx;
-        const shouldOpen = g.vx < -0.45 ? next < -ACTIONS_WIDTH * 0.15 : next < -ACTIONS_WIDTH * 0.4;
-        if (cbRef.current.reduced) translateX.setValue(shouldOpen ? -ACTIONS_WIDTH : 0);
+        // Проекция с учётом скорости: короткий уверенный свайп открывает
+        // действия, медленный «случайный» сдвиг возвращает строку.
+        const projected = base + g.dx + g.vx * 110;
+        const wasOpen = openRef.current;
+        const shouldOpen = g.vx < -0.6 || projected < -ACTIONS_WIDTH * 0.45;
+        const shouldClose = g.vx > 0.6 || projected > -ACTIONS_WIDTH * 0.2;
+        const nextOpen = wasOpen ? !shouldClose : shouldOpen;
+        if (nextOpen !== wasOpen) haptics.tap();
+        if (cbRef.current.reduced) translateX.setValue(nextOpen ? -ACTIONS_WIDTH : 0);
         else
           Animated.spring(translateX, {
-            toValue: shouldOpen ? -ACTIONS_WIDTH : 0,
+            toValue: nextOpen ? -ACTIONS_WIDTH : 0,
             ...SWIPE_SPRING,
             useNativeDriver: true,
           }).start();
-        cbRef.current.onOpenChange(shouldOpen ? idRef.current : null);
+        cbRef.current.onOpenChange(nextOpen ? idRef.current : null);
       },
       onPanResponderTerminate: () => {
         close();
@@ -1520,7 +1533,6 @@ export default function ChatsScreen() {
             onRefresh={() => void refreshAll()}
             refreshing={refreshing}
             onScrollBeginDrag={() => setOpenRowId(null)}
-            onTouchStart={scheduleSwipeClose}
             onScroll={onChatsListScroll}
             scrollEventThrottle={32}
             initialNumToRender={12}

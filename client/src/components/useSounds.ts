@@ -11,7 +11,8 @@
  * Любая ошибка подавляется — звук не должен ломать интерфейс.
  */
 import React from 'react';
-import { Platform } from 'react-native';
+import { DeviceEventEmitter, Platform } from 'react-native';
+import { kv } from '../crypto/storage';
 
 const STORAGE_KEY = 'sg:sounds';
 const CHANGE_EVENT = 'sg-sounds-changed';
@@ -140,49 +141,140 @@ function readEnabled(): boolean {
   }
 }
 
-export function useSounds(): { send: () => void; receive: () => void; enabled: boolean } {
+/* ------------------------------------------------------------ native звуки -- */
+
+type NativeSoundName = 'send' | 'receive' | 'error';
+
+let audioModule: typeof import('expo-av').Audio | null = null;
+const nativeSounds = new Map<NativeSoundName, import('expo-av').Audio.Sound>();
+let audioModeReady = false;
+let nativeEnabled = true;
+
+const NATIVE_SOURCES: Record<NativeSoundName, number> = {
+  send: require('../../assets/sounds/send.wav'),
+  receive: require('../../assets/sounds/receive.wav'),
+  error: require('../../assets/sounds/error.wav'),
+};
+
+async function playNative(name: NativeSoundName): Promise<void> {
+  if (!nativeEnabled) return;
+  try {
+    if (!audioModule) {
+      const mod = await import('expo-av');
+      audioModule = mod.Audio;
+    }
+    if (!audioModule) return;
+    if (!audioModeReady) {
+      audioModeReady = true;
+      await audioModule
+        .setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          shouldDuckAndroid: true,
+          staysActiveInBackground: false,
+        })
+        .catch(() => undefined);
+    }
+    let sound = nativeSounds.get(name);
+    if (!sound) {
+      const created = await audioModule.Sound.createAsync(NATIVE_SOURCES[name], { volume: 0.7 });
+      sound = created.sound;
+      nativeSounds.set(name, sound);
+    }
+    await sound.replayAsync();
+  } catch {
+    /* звук не должен ломать интерфейс */
+  }
+}
+
+export function useSounds(): { send: () => void; receive: () => void; error: () => void; enabled: boolean } {
   const isWeb = Platform.OS === 'web';
 
-  const [enabled, setEnabled] = React.useState<boolean>(() => (isWeb ? readEnabled() : false));
+  const [enabled, setEnabled] = React.useState<boolean>(() => (isWeb ? readEnabled() : nativeEnabled));
 
   // Гидратация после SSR, смена настройки в этой вкладке (custom event) и в других (storage).
   React.useEffect(() => {
-    if (!isWeb || typeof window === 'undefined') return;
-    setEnabled(readEnabled());
+    if (isWeb) {
+      if (typeof window === 'undefined') return undefined;
+      setEnabled(readEnabled());
 
-    const onChange = () => setEnabled(readEnabled());
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== STORAGE_KEY) return;
-      setEnabled(e.newValue !== '0');
-    };
-    window.addEventListener(CHANGE_EVENT, onChange);
-    window.addEventListener('storage', onStorage);
+      const onChange = () => setEnabled(readEnabled());
+      const onStorage = (e: StorageEvent) => {
+        if (e.key !== STORAGE_KEY) return;
+        setEnabled(e.newValue !== '0');
+      };
+      window.addEventListener(CHANGE_EVENT, onChange);
+      window.addEventListener('storage', onStorage);
+      return () => {
+        window.removeEventListener(CHANGE_EVENT, onChange);
+        window.removeEventListener('storage', onStorage);
+      };
+    }
+
+    // Нативный звук: настройка хранится в kv (AsyncStorage).
+    let alive = true;
+    void kv
+      .get(STORAGE_KEY)
+      .then((raw) => {
+        if (!alive) return;
+        nativeEnabled = raw !== '0';
+        setEnabled(nativeEnabled);
+      })
+      .catch(() => undefined);
+    const sub = DeviceEventEmitter.addListener(CHANGE_EVENT, () => {
+      void kv
+        .get(STORAGE_KEY)
+        .then((raw) => {
+          nativeEnabled = raw !== '0';
+          setEnabled(nativeEnabled);
+        })
+        .catch(() => undefined);
+    });
     return () => {
-      window.removeEventListener(CHANGE_EVENT, onChange);
-      window.removeEventListener('storage', onStorage);
+      alive = false;
+      sub.remove();
     };
   }, [isWeb]);
 
   // Разблокировка аудио по первому жесту пользователя (iOS/Safari).
   React.useEffect(() => {
-    if (!isWeb) return;
-    installUnlock();
+    if (isWeb) installUnlock();
   }, [isWeb]);
 
   // Отправка: мягкий короткий тон 640 Гц, 40 мс.
   const send = React.useCallback(() => {
-    if (!isWeb || !readEnabled()) return;
-    playTones([{ freq: 640, at: 0, duration: 40, type: 'sine' }]);
+    if (isWeb) {
+      if (!readEnabled()) return;
+      playTones([{ freq: 640, at: 0, duration: 40, type: 'sine' }]);
+      return;
+    }
+    void playNative('send');
   }, [isWeb]);
 
   // Входящее: два тона 760 → 980 Гц, суммарно ~120 мс.
   const receive = React.useCallback(() => {
-    if (!isWeb || !readEnabled()) return;
-    playTones([
-      { freq: 760, at: 0, duration: 60, type: 'sine' },
-      { freq: 980, at: 60, duration: 60, type: 'sine' },
-    ]);
+    if (isWeb) {
+      if (!readEnabled()) return;
+      playTones([
+        { freq: 760, at: 0, duration: 60, type: 'sine' },
+        { freq: 980, at: 60, duration: 60, type: 'sine' },
+      ]);
+      return;
+    }
+    void playNative('receive');
   }, [isWeb]);
 
-  return { send, receive, enabled };
+  // Ошибка: короткий низкий сигнал.
+  const error = React.useCallback(() => {
+    if (isWeb) {
+      if (!readEnabled()) return;
+      playTones([
+        { freq: 300, at: 0, duration: 90, type: 'triangle' },
+        { freq: 190, at: 85, duration: 120, type: 'triangle' },
+      ]);
+      return;
+    }
+    void playNative('error');
+  }, [isWeb]);
+
+  return { send, receive, error, enabled };
 }

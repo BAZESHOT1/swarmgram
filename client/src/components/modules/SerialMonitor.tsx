@@ -16,6 +16,7 @@ import { Btn } from '../Btn';
 import { useTheme } from '../../theme/useTheme';
 import { GlassCard } from '../settings/SettingsUI';
 import { StatusBadge } from '../settings/SettingsWidgets';
+import { isWebSecureContext, secureWebUrl } from '../../utils/secureContext';
 
 const BAUD_RATE = 115200;
 const MAX_LINES = 500;
@@ -316,9 +317,22 @@ export function SerialMonitor({ blocked = false, blockedReason }: { blocked?: bo
         </View>
 
         {!supported ? (
-          <Text style={{ color: theme.textSecondary, fontSize: 11.5, lineHeight: 17 }}>
-            Web Serial недоступен. Нужен Chrome или Edge на компьютере и HTTPS (либо localhost).
-          </Text>
+          <View style={{ gap: 8 }}>
+            <Text style={{ color: theme.textSecondary, fontSize: 11.5, lineHeight: 17 }}>
+              {isWebSecureContext()
+                ? 'Web Serial недоступен. Нужен Chrome или Edge на компьютере (не мобильный браузер).'
+                : 'Web Serial работает только на HTTPS или localhost. Откройте защищённую версию — после неё монитор заработает.'}
+            </Text>
+            {!isWebSecureContext() && secureWebUrl() ? (
+              <Btn
+                title="Открыть HTTPS-версию"
+                size="s"
+                onPress={() => {
+                  if (typeof window !== 'undefined') window.location.href = secureWebUrl();
+                }}
+              />
+            ) : null}
+          </View>
         ) : (
           <>
             <Text style={{ color: theme.textSecondary, fontSize: 11.5, lineHeight: 17 }}>

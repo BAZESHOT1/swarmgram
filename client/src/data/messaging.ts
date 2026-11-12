@@ -463,7 +463,9 @@ export async function decryptEnvelopeAuto(env: Envelope, chat: Chat, myUsername:
 
 export async function loadChatMessages(chat: Chat, myUsername: string): Promise<ViewMessage[]> {
   const keys = await requireKeys();
-  const envs = await api.api.listMessages(chat.id, { limit: 60 }).catch(() => [] as Envelope[]);
+  // Ошибку сети не глотаем: вызывающий слой подставит сохранённую ленту,
+  // а не затрёт кэш пустым массивом.
+  const envs = await api.api.listMessages(chat.id, { limit: 60 });
   const meId = await currentUserId();
   const out: ViewMessage[] = [];
   for (const env of envs) {

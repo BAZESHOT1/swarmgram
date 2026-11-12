@@ -32,9 +32,9 @@ export default function AppLayout() {
           animation: 'slide_from_right',
           animationDuration: 240,
           // iOS: интерактивный свайп назад для всех страниц, включая настройки
-          // и профиль. customAnimationOnGesture сохраняет нашу анимацию.
+          // и профиль. Полноэкранный жест — свайп с любого места экрана.
           gestureEnabled: true,
-          fullScreenGestureEnabled: false,
+          fullScreenGestureEnabled: true,
           customAnimationOnGesture: true,
           gestureDirection: 'horizontal',
         }}
@@ -65,7 +65,7 @@ export default function AppLayout() {
         <Stack.Screen name="chat/[id]/info" />
         <Stack.Screen name="user/[username]" />
         <Stack.Screen name="user/[username]/edit" />
-        <Stack.Screen name="compose" options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: false }} />
+        <Stack.Screen name="compose" options={{ presentation: 'modal', animation: 'slide_from_bottom', gestureEnabled: true }} />
       </Stack>
     </AppShell>
   );

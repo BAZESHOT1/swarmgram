@@ -19,6 +19,10 @@ export const CACHE_VERSION = 1;
 
 /** Не храним больше ~300 чатов на пользователя. */
 export const MAX_CACHED_CHATS = 300;
+/** Лента чата: держим последние сообщения, а не первые. */
+export const MAX_CACHED_MESSAGES = 150;
+/** Сколько лент предзагружаем в память при старте. */
+const MAX_PRELOADED_MESSAGES = 80;
 /** Максимальный размер одного аватара (data URI, символов ≈ байт base64). */
 export const MAX_AVATAR_BYTES = 1_500_000;
 /** Предохранитель для остальных записей (профиль/чаты), ~4 МБ. */
@@ -35,6 +39,9 @@ const PROFILE_INDEX_KEY = `${PREFIX}profiles:index`;
 
 const profileKey = (username: string) => `${PREFIX}profile:${username.trim().toLowerCase()}`;
 const chatsKey = (username: string) => `${PREFIX}chats:${username}`;
+/** Каналы: отдельный список подписок, потому что `/v1/chats` их не отдаёт. */
+const subsKey = (username: string) => `${PREFIX}channels:${username}`;
+const MESSAGE_INDEX_KEY = `${PREFIX}messages:index`;
 
 interface Envelope<T> {
   v: number;
@@ -116,6 +123,42 @@ export function saveChats(username: string | null | undefined, chats: Chat[] | n
   } catch {
     /* ignore */
   }
+}
+
+/* ------------------------------------------------------- каналы/подписки ---- */
+
+export function getCachedChannelSubs(username: string | null | undefined): Chat[] | null {
+  if (!username) return null;
+  const value = memory.get(`channels:${username}`);
+  return Array.isArray(value) ? (value as Chat[]) : null;
+}
+
+export function saveChannelSubs(username: string | null | undefined, chats: Chat[] | null | undefined): void {
+  if (!username || !Array.isArray(chats)) return;
+  try {
+    const trimmed = chats.slice(0, MAX_CACHED_CHATS);
+    memory.set(`channels:${username}`, trimmed);
+    writeEntry(subsKey(username), trimmed);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Ищет чат любого типа (личный, группа, канал) в локальном кэше.
+ * Нужно, чтобы экран чата открывался из памяти, не дожидаясь сервера.
+ */
+export function findCachedChat(
+  username: string | null | undefined,
+  chatId: string | null | undefined,
+): Chat | null {
+  if (!username || !chatId) return null;
+  for (const list of [memory.get(`chats:${username}`), memory.get(`channels:${username}`)]) {
+    if (!Array.isArray(list)) continue;
+    const found = (list as Chat[]).find((chat) => chat?.id === chatId);
+    if (found) return found;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------- профили ---- */
@@ -260,6 +303,10 @@ export function clearCaches(username?: string | null): void {
     avatarMemory.clear();
     void kv.remove(ME_KEY).catch(() => undefined);
     if (name) void kv.remove(chatsKey(name)).catch(() => undefined);
+    if (name) void kv.remove(subsKey(name)).catch(() => undefined);
+    messageIndex.forEach((id) => void kv.remove(messageKey(id)).catch(() => undefined));
+    messageIndex = [];
+    void kv.remove(MESSAGE_INDEX_KEY).catch(() => undefined);
     profileIndex.forEach((u) => void kv.remove(profileKey(u)).catch(() => undefined));
     avatarIds.forEach((id) => void kv.remove(AVATAR_PREFIX + id).catch(() => undefined));
     profileIndex = [];
@@ -274,6 +321,12 @@ export function clearCaches(username?: string | null): void {
 /* --------------------------------------------------------- сообщения чата -- */
 
 const messageKey = (chatId: string) => `${PREFIX}messages:${chatId}`;
+/** Недавно сохранённые ленты: нужны для фоновой предзагрузки при старте. */
+let messageIndex: string[] = [];
+
+function saveMessageIndex(): void {
+  void writeEntry(MESSAGE_INDEX_KEY, messageIndex.slice(0, MAX_PRELOADED_MESSAGES));
+}
 
 /** Последние сообщения из памяти (для мгновенного открытия чата). */
 export function getCachedMessages(chatId: string | null | undefined): unknown[] | null {
@@ -289,19 +342,46 @@ export async function loadCachedMessages(chatId: string | null | undefined): Pro
   try {
     const data = await readEntry<unknown[]>(messageKey(chatId));
     if (!Array.isArray(data)) return null;
-    const limited = data.slice(0, 120);
-    memory.set(`messages:${chatId}`, limited);
-    return limited;
+    memory.set(`messages:${chatId}`, data);
+    return data;
   } catch {
     return null;
   }
 }
 
 export function saveMessages(chatId: string | null | undefined, messages: unknown[] | null | undefined): void {
-  if (!chatId || !Array.isArray(messages)) return;
-  const limited = messages.slice(0, 120);
+  if (!chatId || !Array.isArray(messages) || messages.length === 0) return;
+  // Лента хранится от старых к новым: важны ПОСЛЕДНИЕ сообщения.
+  const limited = messages.slice(-MAX_CACHED_MESSAGES);
   memory.set(`messages:${chatId}`, limited);
-  void writeEntry(messageKey(chatId), limited);
+  writeEntry(messageKey(chatId), limited);
+  if (messageIndex[0] !== chatId) {
+    messageIndex = [chatId, ...messageIndex.filter((id) => id !== chatId)].slice(0, MAX_PRELOADED_MESSAGES);
+    saveMessageIndex();
+  }
+}
+
+/**
+ * Фоновая предзагрузка лент в память: при открытии чата сообщения уже
+ * доступны синхронно, без скелетонов.
+ */
+export async function preloadMessageCaches(): Promise<void> {
+  try {
+    const index = await readEntry<string[]>(MESSAGE_INDEX_KEY);
+    if (Array.isArray(index)) {
+      messageIndex = index.filter((id): id is string => typeof id === 'string').slice(0, MAX_PRELOADED_MESSAGES);
+    }
+    const entries = await Promise.all(
+      messageIndex.map(async (chatId) => [chatId, await readEntry<unknown[]>(messageKey(chatId))] as const),
+    );
+    for (const [chatId, data] of entries) {
+      if (Array.isArray(data) && !memory.has(`messages:${chatId}`)) {
+        memory.set(`messages:${chatId}`, data);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -317,6 +397,21 @@ export async function loadCaches(username?: string | null): Promise<void> {
     if (name) {
       const chats = await readEntry<Chat[]>(chatsKey(name));
       if (Array.isArray(chats)) memory.set(`chats:${name}`, chats.slice(0, MAX_CACHED_CHATS));
+      const channels = await readEntry<Chat[]>(subsKey(name));
+      if (Array.isArray(channels)) memory.set(`channels:${name}`, channels.slice(0, MAX_CACHED_CHATS));
+
+      // Самые свежие ленты греем до первого кадра, остальные — в фоне.
+      const index = await readEntry<string[]>(MESSAGE_INDEX_KEY);
+      if (Array.isArray(index)) {
+        messageIndex = index.filter((id): id is string => typeof id === 'string').slice(0, MAX_PRELOADED_MESSAGES);
+        const warm = messageIndex.slice(0, 8);
+        const entries = await Promise.all(
+          warm.map(async (chatId) => [chatId, await readEntry<unknown[]>(messageKey(chatId))] as const),
+        );
+        for (const [chatId, data] of entries) {
+          if (Array.isArray(data)) memory.set(`messages:${chatId}`, data);
+        }
+      }
     }
   } catch {
     /* offline / storage unavailable — работаем без кэша */

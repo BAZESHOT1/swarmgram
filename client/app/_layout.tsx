@@ -14,19 +14,20 @@ import { useTheme } from '../src/theme/useTheme';
 import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
 import { ToastHost } from '../src/components/Toast';
+import { InAppNotifications } from '../src/components/InAppNotifications';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { ModuleAutoBanner } from '../src/components/ModuleAutoBanner';
 import { GlobalHotkeys } from '../src/components/GlobalHotkeys';
 import { useSounds } from '../src/components/useSounds';
 import { useHaptics } from '../src/components/useHaptics';
 import { onMeshEnvelope } from '../src/modules/meshLink';
-import { decryptEnvelopeAuto } from '../src/data/messaging';
+import { decryptEnvelopeAuto, flushOutbox } from '../src/data/messaging';
 import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
-import { loadCaches, loadProfileCaches, getCachedMe } from '../src/data/cache';
+import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, findCachedChat } from '../src/data/cache';
 import { initPush } from '../src/push';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
@@ -61,6 +62,27 @@ function RealtimeBridge() {
   soundsRef.current = sounds;
   const hapticsRef = React.useRef(haptics);
   hapticsRef.current = haptics;
+
+  // При возврате приложения в активное состояние пробуем доотправить очередь.
+  useEffect(() => {
+    const flush = () => {
+      if (!useStore.getState().transportOnline) return;
+      void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '')
+        .then((sent) => {
+          if (sent.length) void queryClient.invalidateQueries({ queryKey: ['chats'] });
+        })
+        .catch(() => undefined);
+    };
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') flush();
+    });
+    // Периодический ретрай: сообщение могло не уйти при нестабильной сети.
+    const timer = setInterval(flush, 45_000);
+    return () => {
+      sub.remove();
+      clearInterval(timer);
+    };
+  }, []);
 
   React.useEffect(() => {
     if (!session) return;
@@ -276,6 +298,12 @@ function RealtimeBridge() {
         // Р”РѕРіРѕРЅ РїРѕСЃР»Рµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёСЏ: РїРѕРєР° СЃРІСЏР·Рё РЅРµ Р±С‹Р»Рѕ, СЃРѕР±С‹С‚РёСЏ РјРѕРіР»Рё РїРѕС‚РµСЂСЏС‚СЊСЃСЏ.
         if (!firstConnect) catchUp();
         firstConnect = false;
+        void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '')
+          .then((sent) => {
+            if (!sent.length) return;
+            void qc.invalidateQueries({ queryKey: ['chats'] });
+          })
+          .catch(() => undefined);
       };
       ws.onerror = () => useStore.getState().setTransportOnline(false);
       ws.onclose = () => {
@@ -595,6 +623,32 @@ function RealtimeBridge() {
           soundsRef.current.receive();
           hapticsRef.current.receive();
         }
+        if (activeId !== env.chatId) {
+          // Уведомление внутри приложения — только если этот чат не открыт.
+          const meName = useStore.getState().me?.username ?? '';
+          const chat =
+            queryClient.getQueryData<any>(['chat', env.chatId]) ??
+            findCachedChat(meName, env.chatId) ??
+            ({ id: env.chatId, type: 'direct', encryption: 'server', title: '', members: [] } as any);
+          let text = '';
+          try {
+            const vm = await decryptEnvelopeAuto(env as never, chat as never, meName);
+            text = String(vm.text ?? '').trim();
+          } catch {
+            text = '';
+          }
+          const title =
+            chat?.type === 'direct'
+              ? String(env.senderUsername || chat?.title || 'Сообщение')
+              : String(chat?.title || env.senderUsername || 'Сообщение');
+          useStore.getState().pushInApp({
+            kind: 'message',
+            chatId: env.chatId,
+            messageId: env.id,
+            title,
+            body: text || (env.kind === 'text' ? 'Новое сообщение' : 'Вложение'),
+          });
+        }
       }
       await api.postReceipt(env.chatId, env.id).catch(() => undefined);
     }
@@ -649,8 +703,7 @@ export default function RootLayout() {
       // РЎРЅР°С‡Р°Р»Р° РїРѕРґРЅРёРјР°РµРј Р»РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€: РёРЅС‚РµСЂС„РµР№СЃ РґРѕР»Р¶РµРЅ СЂРёСЃРѕРІР°С‚СЊСЃСЏ СЃСЂР°Р·Сѓ,
       // Р±РµР· РѕР¶РёРґР°РЅРёСЏ СЃРµС‚Рё. Р—Р°С‚РµРј СѓР¶Рµ РґРѕРіСЂСѓР¶Р°РµРј СЃРµСЂРІРµСЂРЅС‹Рµ РґР°РЅРЅС‹Рµ РІ С„РѕРЅРµ.
       await loadCaches(s?.username ?? null).catch(() => undefined);
-      useStore.getState().setSession(s);
-      // РџСЂРѕС„РёР»СЊ РёР· РєСЌС€Р° РґРѕСЃС‚СѓРїРµРЅ СЃСЂР°Р·Сѓ: Р±РµР· РЅРµРіРѕ СЃРїРёСЃРєРё С‡Р°С‚РѕРІ Рё РЅР°СЃС‚СЂРѕР№РєРё
+      useStore.getState().setSession(s);      // РџСЂРѕС„РёР»СЊ РёР· РєСЌС€Р° РґРѕСЃС‚СѓРїРµРЅ СЃСЂР°Р·Сѓ: Р±РµР· РЅРµРіРѕ СЃРїРёСЃРєРё С‡Р°С‚РѕРІ Рё РЅР°СЃС‚СЂРѕР№РєРё
       // РѕСЃС‚Р°РІР°Р»РёСЃСЊ Р±С‹ РїСѓСЃС‚С‹РјРё РґРѕ РѕС‚РІРµС‚Р° СЃРµСЂРІРµСЂР°.
       const cachedMe = getCachedMe();
       if (s && cachedMe) useStore.getState().setMe(cachedMe);
@@ -662,6 +715,8 @@ export default function RootLayout() {
       useStore.getState().setReady(true);
       setReady(true);
       void loadProfileCaches();
+      // Ленты чатов — в память заранее, чтобы открытие чата не показывало скелетоны.
+      void preloadMessageCaches();
       initPreferenceSync();
 
       if (s) {
@@ -750,10 +805,11 @@ export default function RootLayout() {
                 <Stack.Screen name="index" />
                 <Stack.Screen name="(auth)" />
                 <Stack.Screen name="(app)" />
-                <Stack.Screen name="join/[token]" options={{ animation: 'slide_from_bottom' }} />
+                <Stack.Screen name="join/[token]" options={{ animation: 'slide_from_bottom', gestureEnabled: true, fullScreenGestureEnabled: true }} />
               </Stack>
               {!ready ? <FullSkeleton /> : null}
               <ModuleAutoBanner />
+              <InAppNotifications />
               <ToastHost />
             </>
           ) : (

@@ -25,6 +25,7 @@ import { humanError } from '../../data/queries';
 import { useModuleConnection } from '../../modules/ModuleProvider';
 import { MESH_ALWAYS, moduleRoleLabel } from './moduleUi';
 import { SimpleFirmwareWizard, type SimpleFirmwareResult } from './SimpleFirmwareWizard';
+import { isWebSecureContext, secureWebUrl } from '../../utils/secureContext';
 
 type Stage = 'prepared-or-flash' | 'role' | 'wearable' | 'claim' | 'flash' | 'success';
 
@@ -478,9 +479,20 @@ export function ConnectModuleFlow({
                         />
                       </View>
                     ) : (
-                      <Note icon="alert-circle-outline" tone="warning">
-                        Web Serial недоступен: нужен Chrome/Edge на компьютере и HTTPS (или localhost).
-                      </Note>
+                      <View style={{ gap: 8, marginBottom: 8 }}>
+                        <Note icon="alert-circle-outline" tone="warning">
+                          Web Serial недоступен: нужен Chrome/Edge на компьютере и HTTPS (или localhost).
+                        </Note>
+                        {!isWebSecureContext() && secureWebUrl() ? (
+                          <Btn
+                            title="Открыть HTTPS-версию"
+                            size="s"
+                            onPress={() => {
+                              if (typeof window !== 'undefined') window.location.href = secureWebUrl();
+                            }}
+                          />
+                        ) : null}
+                      </View>
                     )}
                     {modules.supportedBle ? (
                       <Btn

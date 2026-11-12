@@ -35,7 +35,7 @@ import { PinnedBanner } from '../../../src/components/chat/PinnedBanner';
 import { ReplyBar } from '../../../src/components/chat/ReplyBar';
 import { TypingIndicator } from '../../../src/components/chat/TypingIndicator';
 import { ScrollToBottom } from '../../../src/components/chat/ScrollToBottom';
-import { saveMessages } from '../../../src/data/cache';
+import { findCachedChat, getCachedMessages, loadCachedMessages, saveMessages } from '../../../src/data/cache';
 import { MessageActionSheet } from '../../../src/components/chat/MessageActionSheet';
 import { ReactionPicker } from '../../../src/components/chat/ReactionPicker';
 import { AttachmentsGallery } from '../../../src/components/chat/AttachmentsGallery';
@@ -98,7 +98,7 @@ export default function ChatScreen() {
   const wide = useIsWide();
   const reduced = useReducedMotion();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ id: string; search?: string }>();
+  const params = useLocalSearchParams<{ id: string; search?: string; msg?: string }>();
   const { id } = params;
   const chatId = String(id);
 
@@ -116,7 +116,14 @@ export default function ChatScreen() {
     (s) => (s as unknown as { typingByChat?: Record<string, { username: string; at: number }> }).typingByChat?.[chatId],
   );
 
-  const [chat, setChat] = useState<ChatExt | null>(null);
+  // Чат сразу берём из локального кэша (личный/группа/канал), чтобы экран
+  // открывался из памяти, а серверное обновление шло в фоне.
+  const [chat, setChat] = useState<ChatExt | null>(
+    () => (findCachedChat(myUsername, chatId) as ChatExt | null) ?? null,
+  );
+  const [cachedMessages, setCachedMessages] = useState<ViewMessage[]>(
+    () => (getCachedMessages(chatId) as ViewMessage[] | null) ?? [],
+  );
   const [rawKey, setRawKey] = useState<Uint8Array | null>(null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -221,7 +228,13 @@ export default function ChatScreen() {
   const chatQuery = useChatMessages(chatId ? (chat ?? placeholderChat) : null);
   const deleteMsg = useDeleteMessage(chatId);
 
-  const data = (chatQuery.data ?? []) as ViewMessage[];
+  const queryMessages = chatQuery.data as ViewMessage[] | undefined;
+  // Пока сети нет/идёт запрос — показываем сохранённую ленту, а не скелетон.
+  const data = useMemo<ViewMessage[]>(() => {
+    if (queryMessages && queryMessages.length > 0) return queryMessages;
+    if (chatQuery.isFetchedAfterMount && queryMessages) return [];
+    return cachedMessages;
+  }, [queryMessages, cachedMessages, chatQuery.isFetchedAfterMount]);
 
   /* ---------------------------------------------- оптимистичные сообщения */
   const upsertOptimistic = useCallback((message: ViewMessage) => {
@@ -340,7 +353,24 @@ export default function ChatScreen() {
     setViewCounts({});
     setAsChannel(false);
     setSecretShield(false);
+    // Лента из кэша для нового чата: память + постоянное хранилище.
+    setCachedMessages((getCachedMessages(chatId) as ViewMessage[] | null) ?? []);
+    let alive = true;
+    void loadCachedMessages(chatId).then((list) => {
+      if (alive && Array.isArray(list) && list.length) setCachedMessages(list as ViewMessage[]);
+    });
+    return () => {
+      alive = false;
+    };
   }, [chatId, headerCollapse, scrollY]);
+
+  // Активный чат: по нему не показываем in-app уведомления и не растим unread.
+  useEffect(() => {
+    if (chat) useStore.getState().setActiveChat(chat);
+    return () => {
+      if (useStore.getState().activeChat?.id === chatId) useStore.getState().setActiveChat(null);
+    };
+  }, [chat?.id, chatId]);
 
   // Клавиатура: следим, чтобы композер не уезжал под неё и не «прыгал».
   useEffect(() => {
@@ -876,6 +906,23 @@ export default function ChatScreen() {
     return () => clearTimeout(t);
   }, [normalizedQuery, searchActive, scrollToIndexSafe]);
 
+  /* ---------------- переход к сообщению из in-app уведомления (?msg=id) --- */
+  const targetMsgId = String(params.msg ?? '');
+  const msgJumpRef = useRef('');
+  useEffect(() => {
+    if (!targetMsgId || msgJumpRef.current === targetMsgId || !allMessages.length) return undefined;
+    const index = visibleRows.findIndex(
+      (row) => row.m.id === targetMsgId || Boolean(row.album?.some((m) => m.id === targetMsgId)),
+    );
+    if (index < 0) return undefined;
+    msgJumpRef.current = targetMsgId;
+    const t = setTimeout(() => {
+      scrollToIndexSafe(index);
+      setFlashIds((prev) => ({ ...prev, [targetMsgId]: true }));
+    }, 280);
+    return () => clearTimeout(t);
+  }, [targetMsgId, allMessages.length, visibleRows, scrollToIndexSafe]);
+
   /* ------------------------------------------------------------- отправка */
 
   /** Пружинное нажатие кнопки отправки: сжатие 0.9 с лёгким overshoot. */
@@ -963,16 +1010,18 @@ export default function ChatScreen() {
       try {
         const vm = await sendMessage(chatId, { text: body }, 'text', myUsername, { replyTo: replyId, clientId, asChannel: postAsChannel });
         upsertOptimistic({ ...vm, clientId: vm.clientId ?? clientId, uploadStage: null });
-        scheduleOptimisticCleanup(clientId);
+        // Убираем локальную копию только после подтверждённой доставки.
+        // Сообщение в очереди (delivered=false) остаётся в ленте до отправки.
+        if (vm.delivered) scheduleOptimisticCleanup(clientId);
         // Сообщение уже отправлено: сбой фонового обновления ленты не должен
         // помечать пузырь как ошибочный.
         if (!vm.failed) await chatQuery.refetch().catch(() => undefined);
         else haptics.error();
       } catch (e: unknown) {
         patchOptimistic(clientId, { pending: false, failed: true });
-        scheduleOptimisticCleanup(clientId);
         setError(humanError(e));
         haptics.error();
+        sounds.error();
       }
     };
     // Повтор текста переиспользует тот же clientId: сервер не создаст дубль.
@@ -1026,8 +1075,9 @@ export default function ChatScreen() {
         } else {
           patchOptimistic(clientId, { pending: false, failed: true, uploadStage: null, uploadProgress: 0 });
           haptics.error();
+          sounds.error();
         }
-        scheduleOptimisticCleanup(clientId);
+        if (vm.delivered) scheduleOptimisticCleanup(clientId);
       } catch (e: unknown) {
         if (controller.signal.aborted) {
           removeOptimistic(clientId);
@@ -1038,6 +1088,7 @@ export default function ChatScreen() {
         patchOptimistic(clientId, { pending: false, failed: true, uploadStage: null, uploadProgress: 0 });
         setError(msg);
         haptics.error();
+        sounds.error();
         pushToast({ kind: 'error', message: msg });
       } finally {
         setSending(false);
@@ -1450,7 +1501,7 @@ export default function ChatScreen() {
         ) : null}
 
         <View style={{ flex: 1 }}>
-          {chatQuery.isLoading || !chat ? (
+          {(chatQuery.isLoading || !chat) && allMessages.length === 0 ? (
             <SkeletonMessages count={8} />
           ) : allMessages.length === 0 ? (
             canCompose ? (

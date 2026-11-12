@@ -14,6 +14,17 @@ export interface Toast {
   durationMs?: number;
 }
 
+/** Плавающее уведомление внутри приложения (сообщение или системное). */
+export interface InAppNotice {
+  id: string;
+  kind: 'message' | 'system';
+  chatId?: string;
+  messageId?: string;
+  title: string;
+  body: string;
+  createdAt: number;
+}
+
 interface SessionSummary {
   userId: string;
   username: string;
@@ -72,6 +83,11 @@ interface AppState {
   toasts: Toast[];
   pushToast: (t: Omit<Toast, 'id'>) => void;
   dismissToast: (id: string) => void;
+  /** In-app уведомления: показываются, только если чат сейчас не открыт. */
+  inApp: InAppNotice[];
+  pushInApp: (n: Omit<InAppNotice, 'id' | 'createdAt'>) => void;
+  dismissInApp: (id: string) => void;
+  dismissAllInApp: () => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -174,6 +190,17 @@ export const useStore = create<AppState>((set, get) => ({
     set({ toasts: [{ ...t, id }, ...get().toasts].slice(0, 4) });
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
+  inApp: [],
+  pushInApp: (notice) => {
+    // Одна карточка на чат: новое сообщение заменяет предыдущее.
+    const id = `n-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+    const rest = notice.chatId
+      ? get().inApp.filter((item) => item.chatId !== notice.chatId)
+      : get().inApp;
+    set({ inApp: [{ ...notice, id, createdAt: Date.now() }, ...rest].slice(0, 3) });
+  },
+  dismissInApp: (id) => set({ inApp: get().inApp.filter((n) => n.id !== id) }),
+  dismissAllInApp: () => set({ inApp: [] }),
 }));
 
 setTimeout(() => void kv.get('sg:theme').then?.((v: string | null) => {

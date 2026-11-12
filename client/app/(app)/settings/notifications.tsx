@@ -3,7 +3,7 @@
  * и управление приглушёнными чатами. Настройки хранятся на устройстве (kv).
  */
 import React from 'react';
-import { Platform, Text, View } from 'react-native';
+import { DeviceEventEmitter, Platform, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../../src/theme/useTheme';
 import { useIsWide } from '../../../src/theme/useIsWide';
@@ -44,6 +44,12 @@ function useStoredToggle(key: string, eventName: string): [boolean, (v: boolean)
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         try {
           window.dispatchEvent(new Event(eventName));
+        } catch {
+          /* событие не критично */
+        }
+      } else {
+        try {
+          DeviceEventEmitter.emit(eventName);
         } catch {
           /* событие не критично */
         }
