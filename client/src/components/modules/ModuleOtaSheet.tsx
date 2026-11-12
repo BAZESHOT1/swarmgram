@@ -117,10 +117,7 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
   };
 
   const finish = () => {
-    const buildId = buildIdRef.current;
     buildIdRef.current = null;
-    // Сборка больше не нужна — освобождаем место на сервере.
-    if (buildId) void api.deleteFirmwareBuild(buildId).catch(() => undefined);
     onClose();
   };
 
