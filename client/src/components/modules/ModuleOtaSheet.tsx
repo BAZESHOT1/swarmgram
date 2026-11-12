@@ -32,6 +32,8 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
   const [progress, setProgress] = React.useState(0);
   const [error, setError] = React.useState('');
   const [hasConfig, setHasConfig] = React.useState<boolean | null>(null);
+  const [latestVersion, setLatestVersion] = React.useState('');
+  const [startedAt, setStartedAt] = React.useState(0);
   const buildIdRef = React.useRef<string | null>(null);
 
   const open = Boolean(module);
@@ -57,6 +59,14 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
       .moduleFirmwareConfig(module.id)
       .then((res) => alive && setHasConfig(Boolean(res.config)))
       .catch(() => alive && setHasConfig(false));
+    void api
+      .firmwareReleases()
+      .then((list) => {
+        if (!alive) return;
+        const board = module.board || 'esp32';
+        setLatestVersion(list.find((r) => r.board === board)?.version ?? list[0]?.version ?? '');
+      })
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -85,6 +95,7 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
     setBusy(true);
     setError('');
     setPhase('building');
+    setStartedAt(Date.now());
     try {
       const cfg = await api.moduleFirmwareConfig(module.id);
       if (!cfg.config) {
@@ -138,6 +149,7 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
               </Text>
               <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 2 }}>
                 {module?.firmware || 'версия неизвестна'} · {module?.online ? 'онлайн' : 'офлайн'}
+                {latestVersion ? ` → ${latestVersion}` : ''}
               </Text>
             </View>
             <Pressable onPress={finish} hitSlop={10} accessibilityRole="button" accessibilityLabel="Закрыть">
@@ -153,6 +165,16 @@ export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; 
             {phase !== 'idle' ? (
               <View style={{ padding: 12, borderRadius: 14, backgroundColor: theme.surfacePressed, gap: 6 }}>
                 <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }}>{PHASE_LABEL[phase]}</Text>
+                {phase === 'building' && startedAt ? (
+                  <Text style={{ color: theme.textSecondary, fontSize: 11 }}>
+                    Сборка занимает ~6–8 минут · прошло {Math.max(1, Math.round((Date.now() - startedAt) / 60000))} мин
+                  </Text>
+                ) : null}
+                {phase === 'downloading' ? (
+                  <Text style={{ color: theme.textSecondary, fontSize: 11 }}>
+                    ~{Math.max(1, Math.ceil(((100 - progress) / 100) * 3))} мин до завершения
+                  </Text>
+                ) : null}
                 {['building', 'downloading', 'installing'].includes(phase) ? (
                   <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.glassBorder, overflow: 'hidden' }}>
                     <View style={{ width: `${Math.max(4, progress)}%`, height: 6, backgroundColor: theme.accent }} />
