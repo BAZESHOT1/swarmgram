@@ -370,7 +370,10 @@ export async function registerNativePush(session: PushSession | null | undefined
   const messaging = getMessagingSafe();
   if (!messaging) return () => {};
 
-  const granted = await requestNativePermission();
+  const granted = await Promise.race([
+    requestNativePermission(),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20_000)),
+  ]);
   if (!granted) {
     warn('Push registration skipped: notification permission not granted');
     return () => {};
@@ -383,7 +386,11 @@ export async function registerNativePush(session: PushSession | null | undefined
       });
     }
 
-    const token = await messaging.getToken();
+    // На unsigned iOS APNs-токен может не прийти — не блокируем запуск.
+    const token = await Promise.race([
+      messaging.getToken(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+    ]);
     if (token) await registerToken(token);
 
     const unsubscribe = messaging.onTokenRefresh((nextToken: string) => {

@@ -271,14 +271,16 @@ export default function ChatScreen() {
     const out: ViewMessage[] = [];
     for (const m of [...older, ...data]) {
       const key = m.clientId ? `c:${m.clientId}` : `i:${m.id}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key) || seen.has(`i:${m.id}`)) continue;
       seen.add(key);
+      seen.add(`i:${m.id}`);
+      if (m.clientId) seen.add(`c:${m.clientId}`);
       out.push(m);
     }
     const pending = Object.values(optimistic)
       .filter((m) => {
         const key = m.clientId ? `c:${m.clientId}` : `i:${m.id}`;
-        return !seen.has(key);
+        return !seen.has(key) && !seen.has(`i:${m.id}`) && !(m.clientId && seen.has(`c:${m.clientId}`));
       })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     return [...out, ...pending];
@@ -431,7 +433,7 @@ export default function ChatScreen() {
     if (!chat || !unreadReady || !Number.isFinite(lastSeq) || lastSeq <= 0) return;
     // В группах/каналах не отмечаем всё прочитанным сразу: ждём, пока
     // пользователь доскроллит и счётчик непрочитанных обнулится.
-    if (chat.type !== 'direct' && unreadCount > 0) return;
+    if (unreadCount > 0) return;
     void api.api
       .markRead(chatId, lastSeq)
       .then(() => {
@@ -810,20 +812,20 @@ export default function ChatScreen() {
     if (!chat || initialScrollRef.current || allMessages.length === 0) return;
     initialScrollRef.current = true;
     const totalUnread = Math.max(0, Number(chat.unread ?? 0));
-    const direct = chat.type === 'direct';
     const firstUnread = Math.max(0, allMessages.length - totalUnread);
     firstUnreadIndexRef.current = firstUnread;
     unreadSeenRef.current = new Set();
-    setUnreadCount(direct ? 0 : totalUnread);
+    setUnreadCount(totalUnread);
     setUnreadReady(true);
 
-    if (!direct && totalUnread > 0) {
+    if (totalUnread > 0) {
       pendingScrollRef.current = false;
       const t = setTimeout(() => {
         listRef.current?.scrollToIndex({
           index: Math.max(0, firstUnread - 1),
           animated: false,
-          viewPosition: 0.65,
+          // Последнее прочитанное — у нижней границы экрана, ниже видны непрочитанные.
+          viewPosition: 0.85,
         });
       }, 220);
       return () => clearTimeout(t);

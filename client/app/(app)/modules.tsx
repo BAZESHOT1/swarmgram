@@ -15,7 +15,7 @@ import { AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useFocusEffect } from 'expo-router';
-import type { ModuleRow } from '../../src/data/api';
+import { api, type ModuleRow } from '../../src/data/api';
 import {
   humanError,
   useAttachModule,

@@ -380,8 +380,10 @@ function SwipeChatRow(props: {
   onMenu: () => void;
   /** Начался горизонтальный свайп — отменяем отложенное закрытие. */
   onSwipeStart?: () => void;
+  /** Свайп завершён (release/terminate). */
+  onSwipeEnd?: () => void;
 }) {
-  const { chat, title, myUsername, unread, pinned, muted, open, onOpenChange, onTogglePin, onToggleMute, onDelete, onOpen, onMenu, onSwipeStart } = props;
+  const { chat, title, myUsername, unread, pinned, muted, open, onOpenChange, onTogglePin, onToggleMute, onDelete, onOpen, onMenu, onSwipeStart, onSwipeEnd } = props;
   const theme = useTheme();
   const haptics = useHaptics();
   const reduced = useReducedMotion();
@@ -442,8 +444,9 @@ function SwipeChatRow(props: {
         // действия, медленный «случайный» сдвиг возвращает строку.
         const projected = base + g.dx + g.vx * 110;
         const wasOpen = openRef.current;
-        const shouldOpen = g.vx < -0.6 || projected < -ACTIONS_WIDTH * 0.45;
-        const shouldClose = g.vx > 0.6 || projected > -ACTIONS_WIDTH * 0.2;
+        const shouldOpen = g.vx < -0.3 || projected < -ACTIONS_WIDTH * 0.25;
+        // Закрываем только уверенным свайпом вправо, иначе действия «убегают».
+        const shouldClose = g.vx > 0.5 || projected > -ACTIONS_WIDTH * 0.55;
         const nextOpen = wasOpen ? !shouldClose : shouldOpen;
         if (nextOpen !== wasOpen) haptics.tap();
         if (cbRef.current.reduced) translateX.setValue(nextOpen ? -ACTIONS_WIDTH : 0);
@@ -454,10 +457,20 @@ function SwipeChatRow(props: {
             useNativeDriver: true,
           }).start();
         cbRef.current.onOpenChange(nextOpen ? idRef.current : null);
+        onSwipeEnd?.();
       },
       onPanResponderTerminate: () => {
-        close();
-        cbRef.current.onOpenChange(null);
+        // Список забрал жест — не схлопываем уже открытые действия.
+        const nextOpen = openRef.current;
+        if (cbRef.current.reduced) translateX.setValue(nextOpen ? -ACTIONS_WIDTH : 0);
+        else
+          Animated.spring(translateX, {
+            toValue: nextOpen ? -ACTIONS_WIDTH : 0,
+            ...SWIPE_SPRING,
+            useNativeDriver: true,
+          }).start();
+        cbRef.current.onOpenChange(nextOpen ? idRef.current : null);
+        onSwipeEnd?.();
       },
     }),
   ).current;
@@ -576,6 +589,7 @@ export default function ChatsScreen() {
   const [busyUser, setBusyUser] = useState('');
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
   const [openRowId, setOpenRowId] = useState<string | null>(null);
+  const swipingRef = useRef(false);
   const swipeCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelSwipeClose = useCallback(() => {
     if (swipeCloseTimer.current) {
@@ -589,6 +603,13 @@ export default function ChatsScreen() {
     swipeCloseTimer.current = setTimeout(() => setOpenRowId(null), 300);
   }, [openRowId, cancelSwipeClose]);
   useEffect(() => () => cancelSwipeClose(), [cancelSwipeClose]);
+  const onSwipeStartRow = useCallback(() => {
+    swipingRef.current = true;
+    cancelSwipeClose();
+  }, [cancelSwipeClose]);
+  const onSwipeEndRow = useCallback(() => {
+    swipingRef.current = false;
+  }, []);
   const [readingAll, setReadingAll] = useState(false);
   const [menuChat, setMenuChat] = useState<Chat | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -769,22 +790,23 @@ export default function ChatsScreen() {
         const preview = chatPreviews[chat.id];
         return !preview || preview.id !== last.id;
       })
-      .slice(0, 40);
+      .slice(0, 6);
     if (!targets.length) return undefined;
 
-    void (async () => {
-      for (let i = 0; i < targets.length; i += 3) {
-        if (cancelled) return;
-        await Promise.all(
-          targets.slice(i, i + 3).map(async (chat) => {
-            const last = chat.lastMessage!;
-            previewTried.current.add(last.id);
-            try {
-              const env = await api.api.getMessage(chat.id, last.id);
-              const vm = await decryptEnvelopeAuto(env, chat, myUsername);
-              if (cancelled) return;
-              useStore.getState().setChatPreview(chat.id, {
-                id: env.id,
+    const timer = setTimeout(() => {
+      void (async () => {
+        for (let i = 0; i < targets.length; i += 3) {
+          if (cancelled) return;
+          await Promise.all(
+            targets.slice(i, i + 3).map(async (chat) => {
+              const last = chat.lastMessage!;
+              previewTried.current.add(last.id);
+              try {
+                const env = await api.api.getMessage(chat.id, last.id);
+                const vm = await decryptEnvelopeAuto(env, chat, myUsername);
+                if (cancelled) return;
+                useStore.getState().setChatPreview(chat.id, {
+                  id: env.id,
                 text: String(vm.text ?? ''),
                 kind: env.kind,
                 mine: env.senderUsername === myUsername,
@@ -797,9 +819,11 @@ export default function ChatsScreen() {
         );
       }
     })();
+    }, 800);
 
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [allChats, chatPreviews, myUsername]);
 
@@ -1632,7 +1656,9 @@ export default function ChatsScreen() {
             keyboardShouldPersistTaps="handled"
             onRefresh={() => void refreshAll()}
             refreshing={refreshing}
-            onScrollBeginDrag={() => setOpenRowId(null)}
+            onScrollBeginDrag={() => {
+              if (!swipingRef.current) setOpenRowId(null);
+            }}
             onScroll={onChatsListScroll}
             scrollEventThrottle={32}
             initialNumToRender={12}
@@ -1712,7 +1738,8 @@ export default function ChatsScreen() {
                   onDelete={() => requestDelete([chat], titleOf(chat, myUsername))}
                   onOpen={() => void onPressChatRow(item)}
                   onMenu={() => setMenuChat(chat)}
-                  onSwipeStart={cancelSwipeClose}
+                  onSwipeStart={onSwipeStartRow}
+                  onSwipeEnd={onSwipeEndRow}
                 />
               );
 

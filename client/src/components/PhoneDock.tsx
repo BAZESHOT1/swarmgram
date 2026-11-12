@@ -117,18 +117,20 @@ export function PhoneDock() {
 
   const tiles = [
     { id: 'chats', label: 'Чаты', icon: 'chatbubbles' as const, href: '/chats', badge: unread },
+    { id: 'modules', label: 'Модули', icon: 'hardware-chip-outline' as const, href: '/modules' },
     { id: 'settings', label: 'Настройки', icon: 'settings-outline' as const, href: '/settings' },
   ];
 
   const activeId = pathname.startsWith('/chats')
     ? 'chats'
-    : pathname.startsWith('/settings') ||
-        pathname.startsWith('/admin') ||
-        pathname.startsWith('/nodes') ||
-        pathname.startsWith('/modules') ||
-        pathname.startsWith('/language')
-      ? 'settings'
-      : '';
+    : pathname.startsWith('/modules')
+      ? 'modules'
+      : pathname.startsWith('/settings') ||
+          pathname.startsWith('/admin') ||
+          pathname.startsWith('/nodes') ||
+          pathname.startsWith('/language')
+        ? 'settings'
+        : '';
   const activeIndex = tiles.findIndex((t) => t.id === activeId);
 
   /** Переход по разделу: навигация без блокировки по «уже активен». */
@@ -142,8 +144,8 @@ export function PhoneDock() {
     else router.push(href as never);
   };
 
-  // Ширина одного тайла: внутренняя ширина минус отступы и gap, делим на два.
-  const tileWidth = dockWidth > 0 ? (dockWidth - DOCK_PADDING * 2 - TILE_GAP) / 2 : 0;
+  // Ширина одного тайла: внутренняя ширина минус отступы и gap, делим на число тайлов.
+  const tileWidth = dockWidth > 0 ? (dockWidth - DOCK_PADDING * 2 - TILE_GAP * (tiles.length - 1)) / tiles.length : 0;
 
   const onDockLayout = (e: LayoutChangeEvent) => setDockWidth(e.nativeEvent.layout.width);
 
@@ -151,8 +153,9 @@ export function PhoneDock() {
   // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
   const dockBottom = 24 + Math.max(0, insets.bottom);
 
-  // В чате нижний док перекрывает поле ввода и перехватывает тапы — прячем.
-  if (pathname.startsWith('/chat/') || pathname === '/compose') return null;
+  // Док показываем только на «Чатах» и «Модулях».
+  const dockVisible = pathname.startsWith('/chats') || pathname.startsWith('/modules');
+  if (!dockVisible) return null;
 
   return (
     <Animated.View
