@@ -124,10 +124,10 @@ function validateConfig(raw: unknown): FirmwareConfig {
     role: b.role as FirmwareRole,
     connectivity: b.connectivity as FirmwareConnectivity,
   };
-  // Все модули собираем с Wi-Fi и LoRa: иначе носимые не достучатся до шлюза
-  // по радио. Если LoRa-модуля нет — прошивка залогирует ошибку инициализации
-  // радио и продолжит работу по Wi-Fi/BLE.
-  if (out.connectivity === 'wifi') out.connectivity = 'wifi_lora';
+  // Wearable не поднимает STA/Wi-Fi (только BLE до телефона + LoRa до шлюза),
+  // иначе он зависает в "sta is connecting" и не запускает mesh.
+  if (out.role === 'wearable') out.connectivity = 'lora';
+  else if (out.connectivity === 'wifi') out.connectivity = 'wifi_lora';
 
   if (b.wifi !== undefined) {
     if (!b.wifi || typeof b.wifi !== 'object') throw badRequest('wifi_invalid');

@@ -927,6 +927,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       gateway?: boolean;
       neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];
       claimToken?: string;
+      rssi?: number;
+      uptime?: number;
     };
 
     const hardwareId = str(body.hardwareId, 'hardwareId', { max: 64 }).toLowerCase();
@@ -977,6 +979,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     let moduleId: string;
     let publicId: string;
+    const neighbors = (body.neighbors ?? []).slice(0, 100);
+    const rssi = Math.trunc(Number(body.rssi ?? 0)) | 0;
+    const uptime = Math.max(0, Math.trunc(Number(body.uptime ?? 0)));
     const adoptOwner = claimOwner && existing && existing.owner_id === system.id ? claimOwner : null;
     if (existing) {
       moduleId = existing.id;
@@ -984,16 +989,19 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
         `UPDATE modules SET board_uuid = $2, hardware_id = $2, role = $3, transport = $4, kind = $5,
                 firmware = COALESCE(NULLIF($6,''), firmware), battery = $7, attached = $8,
                 status = 'online', last_seen_at = now(), last_ip = $9, updated_at = now(),
+                rssi = CASE WHEN $11 <> 0 THEN $11 ELSE rssi END,
+                uptime = CASE WHEN $12 > 0 THEN $12 ELSE uptime END,
+                neighbors = $13,
                 owner_id = COALESCE($10, owner_id)
           WHERE id = $1`,
-        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner],
+        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner, rssi, uptime, neighbors.length],
       );
       publicId = existing.public_id || (await assignPublicId(moduleId, hardwareId));
     } else {
       const inserted = await one<{ id: string }>(
-        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip)
-         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9) RETURNING id`,
-        [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip],
+        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors)
+         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12) RETURNING id`,
+        [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, rssi, uptime, neighbors.length],
       );
       moduleId = inserted!.id;
       publicId = await assignPublicId(moduleId, hardwareId);
@@ -1003,7 +1011,6 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     // Gossip: шлюз сообщает, какие модули он видит в mesh. Это позволяет
     // считать ретрансляторы/носимые онлайн без их собственного интернета.
-    const neighbors = (body.neighbors ?? []).slice(0, 100);
     for (const n of neighbors) {
       const pid = String(n.publicId ?? '').trim();
       if (!isPublicId(pid)) continue;
@@ -1018,6 +1025,17 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const cfg = await getMeshConfig();
     const token = signModuleToken(moduleId, publicId);
     log('info', 'module_registered', { moduleId, hardwareId, publicId, role, ip });
+    publish(adoptOwner ?? claimOwner ?? existing?.owner_id ?? system.id, {
+      type: 'module_status',
+      moduleId,
+      hardwareId,
+      publicId,
+      status: 'online',
+      online: true,
+      rssi,
+      uptime,
+      firmware: body.firmware ?? '',
+    });
     return reply.send({
       ok: true,
       moduleId,
@@ -1678,6 +1696,23 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           ],
         );
       }
+    });
+
+    publish(mod.ownerId, {
+      type: 'module_status',
+      moduleId: mod.moduleId,
+      hardwareId: mod.hardwareId,
+      publicId,
+      status: 'online',
+      online: true,
+      role,
+      transport,
+      attached,
+      battery,
+      rssi,
+      uptime,
+      firmware: String(body.firmware ?? ''),
+      neighbors: neighbors.length,
     });
 
     const owner = await one<{ email: string }>('SELECT email FROM users WHERE id = $1', [mod.ownerId]);
