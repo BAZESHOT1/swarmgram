@@ -192,7 +192,9 @@ function generateConfigHeader(config, version) {
     `#define SG_MESH_SSID ${cString(mesh.ssid ?? 'SG-MESH')}`,
     `#define SG_MESH_PASS ${cString(mesh.password ?? 'sgmesh-2026-11-11-a7f3c9d2e6b14580')}`,
     `#define SG_MESH_ID ${cString(mesh.networkId ?? 'SG-MESH')}`,
-    `#define SG_MESH_HIDDEN ${cfgBoolean(mesh.hidden, false) ? 1 : 0}`,
+    // Скрытый SSID невозможно надёжно найти сканированием: ESP32 отдаёт
+    // пустой SSID. Mesh-сеть всегда видимая — это критично для дискавери.
+    `#define SG_MESH_HIDDEN 0`,
     `#define SG_MESH_CHANNEL ${num(mesh.channel, 11) | 0}`,
     `#define SG_WIFI_MAX_HOPS ${num(mesh.wifiHops, 14) | 0}`,
     `#define SG_LORA_MAX_HOPS ${num(mesh.loraHops, 12) | 0}`,

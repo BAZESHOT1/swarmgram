@@ -201,6 +201,7 @@ interface ModuleRecord {
   border: boolean;
   transports: string[];
   last_neighbors: unknown;
+  ble_mac: string;
 }
 
 /** Реальный online: свежесть check-in + для wearable факт подключения к клиенту. */
@@ -225,6 +226,8 @@ function moduleView(m: ModuleRecord, blockedHashes?: Set<string>) {
     id: m.id,
     boardUuid: m.board_uuid,
     hardwareId,
+    meshAddr: hardwareId.replace(/^esp32-/, ''),
+    bleMac: m.ble_mac || '',
     publicId: m.public_id || '',
     role: m.role,
     kind: m.kind,
@@ -495,7 +498,7 @@ const MODULE_COLUMNS = `m.id, m.owner_id, m.board_uuid, m.hardware_id, m.public_
   m.module_type, m.is_public, m.firmware, m.name, m.board, m.firmware_config, m.battery, m.gateway, m.neighbors, m.status,
   m.attached, m.attached_at, m.rssi, m.uptime, m.blocked, m.block_reason,
   m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at, m.token_version,
-  m.cluster_id, m.border, m.transports, m.last_neighbors`;
+  m.cluster_id, m.border, m.transports, m.last_neighbors, m.ble_mac`;
 
 /** Имя модуля: username владельца + порядковый номер. */
 async function assignModuleName(ownerId: string, moduleId: string, force = false): Promise<void> {
@@ -524,6 +527,12 @@ function canonicalHardwareId(value: string): string | null {
   const hex = raw.replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
   if (hex.length !== 12) return null;
   return `esp32-${hex}`;
+}
+
+/** BLE MAC как алиас: aa:bb:cc:dd:ee:ff (или через дефис). */
+function normalizeBleMac(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase().replace(/-/g, ':') : '';
+  return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(raw) ? raw : '';
 }
 
 function hardwareIdOrThrow(value: string, field = 'hardwareId'): string {
@@ -770,6 +779,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const body = (req.body ?? {}) as {
       hardwareId?: string;
       boardUuid?: string;
+      /** BLE MAC — только алиас для сопоставления с Wi-Fi MAC. */
+      bleMac?: string;
+      ble_mac?: string;
       publicId?: string | number;
       role?: string;
       transport?: string;
@@ -785,6 +797,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     // hardwareId — основной идентификатор, boardUuid — legacy-имя того же поля.
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId ?? body.boardUuid, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
+    const bleMac = normalizeBleMac(body.bleMac ?? body.ble_mac);
 
     const computedPublicId = publicIdFromHardware(hardwareId);
     const providedPublicId = body.publicId === undefined || body.publicId === null
@@ -808,8 +821,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     }>(
       `SELECT id, owner_id, blocked, public_id, role, transport, token_version FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
-        ORDER BY (lower(hardware_id) = $1) DESC LIMIT 1`,
-      [hardwareId],
+           OR ($2 <> '' AND lower(ble_mac) = $2)
+        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC LIMIT 1`,
+      [hardwareId, bleMac],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
 
@@ -879,7 +893,12 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       // не актуальна: модуль снова мой.
       await dismissShadowsFor(moduleId, me);
       await query(
-        `UPDATE modules SET owner_id = $2, board_uuid = $3, hardware_id = $3, role = $4, transport = $5,
+        `UPDATE modules SET owner_id = $2,
+                board_uuid = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $3 END,
+                hardware_id = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $3 END,
+                mesh_addr = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $3 END,
+                ble_mac = CASE WHEN $15 <> '' THEN $15 ELSE ble_mac END,
+                role = $4, transport = $5,
                 module_type = $6, is_public = $7, kind = $8, firmware = COALESCE(NULLIF($9,''), firmware),
                 battery = $10, attached = $11, status = 'online', last_seen_at = now(), last_ip = $12,
                 board = COALESCE($13, board),
@@ -902,6 +921,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           ip,
           typeof body.board === 'string' ? body.board.slice(0, 32) : null,
           body.firmwareConfig && typeof body.firmwareConfig === 'object' ? JSON.stringify(body.firmwareConfig) : null,
+          bleMac,
         ],
       );
       // public_id: сохраняем существующий (даже солёный), иначе вычисляем.
@@ -921,9 +941,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
         try {
           inserted = await one<{ id: string }>(
             `INSERT INTO modules
-               (owner_id, board_uuid, hardware_id, public_id, role, transport, module_type, is_public,
+               (owner_id, board_uuid, hardware_id, mesh_addr, ble_mac, public_id, role, transport, module_type, is_public,
                 kind, firmware, battery, attached, status, last_seen_at, last_ip, board, firmware_config)
-             VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'online',now(),$12,$13,$14::jsonb) RETURNING id`,
+             VALUES ($1,$2,$2,$2,$15,$3,$4,$5,$6,$7,$8,$9,$10,$11,'online',now(),$12,$13,$14::jsonb) RETURNING id`,
             [
               me,
               hardwareId,
@@ -939,6 +959,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
               ip,
               typeof body.board === 'string' ? body.board.slice(0, 32) : null,
               body.firmwareConfig && typeof body.firmwareConfig === 'object' ? JSON.stringify(body.firmwareConfig) : null,
+              bleMac,
             ],
           );
           publicId = candidate;
@@ -1462,6 +1483,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     rateLimit(`modreg:${ip}`, 120, 60 * 60 * 1000);
     const body = (req.body ?? {}) as {
       hardwareId?: string;
+      bleMac?: string;
+      ble_mac?: string;
       publicId?: string | number;
       role?: string;
       transport?: string;
@@ -1483,6 +1506,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
+    const bleMac = normalizeBleMac(body.bleMac ?? body.ble_mac);
     const computed = publicIdFromHardware(hardwareId);
     const provided = body.publicId === undefined || body.publicId === null ? '' : String(body.publicId).trim();
     if (provided && !isPublicId(provided)) throw badRequest('public_id_mismatch');
@@ -1515,11 +1539,13 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       role: string;
       transport: string;
       token_version: number;
+      cluster_id?: string;
     }>(
-      `SELECT id, owner_id, blocked, public_id, role, transport, token_version FROM modules
+      `SELECT id, owner_id, blocked, public_id, role, transport, token_version, cluster_id FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
-        ORDER BY (lower(hardware_id) = $1) DESC LIMIT 1`,
-      [hardwareId],
+           OR ($2 <> '' AND lower(ble_mac) = $2)
+        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC LIMIT 1`,
+      [hardwareId, bleMac],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
 
@@ -1564,7 +1590,12 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       moduleId = existing.id;
       tokenVersion = Number(existing.token_version ?? 0);
       await query(
-        `UPDATE modules SET board_uuid = $2, hardware_id = $2, role = $3, transport = $4, kind = $5,
+        `UPDATE modules SET
+                board_uuid = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $2 END,
+                hardware_id = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $2 END,
+                mesh_addr = CASE WHEN hardware_id ~* '^esp32-[0-9a-f]{12}$' THEN hardware_id ELSE $2 END,
+                ble_mac = CASE WHEN $19 <> '' THEN $19 ELSE ble_mac END,
+                role = $3, transport = $4, kind = $5,
                 firmware = COALESCE(NULLIF($6,''), firmware), battery = $7, attached = $8,
                 status = 'online', last_seen_at = now(), last_ip = $9, updated_at = now(),
                 rssi = CASE WHEN $11 <> 0 THEN $11 ELSE rssi END,
@@ -1577,16 +1608,16 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           WHERE id = $1`,
         [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner, rssi, uptime, neighbors.length,
           clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32)),
-          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null],
+          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null, bleMac],
       );
       publicId = existing.public_id || (await assignPublicId(moduleId, hardwareId));
     } else {
       const inserted = await one<{ id: string }>(
-        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors, cluster_id, border, transports, last_neighbors, firmware_config)
-         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb) RETURNING id`,
+        `INSERT INTO modules (owner_id, board_uuid, hardware_id, mesh_addr, ble_mac, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors, cluster_id, border, transports, last_neighbors, firmware_config)
+         VALUES ($1,$2,$2,$2,$18,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb) RETURNING id`,
         [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, rssi, uptime, neighbors.length,
           clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32)),
-          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null],
+          body.pins && typeof body.pins === 'object' ? JSON.stringify(body.pins) : null, bleMac],
       );
       moduleId = inserted!.id;
       publicId = await assignPublicId(moduleId, hardwareId);
@@ -1611,6 +1642,35 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           )`,
         [hw, Number(n.rssi ?? 0) | 0, pid],
       ).catch(() => undefined);
+    }
+
+    // TELEMETRY_REPORT: register/checkin уже содержит кластер, соседей и
+    // транспорты — сохраняем снимок для агрегации по кластерам.
+    if (clusterId) {
+      const avgRssi = neighbors.length
+        ? Math.round(neighbors.reduce((sum, n) => sum + Number(n.rssi ?? 0), 0) / neighbors.length)
+        : 0;
+      await query(
+        `INSERT INTO telemetry_reports (module_id, mesh_addr, cluster_id, neighbors, avg_rssi, outbox_depth, hues)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::text[])`,
+        [moduleId, hardwareId, clusterId, neighbors.length, avgRssi, 0, transports],
+      ).catch(() => undefined);
+    }
+
+    // Смена кластера = завершённый хендовер. Логируем для мониторинга
+    // аномалий (частые перескоки между кластерами).
+    if (existing && existing.cluster_id && clusterId && existing.cluster_id !== clusterId) {
+      await query(
+        `INSERT INTO handover_events (module_id, mesh_addr, from_cluster, to_cluster, state)
+         VALUES ($1,$2,$3,$4,'complete')`,
+        [moduleId, hardwareId, existing.cluster_id, clusterId],
+      ).catch(() => undefined);
+      log('info', 'mesh_handover', {
+        moduleId,
+        meshAddr: hardwareId,
+        from: existing.cluster_id,
+        to: clusterId,
+      });
     }
 
     const cfg = await getMeshConfig();

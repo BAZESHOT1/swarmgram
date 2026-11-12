@@ -11,6 +11,8 @@ export type ModuleRole = 'wearable' | 'repeater' | 'gateway';
 /** Данные, которые модуль отдаёт в INFO после HELLO. */
 export interface ModuleInfo {
   hardwareId: string;
+  /** BLE MAC как алиас; основной идентификатор — hardwareId (Wi-Fi MAC). */
+  bleMac?: string;
   /** 8-значный публичный ID модуля для добавления в аккаунт. */
   publicId?: string;
   role: ModuleRole | string;
@@ -76,6 +78,7 @@ export class ModuleTransportError extends Error {
 /** Приводит произвольный info-ответ к строгому ModuleInfo. */
 export function normalizeInfo(raw: {
   hardwareId: string;
+  bleMac?: string;
   publicId?: string;
   role?: string;
   firmware?: string;
@@ -88,6 +91,7 @@ export function normalizeInfo(raw: {
   const role = raw.role === 'wearable' || raw.role === 'repeater' || raw.role === 'gateway' ? raw.role : 'gateway';
   return {
     hardwareId: raw.hardwareId,
+    bleMac: raw.bleMac,
     publicId: raw.publicId,
     role,
     firmware: raw.firmware ?? '',

@@ -26,6 +26,8 @@ import messageRoutes from './routes/messages.js';
 import objectRoutes from './routes/objects.js';
 import nodeRoutes from './routes/nodes.js';
 import meshRoutes from './routes/mesh.js';
+import meshNetworkRoutes from './routes/meshNetwork.js';
+import offlineSyncRoutes from './routes/offlineSync.js';
 import statsRoutes from './routes/stats.js';
 import channelRoutes from './routes/channels.js';
 import moduleRoutes, { backfillPublicIds } from './routes/modules.js';
@@ -104,6 +106,8 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
   await app.register(objectRoutes, { prefix: '/v1' });
   await app.register(nodeRoutes, { prefix: '/v1' });
   await app.register(meshRoutes, { prefix: '/v1' });
+  await app.register(meshNetworkRoutes, { prefix: '/v1' });
+  await app.register(offlineSyncRoutes, { prefix: '/v1' });
   await app.register(statsRoutes, { prefix: '/v1' });
   await app.register(channelRoutes, { prefix: '/v1' });
   await app.register(moduleRoutes, { prefix: '/v1' });

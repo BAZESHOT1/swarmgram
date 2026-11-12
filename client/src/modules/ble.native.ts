@@ -28,6 +28,7 @@ import {
   type ModuleInfo,
   type ModuleWifiConfig,
 } from './types';
+import { updateClusterFromModule } from '../mesh/ClusterAwarenessService';
 
 let sharedManager: BleManager | null = null;
 
@@ -523,6 +524,7 @@ export class NativeBleTransport implements ModuleConnection {
       raw = null;
     }
     if (!raw) return;
+    updateClusterFromModule(raw);
     this.info = {
       ...this.info,
       attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,

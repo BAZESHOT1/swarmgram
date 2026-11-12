@@ -18,6 +18,7 @@ import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
 import { prepareBle } from './ble';
+import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { emitMeshEnvelope, setMeshCapabilities, setMeshSender } from './meshLink';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import {
@@ -228,6 +229,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       try {
         const paired = await api.pairModule({
           hardwareId: nextInfo.hardwareId,
+          bleMac: nextInfo.bleMac,
           publicId: nextInfo.publicId,
           role: nextInfo.role,
           transport: kind,
@@ -261,6 +263,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         role: nextInfo.role,
         kind,
       };
+      void rememberIdentity(nextInfo);
       lastRecordRef.current = record;
       await writeLastModule(kv, record);
 

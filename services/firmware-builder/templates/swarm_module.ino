@@ -28,6 +28,7 @@
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <esp_mac.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <SPI.h>
@@ -375,6 +376,8 @@ static Preferences gPrefs;
 static uint32_t gBootMs = 0;
 static String gHardwareId;
 static String gPublicId;
+/** BLE-алиас (может отличаться от Wi-Fi MAC на некоторых платах). */
+static String gBleMac;
 static uint32_t gNodeId = 0;
 static bool gLogEnabled = true;
 
@@ -556,14 +559,62 @@ static uint32_t fnv1a32(const char *s) {
   return h;
 }
 
-static void initIdentity() {
-  // ESP.getEfuseMac() стабилен при перепрошивке и не требует WiFi init.
-  uint64_t mac = ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL;
+static String macToHardwareId(const uint8_t mac[6]) {
   char buf[32];
-  snprintf(buf, sizeof(buf), "esp32-%04lx%08lx",
-           (unsigned long)((mac >> 32) & 0xFFFFUL),
-           (unsigned long)(mac & 0xFFFFFFFFUL));
-  gHardwareId = String(buf);
+  snprintf(buf, sizeof(buf), "esp32-%02x%02x%02x%02x%02x%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
+
+static String macToText(const uint8_t mac[6]) {
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
+
+/**
+ * Идентичность модуля — только заводской MAC Wi-Fi STA из eFuse.
+ * Он не меняется при перезагрузке и перепрошивке. Дополнительно кэшируем
+ * строку в NVS: если плата/ядро вернут другой порядок байт, идентичность
+ * останется прежней. BLE MAC храним как алиас для сопоставления.
+ */
+static void initIdentity() {
+  uint8_t mac[6] = {0, 0, 0, 0, 0, 0};
+  bool macOk = false;
+#if defined(ESP_MAC_WIFI_STA)
+  macOk = esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK;
+#endif
+  if (!macOk) {
+    uint64_t efuse = ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL;
+    mac[0] = (uint8_t)((efuse >> 40) & 0xFF);
+    mac[1] = (uint8_t)((efuse >> 32) & 0xFF);
+    mac[2] = (uint8_t)((efuse >> 24) & 0xFF);
+    mac[3] = (uint8_t)((efuse >> 16) & 0xFF);
+    mac[4] = (uint8_t)((efuse >> 8) & 0xFF);
+    mac[5] = (uint8_t)(efuse & 0xFF);
+  }
+
+  // Стабильный кэш идентичности: MAC — источник истины, NVS — страховка.
+  Preferences prefs;
+  String stored;
+  if (prefs.begin("swarm", false)) {
+    stored = prefs.getString("hw_id", "");
+    if (!stored.length() || !stored.startsWith("esp32-") || stored.length() != 18) {
+      stored = macToHardwareId(mac);
+      prefs.putString("hw_id", stored);
+    }
+    prefs.end();
+  }
+  gHardwareId = stored.length() ? stored : macToHardwareId(mac);
+
+  uint8_t bt[6] = {0, 0, 0, 0, 0, 0};
+  bool btOk = false;
+#if defined(ESP_MAC_BT)
+  btOk = esp_read_mac(bt, ESP_MAC_BT) == ESP_OK;
+#endif
+  gBleMac = btOk ? macToText(bt) : macToText(mac);
+
   gNodeId = fnv1a32(gHardwareId.c_str());
   char pub[12];
   snprintf(pub, sizeof(pub), "%08lu", (unsigned long)(gNodeId % 100000000UL));
@@ -1178,7 +1229,7 @@ static uint32_t clusterComputeSelfId() {
   // Шлюз всегда якорь собственного кластера.
   if (isGateway()) {
     gAnchorNodeId = 0;
-    const char *selfAnchor[1] = {gPublicId.c_str()};
+    const char *selfAnchor[1] = {gHardwareId.c_str()};
     return kinto_compute_cluster_id(selfAnchor, 1);
   }
 
@@ -1209,14 +1260,17 @@ static uint32_t clusterComputeSelfId() {
       sgLog("[cluster] anchor -> %s rssi=%d", publicIdForNode(gAnchorNodeId).c_str(),
             (int)gNeighbors[best].rssi);
     }
-    String anchor = publicIdForNode(gNeighbors[best].id);
+    // CRC32(sorted(anchor MACs)): используем реальный MAC соседа.
+    String anchor = gNeighbors[best].hw[0] ? String(gNeighbors[best].hw)
+                                           : publicIdForNode(gNeighbors[best].id);
     const char *anchors[1] = {anchor.c_str()};
     return kinto_compute_cluster_id(anchors, 1);
   }
 
+  // Нет ни одного шлюза-якоря — кластера пока нет. Раньше узел делал
+  // якорем себя и создавал фантомный кластер без связи.
   gAnchorNodeId = 0;
-  const char *anchors[1] = {gPublicId.c_str()};
-  return kinto_compute_cluster_id(anchors, 1);
+  return 0;
 }
 
 static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
@@ -1929,6 +1983,32 @@ static void appendBeaconFields(String &p) {
   p += ",\"hw\":\"";
   p += gHardwareId;
   p += "\"";
+  p += ",\"mesh_addr\":\"";
+  p += gHardwareId.substring(6);
+  p += "\"";
+  p += ",\"ble_mac\":\"";
+  p += gBleMac;
+  p += "\"";
+  p += ",\"is_anchor\":";
+  p += (isGateway() || strcmp(SG_ROLE, "repeater") == 0) ? "1" : "0";
+  p += ",\"hues\":[";
+  bool firstHue = true;
+  if (wifiTransportEnabled()) {
+    p += "\"wifi\"";
+    firstHue = false;
+  }
+  if (loraTransportEnabled()) {
+    if (!firstHue) p += ",";
+    p += "\"lora\"";
+    firstHue = false;
+  }
+#if SG_BLE_ENABLED
+  if (!firstHue) p += ",";
+  p += "\"ble\"";
+#endif
+  p += "]";
+  p += ",\"load\":";
+  p += String((float)min((uint16_t)queueLoadValue(), (uint16_t)255) / 255.0f, 2);
   p += ",\"neighbor_clusters\":[";
   for (uint8_t i = 0; i < gBeaconNeighborClusterCount; i++) {
     if (i) p += ",";
@@ -2557,6 +2637,7 @@ static bool anyGatewayNeighbor() {
 static String buildInfoJson() {
   const bool gw = (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED) || anyGatewayNeighbor();
   String j = String("{\"hardwareId\":\"") + gHardwareId +
+             "\",\"bleMac\":\"" + gBleMac +
              "\",\"publicId\":\"" + gPublicId +
              "\",\"role\":\"" + SG_ROLE +
              "\",\"firmware\":\"" SG_FIRMWARE_VERSION
@@ -2779,16 +2860,29 @@ static bool wifiJoinBestMesh(bool force) {
   const int found = WiFi.scanNetworks(false, true);
   int best = -1;
   int bestRssi = -1000;
+  int hiddenBest = -1;
+  int hiddenRssi = -1000;
   const String ownBssid = WiFi.softAPmacAddress();
   for (int i = 0; i < found; i++) {
-    if (WiFi.SSID(i) != String(meshSsid())) continue;
     if (WiFi.BSSIDstr(i).equalsIgnoreCase(ownBssid)) continue;   // свой AP
+    const String ssid = WiFi.SSID(i);
     const int rssi = WiFi.RSSI(i);
-    if (rssi > bestRssi) {
-      bestRssi = rssi;
-      best = i;
+    if (ssid == String(meshSsid())) {
+      if (rssi > bestRssi) {
+        bestRssi = rssi;
+        best = i;
+      }
+    } else if (!ssid.length()) {
+      // Скрытая сеть: ESP32 не отдаёт SSID. Пробуем как fallback — пароль
+      // всё равно должен совпасть, иначе ассоциация просто не состоится.
+      if (rssi > hiddenRssi) {
+        hiddenRssi = rssi;
+        hiddenBest = i;
+      }
     }
   }
+  // Точный SSID приоритетнее; скрытую сеть пробуем только если видимой нет.
+  if (best < 0 && hiddenBest >= 0) best = hiddenBest;
   if (best >= 0) {
     uint8_t bssid[6];
     memcpy(bssid, WiFi.BSSID(best), 6);
@@ -3273,6 +3367,7 @@ static void hubRegister() {
   if (!gatewayUp() || gHubAuthRejected) return;
 
   String body = String("{\"hardwareId\":\"") + gHardwareId +
+                "\",\"bleMac\":\"" + gBleMac +
                 "\",\"publicId\":\"" + gPublicId +
                 "\",\"role\":\"gateway\",\"battery\":" + String(gBattery) +
                 ",\"firmware\":\"" SG_FIRMWARE_VERSION

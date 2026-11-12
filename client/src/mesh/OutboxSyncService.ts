@@ -1,129 +1,74 @@
 /**
- * Офлайн-очередь mesh v2. Хранится в kv (на native — AsyncStorage/SQLite-адаптер),
- * flush батчами по 20 при появлении любого канала.
+ * OutboxSyncService — батчевый flush офлайн-очереди (по 20 сообщений)
+ * и автоматическое уничтожение ESK после подтверждения.
  */
-import { kv } from '../crypto/storage';
-import { offlineCrypto } from './OfflineCryptoService';
+import { listOutbox } from '../data/db';
+import { flushOutbox } from '../data/messaging';
+import { destroyEphemeralKey } from './OfflineCryptoService';
 
-const OUTBOX_KEY = 'sg:mesh:outbox-v2';
-const BATCH = 20;
+export const OUTBOX_BATCH_SIZE = 20;
 
-export interface MeshOutboxItem {
-  msgId: string;
-  chatId: string;
-  ciphertext: string;
-  signature: string;
-  publicKey: string;
-  timestamp: number;
-  clusterId: string;
-  ttlHops: number;
-  clusterAgnostic: boolean;
-  unverifiableAfterDeviceChange?: boolean;
-}
-
-export interface FlushResult {
-  ok: boolean;
-  acked: string[];
+export interface OutboxFlushResult {
+  batches: number;
+  sent: number;
   remaining: number;
+  destroyedKey: boolean;
 }
 
-async function read(): Promise<MeshOutboxItem[]> {
-  try {
-    const raw = await kv.get(OUTBOX_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as MeshOutboxItem[]) : [];
-  } catch {
-    return [];
-  }
+let flushing: Promise<OutboxFlushResult> | null = null;
+const listeners = new Set<(remaining: number) => void>();
+
+export function onOutboxDepth(listener: (remaining: number) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
-async function write(items: MeshOutboxItem[]): Promise<void> {
-  await kv.set(OUTBOX_KEY, JSON.stringify(items.slice(0, 2000)));
-}
-
-export const meshOutbox = {
-  async size(): Promise<number> {
-    return (await read()).length;
-  },
-
-  async enqueue(input: {
-    msgId: string;
-    chatId: string;
-    ciphertext: string;
-    clusterId: string;
-    clusterAgnostic?: boolean;
-    ttlHops?: number;
-  }): Promise<MeshOutboxItem | null> {
-    const key = input.clusterAgnostic ? null : await offlineCrypto.ensureKeyPair();
-    const publicKey = key?.publicKeyB64 ?? (await offlineCrypto.currentPublicKey()) ?? '';
-    const signature = await offlineCrypto.sign({
-      msgId: input.msgId,
-      chatId: input.chatId,
-      ciphertext: input.ciphertext,
-    });
-    if (!signature) return null;
-    const item: MeshOutboxItem = {
-      msgId: input.msgId,
-      chatId: input.chatId,
-      ciphertext: input.ciphertext,
-      signature,
-      publicKey,
-      timestamp: Date.now(),
-      clusterId: input.clusterId,
-      ttlHops: input.ttlHops ?? 8,
-      clusterAgnostic: Boolean(input.clusterAgnostic),
-    };
-    const items = await read();
-    items.push(item);
-    await write(items);
-    return item;
-  },
-
-  /**
-   * flush отправляет батчи по 20. sender возвращает список подтверждённых msgId.
-   * При смене устройства неподтверждённые сообщения помечаются
-   * unverifiable_after_device_change и больше не переподписываются.
-   */
-  async flush(sender: (batch: MeshOutboxItem[]) => Promise<string[]>): Promise<FlushResult> {
-    const acked = new Set<string>();
-    let items = await read();
-    for (let i = 0; i < items.length; i += BATCH) {
-      const batch = items.slice(i, i + BATCH);
-      let ids: string[] = [];
-      try {
-        ids = await sender(batch);
-      } catch {
-        break;
-      }
-      ids.forEach((id) => acked.add(id));
-      if (!ids.length) break;
+async function emitDepth(): Promise<number> {
+  const remaining = (await listOutbox().catch(() => [])).length;
+  for (const listener of listeners) {
+    try {
+      listener(remaining);
+    } catch {
+      /* ignore */
     }
-    items = items.map((item) =>
-      acked.has(item.msgId)
-        ? item
-        : item.unverifiableAfterDeviceChange
-          ? item
-          : item,
-    );
-    const remaining = items.filter((item) => !acked.has(item.msgId));
-    // Если ключ этого устройства уже недоступен, помечаем остаток.
-    const hasKey = Boolean(await offlineCrypto.currentPublicKey());
-    const next = remaining.map((item) =>
-      !hasKey && !item.unverifiableAfterDeviceChange
-        ? { ...item, unverifiableAfterDeviceChange: true }
-        : item,
-    );
-    await write(next);
-    if (!next.length) await offlineCrypto.destroy();
-    return { ok: next.length === 0, acked: [...acked], remaining: next.length };
-  },
+  }
+  return remaining;
+}
 
-  async list(): Promise<MeshOutboxItem[]> {
-    return read();
-  },
+/** Отправляет очередь пачками; повторный вызов возвращает текущий промис. */
+export async function flushOutboxBatched(myUsername: string): Promise<OutboxFlushResult> {
+  if (flushing) return flushing;
+  flushing = (async () => {
+    let sent = 0;
+    let batches = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const before = (await listOutbox().catch(() => [])).length;
+      if (!before) break;
+      batches += 1;
+      const result = await flushOutbox(myUsername).catch(() => []);
+      sent += result.length;
+      const after = (await emitDepth());
+      if (after >= before) break; // нет прогресса — не крутим цикл вхолостую
+    }
+    const remaining = await emitDepth();
+    let destroyedKey = false;
+    if (remaining === 0) {
+      await destroyEphemeralKey();
+      destroyedKey = true;
+    }
+    return { batches, sent, remaining, destroyedKey };
+  })().finally(() => {
+    flushing = null;
+  });
+  return flushing;
+}
 
-  async clear(): Promise<void> {
-    await write([]);
-    await offlineCrypto.destroy();
-  },
+export async function getOutboxDepth(): Promise<number> {
+  return emitDepth();
+}
+
+/** Совместимый интерфейс для PresenceStatus. */
+export const meshOutbox = {
+  size: getOutboxDepth,
+  flush: flushOutboxBatched,
 };

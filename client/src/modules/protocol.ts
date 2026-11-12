@@ -278,6 +278,8 @@ export interface ModuleInfoPayload {
   v?: 1;
   kind?: 'info';
   hardwareId: string;
+  /** BLE MAC — алиас для сопоставления с Wi-Fi MAC. */
+  bleMac?: string;
   /** 8-значный публичный ID для добавления в аккаунт. */
   publicId?: string;
   role?: 'wearable' | 'repeater' | 'gateway' | string;
@@ -354,6 +356,7 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     v: 1,
     kind: 'info',
     hardwareId,
+    bleMac: source.bleMac != null ? String(source.bleMac) : source.ble_mac != null ? String(source.ble_mac) : undefined,
     publicId: source.publicId != null ? String(source.publicId) : source.public_id != null ? String(source.public_id) : undefined,
     role: source.role != null ? String(source.role) : undefined,
     firmware: source.firmware != null ? String(source.firmware) : undefined,

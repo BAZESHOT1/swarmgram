@@ -1,105 +1,70 @@
 /**
- * Отслеживание текущего кластера через данные подключённого модуля.
- * Сервис не привязан к React: UI подписывается через getSnapshot/useStore.
+ * ClusterAwarenessService — текущий кластер, border-нода и хендоверы.
+ *
+ * Данные приходят двумя путями:
+ *  - INFO/STATUS модуля по BLE (cluster_id, border, handover);
+ *  - агрегат Hub `/v1/mesh/network` и события module_status.
+ * Сервис только нормализует состояние; UI и чаты не меняются.
  */
-import {
-  computeClusterId,
-  electBorderNodes,
-  nextHandoverState,
-  type BorderCandidate,
-  type ClusterNeighbor,
-  type HandoverState,
-} from './cluster';
+import { api } from '../data/api';
 
 export interface ClusterSnapshot {
   clusterId: string;
-  neighborClusters: string[];
-  borderNodes: BorderCandidate[];
-  ownBorder: boolean;
-  handover: HandoverState;
-  targetCluster: string | null;
+  border: boolean;
+  handoverState: number;
+  neighbors: number;
   updatedAt: number;
 }
 
-const listeners = new Set<() => void>();
-
-let snapshot: ClusterSnapshot = {
-  clusterId: '',
-  neighborClusters: [],
-  borderNodes: [],
-  ownBorder: false,
-  handover: 'IN_CLUSTER',
-  targetCluster: null,
-  updatedAt: 0,
-};
-
-function emit(): void {
-  snapshot = { ...snapshot, updatedAt: Date.now() };
-  for (const listener of listeners) listener();
+export interface MeshNetworkSummary {
+  clusters: Array<{ clusterId: string; modules: number; avgRssi: number; handovers: number }>;
+  onlineModules: number;
+  handoversLastHour: number;
+  maxOutboxDepth: number;
 }
 
-export const clusterAwareness = {
-  getSnapshot(): ClusterSnapshot {
-    return snapshot;
-  },
+let snapshot: ClusterSnapshot = { clusterId: '', border: false, handoverState: 0, neighbors: 0, updatedAt: 0 };
+const listeners = new Set<(value: ClusterSnapshot) => void>();
 
-  subscribe(listener: () => void): () => void {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  },
+/** Обновление из STATUS/INFO BLE-кадра. */
+export function updateClusterFromModule(raw: Record<string, unknown>): ClusterSnapshot {
+  const clusterId = raw.cluster_id != null ? String(raw.cluster_id) : snapshot.clusterId;
+  const next: ClusterSnapshot = {
+    clusterId: clusterId === '0' ? '' : clusterId,
+    border: raw.border === true || Number(raw.border) === 1,
+    handoverState: Number(raw.handover ?? 0),
+    neighbors: Number(raw.neighbors ?? snapshot.neighbors),
+    updatedAt: Date.now(),
+  };
+  // Смена кластера — это хендовер; логируем только факт, без побочных эффектов.
+  if (snapshot.clusterId && next.clusterId && snapshot.clusterId !== next.clusterId) {
+    console.info('[cluster] handover', snapshot.clusterId, '->', next.clusterId);
+  }
+  snapshot = next;
+  for (const listener of listeners) {
+    try {
+      listener(next);
+    } catch {
+      /* ignore */
+    }
+  }
+  return next;
+}
 
-  /** Обновление по beacon/INFO от носимого модуля или шлюза. */
-  update(input: {
-    selfMeshAddr: string;
-    anchors: string[];
-    neighbors: ClusterNeighbor[];
-    currentRssi: number;
-    targetRssi: number;
-    targetStreak: number;
-    preferredTarget?: string | null;
-  }): ClusterSnapshot {
-    // Кластер считаем по якорям, которых видим; собственный адрес тоже якорь,
-    // если модуль стационарный (gateway/repeater).
-    const clusterId = computeClusterId(input.anchors);
-    const neighborClusters = [...new Set(input.neighbors.map((n) => n.clusterId).filter((id) => id && id !== clusterId))];
-    const borderNodes = electBorderNodes(input.neighbors);
-    const ownBorder = borderNodes.some((b) => b.meshAddr === input.selfMeshAddr);
-    const targetCluster = input.preferredTarget ?? neighborClusters[0] ?? null;
-    const handover = nextHandoverState(snapshot.handover, {
-      currentCluster: clusterId,
-      targetCluster: targetCluster ?? '',
-      currentRssi: input.currentRssi,
-      targetRssi: input.targetRssi,
-      targetStreak: input.targetStreak,
-      borderAvailable: borderNodes.some(
-        (b) => b.clusterA === targetCluster || b.clusterB === targetCluster,
-      ),
-      now: Date.now(),
-    });
+export function getClusterSnapshot(): ClusterSnapshot {
+  return snapshot;
+}
 
-    snapshot = {
-      clusterId,
-      neighborClusters,
-      borderNodes,
-      ownBorder,
-      handover,
-      targetCluster,
-      updatedAt: Date.now(),
-    };
-    emit();
-    return snapshot;
-  },
+export function onClusterChange(listener: (value: ClusterSnapshot) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
-  reset(): void {
-    snapshot = {
-      clusterId: '',
-      neighborClusters: [],
-      borderNodes: [],
-      ownBorder: false,
-      handover: 'IN_CLUSTER',
-      targetCluster: null,
-      updatedAt: Date.now(),
-    };
-    emit();
-  },
-};
+/** Агрегат сети с Hub для индикаторов и диагностики. */
+export async function fetchMeshNetwork(): Promise<MeshNetworkSummary> {
+  try {
+    return await api.meshNetwork();
+  } catch {
+    return { clusters: [], onlineModules: 0, handoversLastHour: 0, maxOutboxDepth: 0 };
+  }
+}

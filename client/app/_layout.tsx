@@ -32,6 +32,7 @@ import { applyServerPreferences, initPreferenceSync } from '../src/data/preferen
 import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCachedChatPreviews, findCachedChat } from '../src/data/cache';
 import { ensureWebPushPermission, initPush } from '../src/push';
 import { showMeshLocalNotification } from '../src/push/local';
+import { startNetworkStateMonitor } from '../src/mesh/NetworkStateMonitor';
 import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
@@ -920,6 +921,12 @@ export default function RootLayout() {
       cleanup?.();
     };
   }, [sessionState?.userId, sessionState?.deviceId]);
+
+  useEffect(() => {
+    if (!ready) return undefined;
+    const stop = startNetworkStateMonitor();
+    return () => stop();
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;

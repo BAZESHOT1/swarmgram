@@ -1336,6 +1336,8 @@ export const api = {
   pairModule: (input: {
     hardwareId?: string;
     boardUuid?: string;
+    /** BLE MAC — алиас для сопоставления с Wi-Fi MAC. */
+    bleMac?: string;
     /** 8-значный публичный ID из INFO модуля. */
     publicId?: string;
     role?: ModuleRole | string;
@@ -1353,6 +1355,53 @@ export const api = {
       body: JSON.stringify(input),
     }),
   listModules: () => req<ModuleRow[]>('/v1/modules'),
+  /** Реестр устройств по mesh_addr (MAC) для отладки идентичности. */
+  listMeshDevices: () =>
+    req<
+      Array<{
+        id: string;
+        meshAddr: string;
+        bleMac?: string;
+        publicId?: string;
+        role?: string;
+        transport?: string;
+        kind?: string;
+        status?: string;
+        lastSeenAt?: string | null;
+        clusterId?: string;
+        border?: boolean;
+        transports?: string[];
+        neighbors?: number;
+        firmware?: string;
+      }>
+    >('/v1/devices'),
+  /** Агрегат mesh-сети: кластеры, RSSI, хендоверы, outbox. */
+  meshNetwork: () =>
+    req<{
+      clusters: Array<{ clusterId: string; modules: number; avgRssi: number; handovers: number }>;
+      onlineModules: number;
+      handoversLastHour: number;
+      maxOutboxDepth: number;
+    }>('/v1/mesh/network'),
+  /** Батчевый приём подписанных офлайн-пакетов (ESK). */
+  flushOfflineBatch: (
+    packets: Array<{
+      clientId: string;
+      chatId: string;
+      createdAt: string;
+      payloadHash: string;
+      ephemeralPubkey: string;
+      signature: string;
+    }>,
+  ) =>
+    req<{
+      ok: boolean;
+      accepted: number;
+      rejected: Array<{ clientId: string; reason: string }>;
+    }>('/v1/mesh/outbox/flush', {
+      method: 'POST',
+      body: JSON.stringify({ packets }),
+    }),
   /**
    * Добавить подготовленный модуль по 8-значному ID.
    * 404 означает «модуль ещё не появился в сети» — ConnectModuleFlow

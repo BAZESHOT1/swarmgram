@@ -10,7 +10,7 @@
  *
  * Подключение и прошивка идут через полноэкранный мастер ConnectModuleFlow.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
@@ -416,7 +416,20 @@ export default function ModulesScreen() {
   }, [pushEvent]);
 
   const list = modules.data ?? [];
-  const realModules = list.filter((module) => !isShadow(module));
+  // Жёсткая дедупликация по MAC: один физический модуль = одна карточка,
+  // даже если сервер/кэш успели вернуть старую и новую запись.
+  const realModules = useMemo(() => {
+    const byMac = new Map<string, ModuleRow>();
+    for (const module of list) {
+      if (isShadow(module)) continue;
+      const key = hardwareIdOf(module) || module.id;
+      const prev = byMac.get(key);
+      if (!prev || String(module.lastSeenAt ?? '') > String(prev.lastSeenAt ?? '')) {
+        byMac.set(key, module);
+      }
+    }
+    return [...byMac.values()];
+  }, [list]);
   const shadows = list.filter(isShadow);
   const total = realModules.length;
   const online = realModules.filter((module) => module.online === true && !module.blocked).length;
