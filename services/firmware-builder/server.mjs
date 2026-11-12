@@ -27,7 +27,7 @@ const ARDUINO_DATA = join(DATA_DIR, 'arduino');
 const ARDUINO_USER = join(DATA_DIR, 'arduino-user');
 const TEMPLATE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'templates');
 
-const BUILD_TIMEOUT_MS = 600_000;
+const BUILD_TIMEOUT_MS = 1_200_000;
 const CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 64 * 1024;
 // Минимум свободного места для компиляции (временные файлы ядра).
@@ -241,15 +241,23 @@ function generateConfigHeader(config, version) {
 /* ------------------------------------------------------------- компиляция -- */
 
 async function arduinoCli(args, timeout = BUILD_TIMEOUT_MS) {
-  return execFileAsync('arduino-cli', args, {
-    timeout,
-    maxBuffer: 16 * 1024 * 1024,
-    env: {
-      ...process.env,
-      ARDUINO_DIRECTORIES_DATA: ARDUINO_DATA,
-      ARDUINO_DIRECTORIES_USER: ARDUINO_USER,
-    },
-  });
+  try {
+    return await execFileAsync('arduino-cli', args, {
+      timeout,
+      maxBuffer: 16 * 1024 * 1024,
+      env: {
+        ...process.env,
+        ARDUINO_DIRECTORIES_DATA: ARDUINO_DATA,
+        ARDUINO_DIRECTORIES_USER: ARDUINO_USER,
+      },
+    });
+  } catch (e) {
+    // Сохраняем хвост компилятора: без него «ошибка сборки» бесполезна.
+    const out = `${e?.stdout ?? ''}\n${e?.stderr ?? ''}`.trim().slice(-4000);
+    const err = new Error(`${e?.message ?? 'arduino-cli failed'}${out ? `\n${out}` : ''}`);
+    err.name = e?.name ?? 'Error';
+    throw err;
+  }
 }
 
 async function hasEsp32Core() {
@@ -486,11 +494,23 @@ async function compileFirmware(config, version) {
     try {
       ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
     } catch (firstError) {
+      // Таймаут не повторяем: это не повреждённый кэш, а долгая компиляция.
+      const message = String(firstError);
+      if (/timed out|ETIMEDOUT|killed/i.test(message)) {
+        await writeFile(join(DATA_DIR, 'last-build.log'), message).catch(() => undefined);
+        throw firstError;
+      }
       // Повреждённый incremental build — частая причина «ошибка сборки».
-      log('build_retry', { board, error: String(firstError).slice(0, 300) });
+      log('build_retry', { board, error: message.slice(0, 300) });
+      await writeFile(join(DATA_DIR, 'last-build.log'), message).catch(() => undefined);
       await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);
       await mkdir(buildDir, { recursive: true });
-      ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
+      try {
+        ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
+      } catch (secondError) {
+        await writeFile(join(DATA_DIR, 'last-build.log'), String(secondError)).catch(() => undefined);
+        throw secondError;
+      }
     }
     const compileLog = `${stdout}\n${stderr}`.trim();
 

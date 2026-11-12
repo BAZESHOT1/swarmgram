@@ -265,7 +265,7 @@ async function failStaleBuilds(userId?: string): Promise<void> {
             log = CASE WHEN log = '' THEN '[hub] build timed out' ELSE log || E'\n[hub] build timed out' END,
             updated_at = now()
       WHERE status IN ('queued', 'building')
-        AND updated_at < now() - interval '20 minutes'
+        AND updated_at < now() - interval '35 minutes'
         ${userId ? 'AND user_id = $1' : ''}`,
     userId ? [userId] : [],
   ).catch(() => undefined);
@@ -323,7 +323,7 @@ async function setBuildFailed(id: string, logText: string, phase = 'failed'): Pr
 }
 
 /** Таймаут запроса к builder. Сборка дольше 5 минут считается зависшей. */
-const BUILD_HTTP_TIMEOUT_MS = 900_000;
+const BUILD_HTTP_TIMEOUT_MS = 1_500_000;
 /** Как часто Hub пишет прогресс в БД (клиент поллит каждые 2 с). */
 const PROGRESS_TICK_MS = 4_500;
 

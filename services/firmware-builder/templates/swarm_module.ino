@@ -188,7 +188,7 @@
 
 /* --- Mesh v2 core: кластеры, гибридный роутинг, классификатор трафика --- */
 #ifndef SG_MESH_V2
-#define SG_MESH_V2 1
+#define SG_MESH_V2 0
 #endif
 #if SG_MESH_V2
 #include "beacon_format.h"
@@ -198,9 +198,11 @@
 #endif
 
 #if SG_USE_LORA
-// Обе библиотеки: чип определяется автоматически при старте.
+#if SG_LORA_CHIP_SX1262
 #include <RadioLib.h>
+#else
 #include <LoRa.h>
+#endif
 #endif
 
 #if SG_BLE_ENABLED
@@ -391,9 +393,8 @@ static uint32_t gPendingSince = 0;
 
 // LoRa.
 static uint32_t gLastLoraTxMs = 0;
-#if SG_USE_LORA
+#if SG_USE_LORA && SG_LORA_CHIP_SX1262
 static SX1262 *gRadio = nullptr;
-static bool gLoraSx1262 = false;
 #endif
 
 // BLE.
@@ -1088,17 +1089,17 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
 static bool loraSendRaw(const uint8_t *buf, size_t len) {
   if (!gLoraReady) return false;
   if (len > (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) return false;
-  if (gLoraSx1262) {
-    int st = gRadio->transmit((uint8_t *)buf, len);
-    if (st != RADIOLIB_ERR_NONE) {
-      sgLog("[lora] tx err %d", st);
-      return false;
-    }
-  } else {
-    LoRa.beginPacket();
-    LoRa.write(buf, len);
-    if (LoRa.endPacket() != 1) return false;
+#if SG_LORA_CHIP_SX1262
+  int st = gRadio->transmit((uint8_t *)buf, len);
+  if (st != RADIOLIB_ERR_NONE) {
+    sgLog("[lora] tx err %d", st);
+    return false;
   }
+#else
+  LoRa.beginPacket();
+  LoRa.write(buf, len);
+  if (LoRa.endPacket() != 1) return false;
+#endif
   gLoraTxCount++;
   gLastLoraTxMs = millis();
   return true;
@@ -1935,8 +1936,13 @@ static void clientFeedFrame(uint8_t type, const uint8_t *payload, uint16_t len) 
 
 /* --------------------------------------------------------------- LoRa ---- */
 
+static void setupLora() {
 #if SG_USE_LORA
-static bool loraTrySx1262() {
+  if (!loraTransportEnabled()) {
+    sgLog("[lora] disabled (conn=%s)", SG_CONNECTIVITY);
+    return;
+  }
+#if SG_LORA_CHIP_SX1262
   SPI.begin(SG_LORA_SCK, SG_LORA_MISO, SG_LORA_MOSI, SG_LORA_CS);
 #if SG_LORA_BUSY >= 0
   gRadio = new SX1262(new Module(SG_LORA_CS, SG_LORA_DIO0, SG_LORA_RST, SG_LORA_BUSY));
@@ -1947,56 +1953,32 @@ static bool loraTrySx1262() {
                             (int)SG_LORA_SF, (int)SG_LORA_CR,
                             (uint8_t)SG_LORA_SYNC, (int)SG_LORA_POWER, 8);
   if (state != RADIOLIB_ERR_NONE) {
-    sgLog("[lora] SX1262 init failed %d", state);
-    delete gRadio;
-    gRadio = nullptr;
-    return false;
+    sgLog("[lora] SX1262 init failed %d pins cs=%d rst=%d dio0=%d", state, SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
+    return;
   }
-  gLoraSx1262 = true;
-  return true;
-}
-
-static bool loraTrySx127x() {
+  gLoraReady = true;
+  sgLog("[lora] SX1262 ready %0.3f MHz SF%d", (double)SG_LORA_FREQ, (int)SG_LORA_SF);
+#else
   LoRa.setPins(SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
   if (!LoRa.begin((long)((double)SG_LORA_FREQ * 1000000.0))) {
-    sgLog("[lora] SX127x init failed");
-    return false;
+    sgLog("[lora] SX127x init failed pins cs=%d rst=%d dio0=%d", SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
+    return;
   }
   LoRa.setSpreadingFactor((int)SG_LORA_SF);
   LoRa.setSignalBandwidth((long)((double)SG_LORA_BW * 1000.0));
   LoRa.setCodingRate4((int)SG_LORA_CR);
   LoRa.setSyncWord((uint8_t)SG_LORA_SYNC);
   LoRa.setTxPower((int)SG_LORA_POWER);
-  gLoraSx1262 = false;
-  return true;
-}
-#endif
-
-static void setupLora() {
-#if SG_USE_LORA
-  if (!loraTransportEnabled()) {
-    sgLog("[lora] disabled (conn=%s)", SG_CONNECTIVITY);
-    return;
-  }
-#if SG_LORA_CHIP_SX1262
-  bool ok = loraTrySx1262() || loraTrySx127x();
-#else
-  bool ok = loraTrySx127x() || loraTrySx1262();
-#endif
-  if (!ok) {
-    sgLog("[lora] no radio detected (pins cs=%d rst=%d dio0=%d)", SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
-    return;
-  }
   gLoraReady = true;
-  sgLog("[lora] %s ready %0.3f MHz SF%d", gLoraSx1262 ? "SX1262" : "SX127x",
-        (double)SG_LORA_FREQ, (int)SG_LORA_SF);
+  sgLog("[lora] SX127x ready %0.3f MHz SF%d", (double)SG_LORA_FREQ, (int)SG_LORA_SF);
+#endif
 #endif
 }
 
 static void loraPoll() {
 #if SG_USE_LORA
   if (!gLoraReady) return;
-  if (gLoraSx1262) {
+#if SG_LORA_CHIP_SX1262
   size_t avail = gRadio->available();
   if (avail > 0) {
     uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
@@ -2012,7 +1994,7 @@ static void loraPoll() {
       sgLog("[lora] rx err %d", st);
     }
   }
-  } else {
+#else
   int packetSize = LoRa.parsePacket();
   if (packetSize > 0) {
     uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
@@ -2025,7 +2007,6 @@ static void loraPoll() {
             (unsigned)n, (int)rssi);
     }
     handleMeshPacket(buf, n, true, rssi);
-  }
   }
 #endif
 #endif
