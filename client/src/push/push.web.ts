@@ -66,7 +66,9 @@ export async function registerWebPush(
 ): Promise<WebPushCleanup> {
   if (!isWebPushSupported()) return noop;
 
-  const vapidKey = process.env.EXPO_PUBLIC_FCM_VAPID_KEY;
+  const vapidKey =
+    process.env.EXPO_PUBLIC_FCM_VAPID_KEY ||
+    'BDESQnjb2N39oeIlvFrpDPrcYDH4oOKF8xonjc6TevIiz6d5uoYHSws9EcUWDpzfrjYpcaHsdcAVOw4Fv-LgZig';
   if (!vapidKey) {
     if (!vapidWarned) {
       vapidWarned = true;
@@ -116,7 +118,7 @@ export async function registerWebPush(
 
     // Foreground-сообщения (вкладка в фокусе) FCM не показывает сам.
     const unsubscribe = onMessage(messaging, (payload) => {
-      const title = payload.notification?.title ?? 'SwarmGram';
+      const title = payload.notification?.title ?? 'Kinto';
       const body = payload.notification?.body ?? '';
       const data = payload.data;
 

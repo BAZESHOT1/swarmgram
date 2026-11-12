@@ -170,7 +170,7 @@ export default function JoinByInviteScreen() {
           >
             <Ionicons name="chevron-back" size={21} color={theme.textPrimary} />
           </PressableScale>
-          <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>Приглашение в SwarmGram</Text>
+          <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>Приглашение в Kinto</Text>
         </View>
 
         <MotiView
@@ -312,7 +312,7 @@ export default function JoinByInviteScreen() {
           accessibilityLabel="Перейти к чатам"
           style={({ pressed }) => [{ marginTop: 16, opacity: pressed ? 0.6 : 1 }]}
         >
-          <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>SwarmGram · защищённые чаты</Text>
+          <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>Kinto · защищённые чаты</Text>
         </Pressable>
       </View>
     </ScrollView>

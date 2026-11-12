@@ -1,5 +1,5 @@
 /**
- * Бинарный транспортный протокол SwarmGram ↔ ESP32-модуль.
+ * Бинарный транспортный протокол Kinto ↔ ESP32-модуль.
  *
  * Кадр одинаков для USB (Web Serial) и BLE:
  *
@@ -267,7 +267,7 @@ export type JsonKind = 'hello' | 'info' | 'envelope' | 'ack' | 'status' | 'confi
 export interface HelloPayload {
   v: 1;
   kind: 'hello';
-  app: 'swarmgram';
+  app: 'kinto';
   client: string;
   version?: string;
   /** Если известен — просим модуль подтвердить именно этот hardwareId. */
@@ -332,7 +332,7 @@ export function configPayload(wifiSsid: string, wifiPassword: string): ConfigPay
 }
 
 export function helloPayload(client: string, expectHardwareId?: string): HelloPayload {
-  return { v: 1, kind: 'hello', app: 'swarmgram', client, expectHardwareId };
+  return { v: 1, kind: 'hello', app: 'kinto', client, expectHardwareId };
 }
 
 /** Понимает и «плоский» info, и info, завёрнутый в kind:'info'. */

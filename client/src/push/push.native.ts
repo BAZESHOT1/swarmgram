@@ -30,9 +30,9 @@ import { router } from 'expo-router';
 import * as api from '../data/api';
 import type { PushCleanup, PushData, PushDisplayOptions, PushSession } from './types';
 
-export const MESSAGES_CHANNEL_ID = 'swarmgram-messages';
-export const SYSTEM_CHANNEL_ID = 'swarmgram-system';
-export const BACKGROUND_FETCH_TASK_ID = 'swarmgram-pending-notifications';
+export const MESSAGES_CHANNEL_ID = 'kinto-messages';
+export const SYSTEM_CHANNEL_ID = 'kinto-system';
+export const BACKGROUND_FETCH_TASK_ID = 'kinto-pending-notifications';
 
 const MAX_PENDING_PER_FETCH = 10;
 
@@ -167,7 +167,7 @@ export async function displayPushNotification(options: PushDisplayOptions): Prom
 
     await notifee.displayNotification({
       id: options.id,
-      title: options.title || 'SwarmGram',
+      title: options.title || 'Kinto',
       body: options.body || '',
       data,
       android: {
@@ -195,7 +195,7 @@ export async function displayPushNotification(options: PushDisplayOptions): Prom
 function notificationFromMessage(message: RemoteMessage): PushDisplayOptions {
   const data = normalizeData(message.data);
   return {
-    title: message.notification?.title || data.title || 'SwarmGram',
+    title: message.notification?.title || data.title || 'Kinto',
     body: message.notification?.body || data.body || data.text || '',
     data,
     channelId: channelForData(data),
@@ -434,7 +434,7 @@ export async function pollPending(): Promise<number> {
         if (chatId) data.chatId = chatId;
       }
 
-      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'SwarmGram';
+      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'Kinto';
       const body =
         (typeof raw.body === 'string' && raw.body) ||
         (typeof raw.message === 'string' && raw.message) ||

@@ -80,7 +80,7 @@ const LORA_DEFAULT_PINS: Record<FirmwareBoard, LoraPins & { chip: LoraChip }> = 
   esp32: { sck: 18, miso: 19, mosi: 23, cs: 5, rst: 14, dio0: 26, busy: 27, chip: 'sx1278' },
   esp32s3: { sck: 12, miso: 13, mosi: 11, cs: 10, rst: 9, dio0: 8, busy: 7, chip: 'sx1262' },
 };
-// 869.525 — глобальная частота SwarmGram; остальные оставлены для
+// 869.525 — глобальная частота Kinto; остальные оставлены для
 // совместимости со старым визардом (значение всё равно перезапишет сервер).
 const LORA_FREQS = [433, 868, 869.525, 915];
 const LORA_BANDWIDTHS = [125, 250, 500];

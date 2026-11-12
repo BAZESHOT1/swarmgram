@@ -1,5 +1,5 @@
 /**
- * SwarmGram Node — узел хранения, который пользователь поднимает на своём сервере.
+ * Kinto Node — узел хранения, который пользователь поднимает на своём сервере.
  *
  * Что делает:
  *  1. При старте сам регистрируется на главном сервере (MAIN_SERVER_URL из .env),
@@ -33,7 +33,7 @@ import { verifyTicket, type Ticket } from './ticket.js';
 const env = (name: string, def = ''): string => (process.env[name] ?? def).trim();
 
 const config = {
-  mainServerUrl: env('MAIN_SERVER_URL', 'https://api.swarmgram.is-a.dev').replace(/\/+$/, ''),
+  mainServerUrl: env('MAIN_SERVER_URL', 'https://api.kinto.is-a.dev').replace(/\/+$/, ''),
   ownerUsername: env('OWNER_USERNAME'),
   claimToken: env('NODE_CLAIM_TOKEN'),
   publicUrl: env('NODE_PUBLIC_URL'),

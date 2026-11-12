@@ -25,7 +25,7 @@ const INFO: Record<Exclude<InfoKind, null>, { title: string; body: string }> = {
   licenses: {
     title: 'Лицензии',
     body:
-      'SwarmGram распространяется как частный проект. Используются открытые библиотеки: React и React Native, Expo, Moti, Zustand, TanStack Query, @noble (криптография), Fastify и PostgreSQL. Полные тексты лицензий зависимостей доступны в репозитории проекта.',
+      'Kinto распространяется как частный проект. Используются открытые библиотеки: React и React Native, Expo, Moti, Zustand, TanStack Query, @noble (криптография), Fastify и PostgreSQL. Полные тексты лицензий зависимостей доступны в репозитории проекта.',
   },
   privacy: {
     title: 'Политика конфиденциальности',
@@ -35,7 +35,7 @@ const INFO: Record<Exclude<InfoKind, null>, { title: string; body: string }> = {
   project: {
     title: 'О проекте',
     body:
-      'SwarmGram — децентрализованный мессенджер: Hub отвечает за аккаунты и маршрутизацию, узлы хранения держат зашифрованные объекты, а ESP32-модули позволяют держать связь без интернета. Проект развивается как эксперимент в области приватной связи и mesh-сетей.',
+      'Kinto — децентрализованный мессенджер: Hub отвечает за аккаунты и маршрутизацию, узлы хранения держат зашифрованные объекты, а ESP32-модули позволяют держать связь без интернета. Проект развивается как эксперимент в области приватной связи и mesh-сетей.',
   },
 };
 
@@ -50,7 +50,7 @@ export default function AboutScreen() {
 
   return (
     <SettingsPage title="О приложении" subtitle="Версия, правовая информация и шифрование">
-      <SettingsSection title="SwarmGram" delay={0}>
+      <SettingsSection title="Kinto" delay={0}>
         <GlassCard>
           <SettingsRow icon="layers-outline" title="Версия" subtitle="Beta-сборка" right={<Text style={[styles.mono, { color: theme.textSecondary }]}>{VERSION}</Text>} />
           <SettingsRow
@@ -68,7 +68,7 @@ export default function AboutScreen() {
           <SettingsRow
             icon="sparkles-outline"
             title="О проекте"
-            subtitle="Зачем нужен SwarmGram"
+            subtitle="Зачем нужен Kinto"
             onPress={() => setInfo('project')}
           />
           {isAdmin ? (
@@ -104,7 +104,7 @@ export default function AboutScreen() {
       </SettingsSection>
 
       <Text style={{ color: theme.textDisabled, fontSize: 11.5, textAlign: 'center', marginTop: 6 }}>
-        SwarmGram {VERSION} · сделано для приватной связи
+        Kinto {VERSION} · сделано для приватной связи
       </Text>
 
       <ProfileModal visible={info !== null} title={infoData?.title ?? ''} onClose={() => setInfo(null)}>

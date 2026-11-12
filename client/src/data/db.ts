@@ -25,7 +25,7 @@ async function native(): Promise<NonNullable<typeof sqliteDb> | null> {
   if (sqliteDb) return sqliteDb;
   try {
     const SQLite = await import('expo-sqlite');
-    const db = SQLite.openDatabaseSync('swarmgram.db');
+    const db = SQLite.openDatabaseSync('kinto.db');
     if (typeof db.execAsync === 'function') {
       await db.execAsync(
         `CREATE TABLE IF NOT EXISTS outbox (

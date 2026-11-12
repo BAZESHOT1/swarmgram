@@ -125,7 +125,7 @@ export const BOARDS: BoardPreset[] = [
   },
 ];
 
-export const DEFAULT_HUB_URL = 'http://api.swarmgram.is-a.dev';
+export const DEFAULT_HUB_URL = 'http://api.kinto.is-a.dev';
 export const DRAFT_KEY = 'sg:firmware-draft';
 
 export function boardPreset(board: FirmwareBoard): BoardPreset {

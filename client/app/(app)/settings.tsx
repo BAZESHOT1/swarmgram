@@ -293,7 +293,7 @@ export default function SettingsScreen() {
         )}
 
         <Text style={{ color: theme.textDisabled, fontSize: 11.5, textAlign: 'center', marginTop: 6 }}>
-          SwarmGram {VERSION}
+          Kinto {VERSION}
         </Text>
       </View>
     </ScrollView>

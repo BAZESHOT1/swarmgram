@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "SwarmGram",
-    "slug": "swarmgram",
-    "version": "1.4.6",
+    "name": "Kinto",
+    "slug": "kinto",
+    "version": "1.4.7",
     "orientation": "portrait",
-    "scheme": "swarmgram",
+    "scheme": "kinto",
     "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
     "jsEngine": "hermes",
@@ -53,7 +53,7 @@
       [
         "react-native-ble-plx",
         {
-          "bluetoothAlwaysPermission": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети."
+          "bluetoothAlwaysPermission": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
       ],
       "expo-sqlite",
@@ -62,21 +62,21 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "10406",
+      "buildNumber": "10407",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
       },
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "SwarmGram подключается к модулям связи по Bluetooth для работы mesh-сети.",
-        "NSBluetoothPeripheralUsageDescription": "SwarmGram использует Bluetooth для связи с носимыми модулями.",
+        "NSBluetoothAlwaysUsageDescription": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети.",
+        "NSBluetoothPeripheralUsageDescription": "Kinto использует Bluetooth для связи с носимыми модулями.",
         "UIBackgroundModes": ["fetch", "remote-notification"],
         "FirebaseAppDelegateProxyEnabled": true
       }
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 10406,
+      "versionCode": 10407,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
@@ -94,7 +94,7 @@
       ]
     },
     "extra": {
-      "apiUrl": "https://api.swarmgram.io/api"
+      "apiUrl": "https://api.kinto.is-a.dev/api"
     }
   }
 }

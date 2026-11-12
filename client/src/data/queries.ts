@@ -4,7 +4,7 @@
 import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import * as api from './api';
-import type { Chat, Envelope } from './api';
+import type { Chat, Envelope, UserProfile } from './api';
 import { loadChatMessages, type ViewMessage } from './messaging';
 import { useStore } from '../state/useStore';
 import {
@@ -66,7 +66,17 @@ export function useChats() {
   const username = me?.username;
   const query = useQuery({
     queryKey: [CHATS_KEY, username],
-    queryFn: () => api.api.listChats(),
+    queryFn: async () => {
+      try {
+        return await api.api.listChats();
+      } catch (error) {
+        const cached = username ? getCachedChats(username) : null;
+        if (cached) return cached;
+        // Без сервера и без кэша показываем пустой список, а не ошибку.
+        if (!useStore.getState().transportOnline) return [];
+        throw error;
+      }
+    },
     enabled: Boolean(me),
     staleTime: STALE.chats,
     gcTime: 30 * 60_000,
@@ -387,6 +397,37 @@ export function useUserProfile(username: string | null) {
       } catch (error) {
         const cached = await loadCachedProfile(username);
         if (cached) return cached;
+        const me = getCachedMe();
+        if (me && username && me.username.toLowerCase() === username.toLowerCase()) {
+          return {
+            userId: me.id,
+            username: me.username,
+            displayName: me.displayName || me.username,
+            avatar: me.avatar ?? null,
+            banner: me.banner,
+            status: me.status,
+            bio: (me as unknown as { bio?: string }).bio ?? '',
+            links: me.links ?? [],
+            location: me.location ?? '',
+            birthday: me.birthday ?? null,
+            createdAt: me.createdAt ?? new Date().toISOString(),
+            online: true,
+            nodeOnline: false,
+            moduleOnline: false,
+            lastSeenAt: new Date().toISOString(),
+            isSelf: true,
+            blockedByMe: false,
+            blockedMe: false,
+            sharedChats: [],
+            role: me.role,
+            modulesTotal: 0,
+            modulesOnline: 0,
+            nodesTotal: me.nodes?.length ?? 0,
+            nodesOnline: me.nodes?.filter((node) => node.status === 'online').length ?? 0,
+            nodeCapacityBytes: me.nodes?.reduce((sum, node) => sum + Number(node.capacity_bytes ?? 0), 0) ?? 0,
+            nodeUsedBytes: me.usedBytes ?? 0,
+          } as UserProfile;
+        }
         throw error;
       }
     },

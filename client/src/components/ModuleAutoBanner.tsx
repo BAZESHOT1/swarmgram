@@ -30,7 +30,7 @@ export function ModuleAutoBanner() {
       ? 'Не удалось подключить'
       : connecting
         ? 'Подключение модуля'
-        : 'Найден модуль SwarmGram';
+        : 'Найден модуль Kinto';
 
   return (
     <MotiView

@@ -21,7 +21,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     this.setState({ stack: info.componentStack || '' });
-    console.error('[SwarmGram] render error:', error?.message, error?.stack, info.componentStack);
+    console.error('[Kinto] render error:', error?.message, error?.stack, info.componentStack);
   }
 
   render(): React.ReactNode {

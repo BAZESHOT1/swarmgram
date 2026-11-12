@@ -1,5 +1,5 @@
 /* =======================================================================
- *  SwarmGram module firmware — ESP32 / ESP32-C3 / ESP32-S3.
+ *  Kinto module firmware — ESP32 / ESP32-C3 / ESP32-S3.
  *
  *  Единая глобальная mesh-сеть аккаунта. Роли:
  *    wearable  — BLE GATT + USB CDC мост между телефоном/ПК и mesh.
@@ -105,7 +105,7 @@
 // Жёсткие параметры сети (config.h может их переопределить).
 #define SG_DEFAULT_MESH_SSID "SG-MESH"
 #define SG_DEFAULT_MESH_PASS "sgmesh-2026-11-11-a7f3c9d2e6b14580"
-#define SG_DEFAULT_HUB_URL "http://api.swarmgram.is-a.dev"
+#define SG_DEFAULT_HUB_URL "http://api.kinto.is-a.dev"
 
 #ifndef SG_MESH_CHANNEL
 #define SG_MESH_CHANNEL 11

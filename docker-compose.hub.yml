@@ -54,12 +54,14 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-SwarmGram <noreply@swarmgram.local>}
+      SMTP_FROM: ${SMTP_FROM:-Kinto <noreply@kinto.local>}
+      FIREBASE_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
       SQL_DIR: /app/sql
       TMP_DIR: /tmp/swarm
       FIRMWARE_BUILDER_URL: http://firmware-builder:8090
     volumes:
       - hubtmp:/tmp/swarm
+      - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
     ports:
       - "8080:8080"
     networks: [swarm]

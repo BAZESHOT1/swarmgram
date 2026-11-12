@@ -1,5 +1,5 @@
 /**
- * Транспортный контракт SwarmGram. Реализации: WebSocket на Hub и BLE к модулю
+ * Транспортный контракт Kinto. Реализации: WebSocket на Hub и BLE к модулю
  * ESP32. Один и тот же интерфейс для web/iOS/Android.
  */
 export interface TransportStatus {

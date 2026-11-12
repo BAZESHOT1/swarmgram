@@ -1,5 +1,5 @@
 /**
- * SwarmGram firmware builder.
+ * Kinto firmware builder.
  *
  * Минимальный HTTP-сервер (без внешних зависимостей):
  *   GET  /health  -> { ok, core }
@@ -172,7 +172,7 @@ function generateConfigHeader(config, version) {
   const isSx1262 = chip === 'sx1262';
 
   const lines = [
-    '// Автоматически сгенерировано build-сервисом SwarmGram. Не редактировать.',
+    '// Автоматически сгенерировано build-сервисом Kinto. Не редактировать.',
     '#pragma once',
     '',
     `#define SG_FIRMWARE_VERSION ${cString(version)}`,
@@ -196,7 +196,7 @@ function generateConfigHeader(config, version) {
     `#define SG_MESH_CHANNEL ${num(mesh.channel, 11) | 0}`,
     `#define SG_WIFI_MAX_HOPS ${num(mesh.wifiHops, 14) | 0}`,
     `#define SG_LORA_MAX_HOPS ${num(mesh.loraHops, 12) | 0}`,
-    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://api.swarmgram.is-a.dev')}`,
+    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://api.kinto.is-a.dev')}`,
     `#define SG_MODULE_TOKEN ${cString(config.moduleToken ?? '')}`,
     '',
     `#define SG_USE_LORA ${useLora ? 1 : 0}`,

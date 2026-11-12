@@ -1,7 +1,7 @@
 {
-  "name": "SwarmGram",
-  "short_name": "SwarmGram",
-  "description": "Приватный мессенджер на рое узлов SwarmGram",
+  "name": "Kinto",
+  "short_name": "Kinto",
+  "description": "Приватный мессенджер на рое узлов Kinto",
   "lang": "ru",
   "start_url": "/chats",
   "scope": "/",

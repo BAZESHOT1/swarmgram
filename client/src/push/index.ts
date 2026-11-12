@@ -6,4 +6,5 @@
  * TypeScript видит web-вариант; сигнатуры `initPush(session)` совпадают.
  */
 export { registerWebPush as initPush } from './push.web';
+export { registerWebPush } from './push.web';
 export type { WebPushCleanup as PushCleanup, WebPushSession as PushSession } from './push.web';

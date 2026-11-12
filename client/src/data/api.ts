@@ -1,5 +1,5 @@
 /**
- * Единый API-клиент SwarmGram.
+ * Единый API-клиент Kinto.
  * Прямой путь к данным: клиент сам кладёт шифротекст на 3 реплики узлов,
  * Hub только выдаёт подписанные маршруты.
  */
@@ -10,8 +10,8 @@ import { beginRequest, endRequest } from './loading';
 export type { Session } from '../crypto/core';
 
 const NATIVE_API_CANDIDATES = [
-  'https://api.swarmgram.io/api',
-  'https://api.swarmgram.is-a.dev/api',
+  'https://api.kinto.is-a.dev/api',
+  'https://api.kinto.io/api',
   'https://150-251-143-212.nip.io:3443/api',
 ];
 const DEFAULT_NATIVE_API = NATIVE_API_CANDIDATES[0];

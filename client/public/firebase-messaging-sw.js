@@ -21,7 +21,7 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   const notification = payload.notification || {};
   const data = payload.data || {};
-  const title = notification.title || data.title || 'SwarmGram';
+  const title = notification.title || data.title || 'Kinto';
   const body = notification.body || data.body || '';
 
   return self.registration.showNotification(title, {

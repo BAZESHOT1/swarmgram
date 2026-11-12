@@ -54,7 +54,7 @@ function originUrl(username: string): string {
     return `${window.location.origin}/user/${encodeURIComponent(username)}`;
   }
   // Нативная сборка без window — стабильная публичная ссылка, которая открывает профиль.
-  return `https://swarmgram.app/user/${encodeURIComponent(username)}`;
+  return `https://kinto.app/user/${encodeURIComponent(username)}`;
 }
 
 /** Модалка QR: QR-код на web, крупная ссылка и копирование — на нативе. */
@@ -133,7 +133,7 @@ export function ProfileQrModal({
     if (busy) return;
     setBusy('share');
     try {
-      const result = await shareUrl(url, displayName ? `${displayName} · SwarmGram` : `@${username} · SwarmGram`, `Профиль @${username} в SwarmGram`);
+      const result = await shareUrl(url, displayName ? `${displayName} · Kinto` : `@${username} · Kinto`, `Профиль @${username} в Kinto`);
       if (result === 'copied') pushToast({ kind: 'success', message: 'Ссылка на профиль скопирована' });
     } catch {
       pushToast({ kind: 'error', message: 'Не удалось поделиться' });

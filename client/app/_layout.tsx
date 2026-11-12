@@ -1,5 +1,5 @@
 ﻿/**
- * SwarmGram client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
+ * Kinto client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
  * РїРµСЂСЃРёСЃС‚ С‚РµРјС‹ Рё СЃРµСЃСЃРёРё.
  */
 import React, { useEffect } from 'react';
@@ -791,7 +791,7 @@ function FullSkeleton() {
         >
           <Ionicons name="git-network" size={34} color={theme.onAccent} />
         </MotiView>
-        <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>SwarmGram</Text>
+        <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>Kinto</Text>
         <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>{APP_VERSION_LABEL}</Text>
         <View style={{ marginTop: 8 }}>
           <ActivityIndicator color={theme.accent} />

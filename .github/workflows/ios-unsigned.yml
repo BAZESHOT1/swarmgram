@@ -70,7 +70,7 @@ jobs:
           WORKSPACE="$(ls -d *.xcworkspace | head -n 1)"
           echo "Workspace: $WORKSPACE"
           xcodebuild -list -workspace "$WORKSPACE" -json > schemes.json
-          SCHEME="$(python3 -c "import json; s=json.load(open('schemes.json'))['workspace']['schemes']; print('SwarmGram' if 'SwarmGram' in s else next((x for x in s if 'Pods' not in x and 'boost' not in x.lower()), s[0]))")"
+          SCHEME="$(python3 -c "import json; s=json.load(open('schemes.json'))['workspace']['schemes']; print('Kinto' if 'Kinto' in s else next((x for x in s if 'Pods' not in x and 'boost' not in x.lower()), s[0]))")"
           echo "Scheme: $SCHEME"
           xcodebuild \
             -workspace "$WORKSPACE" \
@@ -97,20 +97,20 @@ jobs:
           APP="$(find build -type d -name '*.app' | head -n 1)"
           test -n "$APP"
           echo "App: $APP"
-          rm -rf Payload SwarmGram-unsigned.ipa
+          rm -rf Payload Kinto-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry SwarmGram-unsigned.ipa Payload
-          ls -lh SwarmGram-unsigned.ipa
-          shasum -a 256 SwarmGram-unsigned.ipa | tee SwarmGram-unsigned.ipa.sha256
+          zip -qry Kinto-unsigned.ipa Payload
+          ls -lh Kinto-unsigned.ipa
+          shasum -a 256 Kinto-unsigned.ipa | tee Kinto-unsigned.ipa.sha256
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SwarmGram-unsigned-ipa
+          name: Kinto-unsigned-ipa
           path: |
-            client/ios/SwarmGram-unsigned.ipa
-            client/ios/SwarmGram-unsigned.ipa.sha256
+            client/ios/Kinto-unsigned.ipa
+            client/ios/Kinto-unsigned.ipa.sha256
             client/ios/xcodebuild.log
           if-no-files-found: error
           retention-days: 30

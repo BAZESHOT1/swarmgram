@@ -12,8 +12,12 @@ import {
   useNetwork,
   useCreateClaim,
   useDrainNode,
+  useModules,
   humanError,
 } from '../../src/data/queries';
+import { useModuleConnection } from '../../src/modules/ModuleProvider';
+import type { ModuleRow } from '../../src/data/api';
+import { ModulesNetworkMap } from '../../src/components/modules/ModulesNetworkMap';
 import { EmptyState } from '../../src/components/EmptyState';
 import { Btn } from '../../src/components/Btn';
 import { useTheme } from '../../src/theme/useTheme';
@@ -93,7 +97,7 @@ async function measureLatency(url: string): Promise<number | null> {
 
 const FAQ = [
   {
-    q: 'Что такое узел сети SwarmGram?',
+    q: 'Что такое узел сети Kinto?',
     a: 'Узел — добровольный сервер, который хранит зашифрованные реплики медиа и истории. Он не видит содержимое сообщений: ключи остаются на устройствах пользователей.',
   },
   {
@@ -150,6 +154,8 @@ export default function NodesScreen() {
   const reduced = useReducedMotion();
   const nodes = useNodes();
   const network = useNetwork();
+  const modulesQuery = useModules();
+  const connection = useModuleConnection();
   const createClaim = useCreateClaim();
   const drainNode = useDrainNode();
   const me = useStore((s) => s.me);
@@ -165,6 +171,32 @@ export default function NodesScreen() {
 
   const list = (nodes.data ?? []) as NodeRow[];
   const loading = nodes.isLoading;
+
+  /** Локальная карта: работает от данных подключённого модуля даже без сервера. */
+  const cachedModules = (modulesQuery.data ?? []) as ModuleRow[];
+  const localFocus: ModuleRow | null = connection.connected && connection.info
+    ? cachedModules.find(
+        (module) =>
+          (module.hardwareId ?? module.board_uuid ?? '').toLowerCase() ===
+          String(connection.info?.hardwareId ?? '').toLowerCase(),
+      ) ?? ({
+        id: `local-${connection.info.hardwareId}`,
+        board_uuid: connection.info.hardwareId,
+        hardwareId: connection.info.hardwareId,
+        publicId: connection.info.publicId,
+        role: connection.info.role,
+        transport: connection.connection?.kind === 'ble' ? 'ble' : 'usb',
+        kind: 'module',
+        firmware: connection.info.firmware,
+        battery: connection.info.battery,
+        gateway: Boolean(connection.info.gateway),
+        neighbors: 0,
+        status: 'online',
+        online: true,
+        last_seen_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      } as ModuleRow)
+    : null;
 
   /* Монитор всей сети: онлайн / не отвечают. */
   const networkList = (network.data ?? []) as NetworkNodeRow[];
@@ -258,6 +290,34 @@ export default function NodesScreen() {
         </View>
       }
     >
+      {/* ------------------------------------------- локальная mesh-карта ----- */}
+      <SettingsSection title="Локальная сеть" delay={0}>
+        {localFocus ? (
+          <GlassCard>
+            <ModulesNetworkMap
+              modules={cachedModules.length ? cachedModules : [localFocus]}
+              focus={localFocus}
+              selectedId={null}
+              onSelect={() => undefined}
+              expanded
+            />
+            <Text style={{ color: theme.textDisabled, fontSize: 11, padding: 10 }}>
+              Карта построена по данным подключённого модуля и локального кэша. Сервер для неё не нужен.
+            </Text>
+          </GlassCard>
+        ) : (
+          <GlassCard>
+            <View style={{ padding: 16, alignItems: 'center', gap: 7 }}>
+              <Ionicons name="git-network-outline" size={24} color={theme.textDisabled} />
+              <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700' }}>Нет подключённого модуля</Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12.5, textAlign: 'center' }}>
+                Подключите носимый модуль — карта сети построится локально, даже без интернета.
+              </Text>
+            </View>
+          </GlassCard>
+        )}
+      </SettingsSection>
+
       {/* ---------------------------------------------------- монитор ----- */}
       <SettingsSection title="Монитор сети" delay={0}>
         <SummaryGrid>
@@ -474,7 +534,7 @@ export default function NodesScreen() {
             </View>
             <View style={{ gap: 6 }}>
               <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18 }}>
-                1. Скачайте образ: docker pull swarmgram/node:1.0.0
+                1. Скачайте образ: docker pull kinto/node:1.0.0
               </Text>
               <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18 }}>
                 2. В .env укажите MAIN_SERVER_URL, OWNER_USERNAME, NODE_CLAIM_TOKEN и NODE_CAPACITY_GB.

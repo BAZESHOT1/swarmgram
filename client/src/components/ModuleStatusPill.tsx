@@ -1,7 +1,7 @@
 /**
  * Компактный индикатор носимого модуля для шапки «Чаты»:
  * пульсирующая зелёная иконка подключённого wearable, число соседей
- * и наличие интернета. Если модуль не подключён — нейтральный «SwarmGram».
+ * и наличие интернета. Если модуль не подключён — нейтральный «Kinto».
  */
 import React from 'react';
 import { Text, View } from 'react-native';
@@ -31,7 +31,7 @@ export function ModuleStatusPill() {
   if (!wearable || !info) {
     return (
       <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '800', letterSpacing: 0.4 }} numberOfLines={1}>
-        SwarmGram
+        Kinto
       </Text>
     );
   }

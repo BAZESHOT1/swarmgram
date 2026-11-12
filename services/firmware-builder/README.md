@@ -1,4 +1,4 @@
-# SwarmGram firmware builder
+# Kinto firmware builder
 
 Отдельный build-сервис, который собирает прошивки ESP32 по JSON-конфигурации
 из визарда клиента. Внутри — `arduino-cli`, шаблон скетча и HTTP-обёртка без

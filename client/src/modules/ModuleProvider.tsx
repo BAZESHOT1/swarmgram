@@ -447,7 +447,14 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const key = mine?.id ?? last.hardwareId;
+        if (!mine) {
+          // Своего модуля нет в эфире — не пытаемся подключаться к выключенному
+          // устройству и не показываем бесконечные уведомления.
+          setAutoModule((prev) => (prev && prev.isMine ? null : prev));
+          return;
+        }
+
+        const key = mine.id;
         const displayName = mine?.name ?? `Модуль ${last.publicId ?? ''}`.trim();
         cancelAutoKeyRef.current = null;
         setAutoModule({ key, name: displayName, isMine: true, phase: 'connecting' });

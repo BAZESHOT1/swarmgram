@@ -12,11 +12,11 @@ export default function Root({ children }: PropsWithChildren) {
         <meta name="theme-color" content="#0A0E14" />
         <meta
           name="description"
-          content="SwarmGram — приватный мессенджер на рое узлов: чаты, каналы, секретные диалоги и свои устройства хранения."
+          content="Kinto — приватный мессенджер на рое узлов: чаты, каналы, секретные диалоги и свои устройства хранения."
         />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="SwarmGram" />
+        <meta name="apple-mobile-web-app-title" content="Kinto" />
         <meta name="mobile-web-app-capable" content="yes" />
         <link rel="manifest" href="/manifest.json" />
         <link rel="icon" type="image/svg+xml" href="/icon.svg" />
