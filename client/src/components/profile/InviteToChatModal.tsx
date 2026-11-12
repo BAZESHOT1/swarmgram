@@ -5,7 +5,7 @@ import { useTheme } from '../../theme/useTheme';
 import { ProfileModal } from './ProfileModal';
 import { PressableScale } from './PressableScale';
 import { Btn } from '../Btn';
-import { useChats, humanError } from '../../data/queries';
+import { useChats, useMySubscriptions, humanError } from '../../data/queries';
 import { useStore } from '../../state/useStore';
 import * as api from '../../data/api';
 import type { Chat, ChatRole } from '../../data/api';
@@ -46,6 +46,7 @@ export function InviteToChatModal({
   const pushToast = useStore((s) => s.pushToast);
   const myUsername = useStore((s) => s.me?.username);
   const chatsQuery = useChats();
+  const subsQuery = useMySubscriptions();
   const [search, setSearch] = React.useState('');
   const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [invited, setInvited] = React.useState<Set<string>>(() => new Set());
@@ -59,14 +60,17 @@ export function InviteToChatModal({
   }, [visible]);
 
   const eligible = React.useMemo(() => {
-    const rows = (chatsQuery.data ?? []) as Chat[];
+    const map = new Map<string, Chat>();
+    for (const chat of (chatsQuery.data ?? []) as Chat[]) map.set(chat.id, chat);
+    for (const chat of (subsQuery.data ?? []) as Chat[]) if (!map.has(chat.id)) map.set(chat.id, chat);
+    const rows = [...map.values()];
     const q = search.trim().toLowerCase();
     return rows
       .filter((chat) => chat.type === 'group' || chat.type === 'channel')
       .filter((chat) => canInviteTo(chat, myUsername))
       .filter((chat) => (q ? (chat.title || '').toLowerCase().includes(q) : true))
       .sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ru'));
-  }, [chatsQuery.data, search, myUsername]);
+  }, [chatsQuery.data, subsQuery.data, search, myUsername]);
 
   async function invite(chat: Chat) {
     if (pendingId) return;

@@ -160,6 +160,9 @@
 #ifndef SG_BATT_ENABLED
 #define SG_BATT_ENABLED 0
 #endif
+#ifndef SG_LED_PIN
+#define SG_LED_PIN -1
+#endif
 #ifndef SG_BATT_PIN
 #define SG_BATT_PIN 0
 #endif
@@ -2308,6 +2311,34 @@ static void diagPoll() {
         (unsigned long)gFwdCount, (unsigned)queueLoadValue());
 }
 
+/* --------------------------------------------------------------- LED ----- */
+
+static uint32_t gLastLedMs = 0;
+static bool gLedOn = false;
+
+static void setupLed() {
+#if SG_LED_PIN >= 0
+  pinMode(SG_LED_PIN, OUTPUT);
+  digitalWrite(SG_LED_PIN, LOW);
+#endif
+}
+
+static void ledPoll() {
+#if SG_LED_PIN >= 0
+  const bool linked = neighborCount() > 0;
+  if (linked) {
+    if (!gLedOn) digitalWrite(SG_LED_PIN, HIGH);
+    gLedOn = true;
+    return;
+  }
+  const uint32_t now = millis();
+  if (now - gLastLedMs < 500UL) return;
+  gLastLedMs = now;
+  gLedOn = !gLedOn;
+  digitalWrite(SG_LED_PIN, gLedOn ? HIGH : LOW);
+#endif
+}
+
 /* ---------------------------------------------------------------- Hub ---- */
 
 static int hubPostJson(const String &path, const String &body, String &resp, bool auth) {
@@ -2763,6 +2794,7 @@ void setup() {
 
   gBattery = readBatteryPercent();
   gLastBattMs = millis();
+  setupLed();
 
   // На wearable сначала BLE (им нужен телефон), Wi-Fi вообще не поднимаем.
   if (isWearable()) {
@@ -2807,6 +2839,7 @@ void loop() {
   }
   loraPoll();
   diagPoll();
+  ledPoll();
 
   meshPumpQueue();
   hubLoop();

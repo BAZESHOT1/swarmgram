@@ -69,6 +69,8 @@ interface FirmwareConfig {
     pins: LoraPins;
   };
   battery?: { enabled: boolean; pin: number; ratio: number; intervalSec: number };
+  /** GPIO светодиода индикации mesh-связи. */
+  ledPin?: number;
   ota?: boolean;
 }
 
@@ -203,6 +205,7 @@ function validateConfig(raw: unknown): FirmwareConfig {
   }
 
   if (b.ota !== undefined) out.ota = boolValue(b.ota, 'ota', false);
+  if (b.ledPin !== undefined && b.ledPin !== null) out.ledPin = intIn(b.ledPin, 'ledPin', 0, PIN_MAX);
 
   return out;
 }

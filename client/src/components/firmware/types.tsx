@@ -51,6 +51,8 @@ export interface FirmwareConfig {
   claimToken?: string;
   lora?: LoraConfig;
   battery?: BatteryConfig;
+  /** GPIO светодиода: горит — связь с модулями есть, мигает — нет. */
+  ledPin?: number;
   ota?: boolean;
 }
 

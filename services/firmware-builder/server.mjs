@@ -231,6 +231,7 @@ function generateConfigHeader(config, version) {
     `#define SG_BATT_ENABLED ${battEnabled}`,
     `#define SG_BATT_PIN ${num(battery.pin, 0) | 0}`,
     `#define SG_BATT_RATIO ${num(battery.ratio, 2.0)}`,
+    `#define SG_LED_PIN ${config.ledPin !== undefined && config.ledPin !== null ? num(config.ledPin, -1) | 0 : -1}`,
     `#define SG_BATT_INTERVAL ${Math.max(10, num(battery.intervalSec, 300)) | 0}`,
     '',
   );

@@ -106,6 +106,31 @@ export function BatteryStep({
       </StepCard>
 
       <View style={{ height: 12 }} />
+      <StepCard>
+        <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
+          Светодиод индикации
+        </Text>
+        <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 8 }}>
+          Горит — связь с модулями есть. Мигает — связи нет. Оставьте пустым, если LED не подключён.
+        </Text>
+        <SettingsInput
+          label="GPIO светодиода"
+          value={config.ledPin === undefined ? '' : String(config.ledPin)}
+          onChangeText={(text) => {
+            const trimmed = text.trim();
+            if (!trimmed) {
+              onChange({ ledPin: undefined });
+              return;
+            }
+            const parsed = Number(trimmed);
+            if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) onChange({ ledPin: parsed });
+          }}
+          keyboardType="numeric"
+          placeholder="например, 2"
+          accessibilityLabel="GPIO светодиода"
+          maxLength={2}
+        />
+      </StepCard>
       {loraConflicts.length > 0 ? (
         <Note icon="warning-outline" tone="danger">
           Пин батареи GPIO {battery.pin} уже занят линией LoRa ({loraConflicts.join(', ')}). Выберите другой АЦП-пин.
