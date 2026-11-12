@@ -10,7 +10,7 @@
  * поэтому в интерфейсе они только для чтения.
  */
 import React from 'react';
-import { Linking, Platform, Text, View } from 'react-native';
+import { Animated, Easing, Linking, Platform, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Btn } from '../Btn';
 import { useTheme } from '../../theme/useTheme';
@@ -40,6 +40,65 @@ export interface SimpleFirmwareResult {
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type LinkChoice = 'wifi' | 'wifi_lora';
+
+/** Человекочитаемые фазы серверной сборки. */
+const BUILD_PHASE_LABEL: Record<string, string> = {
+  queued: 'В очереди',
+  preparing: 'Подготовка',
+  compiling: 'Компиляция',
+  linking: 'Линковка',
+  finalizing: 'Финализация',
+  ready: 'Готово',
+  failed: 'Ошибка',
+  timeout: 'Таймаут',
+};
+
+function buildPhaseLabel(build: FirmwareBuild): string {
+  if (build.status === 'ready') return BUILD_PHASE_LABEL.ready;
+  if (build.status === 'failed') return BUILD_PHASE_LABEL[build.phase ?? ''] ?? BUILD_PHASE_LABEL.failed;
+  return BUILD_PHASE_LABEL[build.phase ?? ''] ?? (build.status === 'queued' ? BUILD_PHASE_LABEL.queued : 'Подготовка');
+}
+
+/**
+ * Полоса прогресса, плавно доезжающая до нового значения (общий ProgressBar
+ * перезапускает анимацию с нуля, из-за чего обновления каждые 4.5 с мигают).
+ */
+function BuildProgressBar({ pct }: { pct: number }) {
+  const theme = useTheme();
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+  const value = React.useRef(new Animated.Value(clamped)).current;
+
+  React.useEffect(() => {
+    const animation = Animated.timing(value, {
+      toValue: clamped,
+      duration: 900,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [clamped, value]);
+
+  return (
+    <View
+      style={{
+        height: 6,
+        borderRadius: 999,
+        overflow: 'hidden',
+        backgroundColor: theme.surfacePressed,
+      }}
+    >
+      <Animated.View
+        style={{
+          height: '100%',
+          borderRadius: 999,
+          backgroundColor: theme.accent,
+          width: value.interpolate({ inputRange: [0, 100], outputRange: ['0%', '100%'] }),
+        }}
+      />
+    </View>
+  );
+}
 
 const ROLE_OPTIONS: Array<{
   id: FirmwareRole;
@@ -276,7 +335,12 @@ export function SimpleFirmwareWizard({
       const created = await api.buildFirmware(makeConfig());
       buildStartedAtRef.current = Date.now();
       buildErrorCountRef.current = 0;
-      setBuild({ id: created.id, status: created.status } as FirmwareBuild);
+      setBuild({
+        id: created.id,
+        status: created.status,
+        progress: created.progress ?? 0,
+        phase: created.phase ?? 'queued',
+      } as FirmwareBuild);
     } catch (buildFail) {
       setBuildError(buildFail instanceof Error ? buildFail.message : String(buildFail));
     } finally {
@@ -581,12 +645,23 @@ export function SimpleFirmwareWizard({
                       : build.status === 'failed'
                         ? 'ошибка сборки'
                         : build.status === 'building'
-                          ? 'сборка…'
+                          ? buildPhaseLabel(build)
                           : 'в очереди'
                   }
                   tone={build.status === 'ready' ? 'success' : build.status === 'failed' ? 'danger' : 'accent'}
                 />
                 {build.version ? <StatusBadge text={`v${build.version}`} tone="neutral" /> : null}
+              </View>
+            ) : null}
+            {build && (build.status === 'queued' || build.status === 'building') ? (
+              <View style={{ marginBottom: 12 }}>
+                <BuildProgressBar pct={build.progress ?? 0} />
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11.5 }}>{buildPhaseLabel(build)}</Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11.5 }}>
+                    {Math.round(Math.max(0, Math.min(100, build.progress ?? 0)))}%
+                  </Text>
+                </View>
               </View>
             ) : null}
             <Btn
@@ -596,7 +671,7 @@ export function SimpleFirmwareWizard({
                   : build?.status === 'failed'
                     ? 'Пересобрать'
                     : build
-                      ? 'Сборка идёт…'
+                      ? `${buildPhaseLabel(build)}…`
                       : 'Собрать прошивку'
               }
               loading={building || build?.status === 'building' || build?.status === 'queued'}

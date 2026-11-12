@@ -5,7 +5,8 @@
  *   GET  /health  -> { ok, core }
  *   POST /build   -> JSON-конфиг визарда, генерирует скетч и запускает arduino-cli.
  *
- * Компиляция сериализуется (один билд за раз), результат кэшируется по
+ * Компиляция сериализуется по плате (очередь на board): две сборки одной
+ * платы не идут параллельно, разные платы — могут. Результат кэшируется по
  * sha256(config) в /data/cache на 7 дней.
  */
 import http from 'node:http';
@@ -26,7 +27,7 @@ const ARDUINO_DATA = join(DATA_DIR, 'arduino');
 const ARDUINO_USER = join(DATA_DIR, 'arduino-user');
 const TEMPLATE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'templates');
 
-const BUILD_TIMEOUT_MS = 1_200_000;
+const BUILD_TIMEOUT_MS = 300_000;
 const CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 64 * 1024;
 // Минимум свободного места для компиляции (временные файлы ядра).
@@ -47,13 +48,49 @@ const log = (msg, meta = {}) => {
 
 /* --------------------------------------------------------------- очередь -- */
 
-let chain = Promise.resolve();
+/**
+ * Очередь на каждую плату: две сборки одной платы не могут идти параллельно
+ * (у них общий build-path и одни объектные файлы), но разные платы — могут.
+ * Зависшая сборка одной платы не блокирует остальные.
+ *
+ * Ожидание в очереди ограничено: если задача не дождалась запуска за
+ * BUILD_TIMEOUT_MS, она падает с build_queue_timeout (Hub получит ошибку,
+ * а не будет ждать вечно).
+ */
+const boardQueues = new Map();
 
-/** Ставит задачу в очередь: одновременно выполняется только один билд. */
-function enqueue(task) {
-  const run = chain.then(task, task);
-  // ошибка одной задачи не должна ломать очередь
-  chain = run.then(() => undefined, () => undefined);
+function enqueue(board, task, waitTimeoutMs = BUILD_TIMEOUT_MS) {
+  const prev = boardQueues.get(board) ?? Promise.resolve();
+  const enqueuedAt = Date.now();
+  let cancelled = false;
+  let timer = null;
+
+  const waitGuard = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      cancelled = true;
+      reject(new Error('build_queue_timeout'));
+    }, waitTimeoutMs);
+    // не держим процесс живым только из-за таймера очереди
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+  const job = (async () => {
+    await prev.catch(() => undefined);
+    if (cancelled) throw new Error('build_queue_timeout');
+    if (timer) clearTimeout(timer);
+    const waitedMs = Date.now() - enqueuedAt;
+    if (waitedMs > 1000) log('build_dequeued', { board, waitedMs });
+    return task();
+  })();
+
+  const run = Promise.race([job, waitGuard]);
+  // Следующая задача этой платы ждёт реального завершения текущей работы,
+  // даже если эта задача уже отвалилась по таймауту ожидания.
+  const settle = job.then(() => undefined, () => undefined);
+  boardQueues.set(board, settle);
+  settle.then(() => {
+    if (boardQueues.get(board) === settle) boardQueues.delete(board);
+  });
   return run;
 }
 
@@ -429,6 +466,7 @@ async function compileFirmware(config, version) {
     await writeFile(join(sketchDir, 'config.h'), generateConfigHeader(config, version), 'utf8');
 
     log('build_start', { board, fqbn, version });
+    log('build_stage', { board, stage: 'compiling' });
     const { stdout, stderr } = await arduinoCli(
       [
         'compile',
@@ -442,6 +480,7 @@ async function compileFirmware(config, version) {
     const compileLog = `${stdout}\n${stderr}`.trim();
 
     // Для браузерной прошивки нужен merged.bin с адреса 0x0.
+    log('build_stage', { board, stage: 'merging' });
     const merged = await mergeBinary(board, buildDir, work);
     const binPath = await findBinary(outDir, sketchName);
     const output = [compileLog, merged.log, binPath ? `app: ${binPath}` : ''].filter(Boolean).join('\n');
@@ -611,7 +650,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const result = await enqueue(() => handleBuild(config));
+      const result = await enqueue(config.board, () => handleBuild(config));
       return sendJson(res, 200, result);
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);

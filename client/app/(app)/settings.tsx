@@ -183,7 +183,7 @@ export default function SettingsScreen() {
           ) : null}
         </MotiView>
 
-        {me.isLoading ? (
+        {me.isLoading && !session ? (
           <SettingsDashboardSkeleton />
         ) : (
           <MotiView

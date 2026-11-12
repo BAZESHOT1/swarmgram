@@ -10,7 +10,7 @@ import { ProfileSkeleton } from '../../../src/components/skeletons/PageSkeletons
 import { useReducedMotion } from '../../../src/components/useReducedMotion';
 import { PressableScale } from '../../../src/components/profile/PressableScale';
 import { Avatar } from '../../../src/components/Avatar';
-import { ProfileHero } from '../../../src/components/profile/ProfileHero';
+import { ProfileHero, birthdayLabel } from '../../../src/components/profile/ProfileHero';
 import { ProfileActions, type ProfileAction } from '../../../src/components/profile/ProfileActions';
 import { ProfileLinks } from '../../../src/components/profile/ProfileLinks';
 import { ProfileBadges, buildProfileBadges, type ProfileBadgeFacts } from '../../../src/components/profile/ProfileBadges';

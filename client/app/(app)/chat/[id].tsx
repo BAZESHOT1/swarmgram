@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -17,6 +18,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../../src/theme/useTheme';
 import { useIsWide } from '../../../src/theme/useIsWide';
 import { MessageBubble, type BubbleGroup, type QuotedMessage } from '../../../src/components/MessageBubble';
@@ -94,6 +96,7 @@ export default function ChatScreen() {
   const theme = useTheme();
   const wide = useIsWide();
   const reduced = useReducedMotion();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ id: string; search?: string }>();
   const { id } = params;
   const chatId = String(id);
@@ -142,6 +145,8 @@ export default function ChatScreen() {
   const [viewCounts, setViewCounts] = useState<Record<string, number>>({});
   /** Оверлей приватности секретного чата. */
   const [secretShield, setSecretShield] = useState(false);
+  /** Клавиатура открыта: композер не должен добивать safe-area снизу. */
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   /* ---------------- оптимистичные сообщения и пагинация истории ---------------- */
   const [optimistic, setOptimistic] = useState<Record<string, ViewMessage>>({});
@@ -156,6 +161,11 @@ export default function ChatScreen() {
   const contentHeightRef = useRef(0);
   const prependAnchorRef = useRef<{ height: number; offset: number } | null>(null);
   const initialPagedRef = useRef(false);
+  /**
+   * Скролл к концу нужен только когда он действительно запрошен
+   * (первое открытие, отправка, новое входящее), а не на каждый layout.
+   */
+  const pendingScrollRef = useRef(false);
 
   const listRef = useRef<FlatList<Row> | null>(null);
   const inputRef = useRef<TextInput | null>(null);
@@ -288,7 +298,17 @@ export default function ChatScreen() {
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     initialPagedRef.current = false;
+    initialScrollRef.current = false;
+    pendingScrollRef.current = false;
+    prevIdsRef.current = null;
     prependAnchorRef.current = null;
+    lastScrollYRef.current = 0;
+    atBottomRef.current = true;
+    setAtBottom(true);
+    setNewCount(0);
+    headerCollapsedRef.current = false;
+    headerCollapse.setValue(0);
+    scrollY.setValue(0);
     for (const timer of uploadCleanupRef.current.values()) clearTimeout(timer);
     uploadCleanupRef.current.clear();
     for (const handle of uploadsRef.current.values()) handle.controller.abort();
@@ -297,7 +317,20 @@ export default function ChatScreen() {
     setViewCounts({});
     setAsChannel(false);
     setSecretShield(false);
-  }, [chatId]);
+  }, [chatId, headerCollapse, scrollY]);
+
+  // Клавиатура: следим, чтобы композер не уезжал под неё и не «прыгал».
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, () => setKeyboardOpen(true));
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardOpen(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // Первая загрузка отдаёт 60 сообщений: если их меньше — старше уже нет.
   useEffect(() => {
@@ -652,7 +685,9 @@ export default function ChatScreen() {
           return next;
         });
         if (!atBottomRef.current) setNewCount((c) => c + incoming.length);
-        else setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+        // Скролл к концу выполнит onContentSizeChange после раскладки —
+        // без таймеров и без «прыжка» на промежуточных рендерах.
+        else pendingScrollRef.current = true;
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         flashTimerRef.current = setTimeout(() => setFlashIds({}), 1600);
       }
@@ -678,7 +713,14 @@ export default function ChatScreen() {
   useEffect(() => {
     if (initialScrollRef.current || data.length === 0) return;
     initialScrollRef.current = true;
-    const t = setTimeout(() => scrollToEnd(false), 140);
+    pendingScrollRef.current = true;
+    // Страховка на случай, если высота контента не изменилась: один скролл
+    // на открытие чата, без повторов на каждом рендере.
+    const t = setTimeout(() => {
+      if (!pendingScrollRef.current) return;
+      pendingScrollRef.current = false;
+      scrollToEnd(false);
+    }, 180);
     return () => clearTimeout(t);
   }, [data.length, scrollToEnd]);
 
@@ -834,7 +876,7 @@ export default function ChatScreen() {
     atBottomRef.current = true;
     setAtBottom(true);
     setNewCount(0);
-    setTimeout(() => scrollToEnd(true), 40);
+    pendingScrollRef.current = true;
     try {
       sounds.send();
       // Короткий тактильный отклик на отправку (web — 12 мс, native — light impact).
@@ -866,7 +908,8 @@ export default function ChatScreen() {
       void sendText();
     };
     uploadsRef.current.set(clientId, { controller: new AbortController(), retry: retryText });
-    await sendText();
+    // Не ждём сеть: локальный пузырь уже в ленте, остальное — фоном.
+    void sendText();
   }
 
   /* --- медиа: превью → сжатие → шифрование → загрузка с прогрессом --- */
@@ -896,7 +939,7 @@ export default function ChatScreen() {
         atBottomRef.current = true;
         setAtBottom(true);
         setNewCount(0);
-        setTimeout(() => scrollToEnd(true), 80);
+        pendingScrollRef.current = true;
         if (!vm.failed) {
           try {
             sounds.send();
@@ -955,7 +998,7 @@ export default function ChatScreen() {
     atBottomRef.current = true;
     setAtBottom(true);
     setNewCount(0);
-    setTimeout(() => scrollToEnd(true), 40);
+    pendingScrollRef.current = true;
 
     const controller = new AbortController();
     const retry = () => {
@@ -1247,7 +1290,15 @@ export default function ChatScreen() {
   const peerPresence = chat?.type === 'direct' && peer ? memberPresence.get(peer.username) : undefined;
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: theme.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: theme.background }}
+      // iOS: поднимаем контент на высоту клавиатуры. Шапка чата внутри KAV,
+      // поэтому offset = 0 (внешней навигационной шапки нет).
+      // Android: окно уже ресайзится (windowSoftInputMode=adjustResize по умолчанию),
+      // поэтому 'height' не дублируем — иначе композер уедет вдвое выше.
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={0}
+    >
       <View
         ref={dragRootRef}
         style={{
@@ -1354,15 +1405,7 @@ export default function ChatScreen() {
                 alignSelf: 'center',
               }}
               renderItem={({ item: row, index }) => (
-                <MotiView
-                  from={reduced ? { opacity: 1 } : { opacity: 0, translateY: row.m.mine ? 22 : 10 }}
-                  animate={{ opacity: 1, translateY: 0 }}
-                  transition={
-                    reduced
-                      ? { type: 'timing', duration: 0 }
-                      : { ...motion.softSpring, delay: Math.min(index, 8) * motion.staggerStepMs }
-                  }
-                >
+                <View>
                   {row.album ? (
                     <MediaAlbum
                       messages={row.album}
@@ -1467,7 +1510,7 @@ export default function ChatScreen() {
                       onCancelUpload={uploadsRef.current.has(row.m.id) ? () => cancelUpload(row.m.id) : undefined}
                     />
                   )}
-                </MotiView>
+                </View>
               )}
               onScroll={onScroll}
               scrollEventThrottle={16}
@@ -1488,7 +1531,12 @@ export default function ChatScreen() {
                   }
                   return;
                 }
-                if (atBottomRef.current && !searchActive) scrollToEnd(false);
+                // Автоскролл только по явному запросу (открытие/отправка/новое),
+                // иначе каждый layout дёргал ленту.
+                if (pendingScrollRef.current && !searchActive) {
+                  pendingScrollRef.current = false;
+                  scrollToEnd(false);
+                }
               }}
               onScrollToIndexFailed={(info) => {
                 listRef.current?.scrollToOffset({
@@ -1569,7 +1617,18 @@ export default function ChatScreen() {
           </MotiView>
         ) : null}
 
-        <View style={[styles.composer, { borderTopColor: theme.line, opacity: canCompose ? 1 : 0.65 }]}>
+        <View
+          style={[
+            styles.composer,
+            {
+              borderTopColor: theme.line,
+              opacity: canCompose ? 1 : 0.65,
+              // Safe-area снизу только при закрытой клавиатуре: иначе KAV уже
+              // поднял композер, и лишний отступ даёт «пузырь» над клавиатурой.
+              paddingBottom: keyboardOpen ? 10 : Math.max(12, insets.bottom + 6),
+            },
+          ]}
+        >
           <Pressable
             onPress={() => setAttachOpen((v) => !v)}
             accessibilityRole="button"

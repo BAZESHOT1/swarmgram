@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
   FlatList,
   PanResponder,
   Platform,
@@ -18,9 +19,12 @@ import {
   Text,
   TextInput,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { MotiView } from 'moti';
 import { useTheme } from '../../src/theme/useTheme';
@@ -62,6 +66,11 @@ import { hasRight, visibilityLabel, normalizeVisibility } from '../../src/compon
 
 const HISTORY_KEY = 'sg:search-history';
 const HISTORY_LIMIT = 8;
+
+/** Скрытие панели поиска при скролле списка: порог и шаг, чтобы не дёргалось. */
+const SEARCH_HIDE_AFTER = 100;
+const SEARCH_HIDE_DELTA = 8;
+const SEARCH_SCROLL_THROTTLE_MS = 80;
 
 const timeAgo = (iso: string): string => {
   const d = new Date(iso).getTime();
@@ -515,6 +524,31 @@ export default function ChatsScreen() {
   const qc = useQueryClient();
   const haptics = useHaptics();
   const reduced = useReducedMotion();
+  const insets = useSafeAreaInsets();
+
+  /* -------------------------------------- скрытие поиска при скролле вниз */
+  const searchAnim = useRef(new Animated.Value(0)).current; // 0 — видно, 1 — скрыто
+  const searchHiddenRef = useRef(false);
+  const [searchHeight, setSearchHeight] = useState(44);
+  const [searchHidden, setSearchHidden] = useState(false);
+  const listScrollYRef = useRef(0);
+  const lastScrollTickRef = useRef(0);
+
+  const setSearchHiddenAnimated = useCallback(
+    (hidden: boolean) => {
+      if (searchHiddenRef.current === hidden) return;
+      searchHiddenRef.current = hidden;
+      setSearchHidden(hidden);
+      Animated.timing(searchAnim, {
+        toValue: hidden ? 1 : 0,
+        duration: hidden ? 180 : 220,
+        easing: Easing.out(Easing.quad),
+        // Высота не поддерживается native driver — анимируем на JS.
+        useNativeDriver: false,
+      }).start();
+    },
+    [searchAnim],
+  );
 
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -1222,6 +1256,33 @@ export default function ChatsScreen() {
 
   /* -------------------------------------------------------------- сортировка */
 
+  /**
+   * Скролл списка чатов: прячем панель поиска при движении вниз (>100px),
+   * возвращаем при движении вверх. Порог + троттлинг: setState не на каждый пиксель.
+   */
+  const onChatsListScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (openRowId) setOpenRowId(null);
+      const y = Math.max(0, e.nativeEvent.contentOffset.y);
+      const now = Date.now();
+      if (now - lastScrollTickRef.current < SEARCH_SCROLL_THROTTLE_MS) return;
+      lastScrollTickRef.current = now;
+      const dy = y - listScrollYRef.current;
+      listScrollYRef.current = y;
+      // Пока поиск в фокусе или уже есть запрос — панель не прячем.
+      if (searchFocused || search.trim()) {
+        setSearchHiddenAnimated(false);
+        return;
+      }
+      if (!searchHiddenRef.current) {
+        if (y > SEARCH_HIDE_AFTER && dy > SEARCH_HIDE_DELTA) setSearchHiddenAnimated(true);
+      } else if (dy < -SEARCH_HIDE_DELTA || y < 60) {
+        setSearchHiddenAnimated(false);
+      }
+    },
+    [openRowId, searchFocused, search, setSearchHiddenAnimated],
+  );
+
   const chatRows = useMemo<ChatListRow[]>(() => {
     const sorted = [...allChats].sort((a, b) => activityOf(b) - activityOf(a));
     const pinnedList = sorted.filter((c) => isPinned(c.id));
@@ -1331,50 +1392,67 @@ export default function ChatsScreen() {
           />
         </View>
       ) : (
-        <View nativeID="sg-chats-search" style={{ position: 'relative', zIndex: 40 }}>
-          <SearchField
-            ref={searchRef}
-            value={search}
-            onChange={(t) => {
-              setSearch(t);
-              setFilter('all');
+        <Animated.View
+          pointerEvents={searchHidden ? 'none' : 'auto'}
+          style={{
+            height: searchAnim.interpolate({ inputRange: [0, 1], outputRange: [searchHeight, 0] }),
+            opacity: searchAnim.interpolate({ inputRange: [0, 0.7, 1], outputRange: [1, 0.2, 0] }),
+            transform: [{ translateY: searchAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) }],
+          }}
+        >
+          <View
+            nativeID="sg-chats-search"
+            style={{ position: 'relative', zIndex: 40 }}
+            onLayout={(e) => {
+              const h = e.nativeEvent.layout.height;
+              if (h > 0 && Math.abs(h - searchHeight) > 0.5) setSearchHeight(h);
             }}
-            onClear={clearSearch}
-            onFocus={() => {
-              if (blurTimer.current) clearTimeout(blurTimer.current);
-              setSearchFocused(true);
-            }}
-            onBlur={() => {
-              // Небольшая задержка: тап по записи истории успевает сработать.
-              if (blurTimer.current) clearTimeout(blurTimer.current);
-              blurTimer.current = setTimeout(() => setSearchFocused(false), 160);
-            }}
-            onSubmit={() => {
-              if (selectedKey) {
-                const row = selectableRows.find((r) => rowKey(r) === selectedKey);
-                if (row) openSearchRow(row);
-              } else {
-                rememberQuery(search);
-              }
-            }}
-            placeholder="Поиск людей, чатов, групп, каналов, сообщений"
-          />
-          {historyOpen ? (
-            <SearchHistoryPanel
-              theme={theme}
-              wide={wide}
-              history={history}
-              onOpen={(entry) => {
-                setSearchFocused(false);
-                openHistoryEntry(entry);
+          >
+            <SearchField
+              ref={searchRef}
+              value={search}
+              onChange={(t) => {
+                setSearch(t);
+                setFilter('all');
               }}
-              onRemove={(entry) => {
-                persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
+              onClear={clearSearch}
+              onFocus={() => {
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                setSearchFocused(true);
+                setSearchHiddenAnimated(false);
               }}
-              onClear={() => persistHistory([])}
+              onBlur={() => {
+                // Небольшая задержка: тап по записи истории успевает сработать.
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                blurTimer.current = setTimeout(() => setSearchFocused(false), 160);
+              }}
+              onSubmit={() => {
+                if (selectedKey) {
+                  const row = selectableRows.find((r) => rowKey(r) === selectedKey);
+                  if (row) openSearchRow(row);
+                } else {
+                  rememberQuery(search);
+                }
+              }}
+              placeholder="Поиск людей, чатов, групп, каналов, сообщений"
             />
-          ) : null}
-        </View>
+            {historyOpen ? (
+              <SearchHistoryPanel
+                theme={theme}
+                wide={wide}
+                history={history}
+                onOpen={(entry) => {
+                  setSearchFocused(false);
+                  openHistoryEntry(entry);
+                }}
+                onRemove={(entry) => {
+                  persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
+                }}
+                onClear={() => persistHistory([])}
+              />
+            ) : null}
+          </View>
+        </Animated.View>
       )}
 
       {error || queryError ? (
@@ -1443,16 +1521,18 @@ export default function ChatsScreen() {
             refreshing={refreshing}
             onScrollBeginDrag={() => setOpenRowId(null)}
             onTouchStart={scheduleSwipeClose}
-            onScroll={() => {
-              if (openRowId) setOpenRowId(null);
-            }}
+            onScroll={onChatsListScroll}
             scrollEventThrottle={32}
             initialNumToRender={12}
             maxToRenderPerBatch={10}
             updateCellsBatchingPeriod={40}
             windowSize={9}
             removeClippedSubviews={Platform.OS === 'android'}
-            contentContainerStyle={{ paddingBottom: 130 }}
+            contentContainerStyle={{
+              // Док плавающий: резервируем высоту капсулы + safe-area + 24px воздуха,
+              // чтобы последний чат не уходил под кнопки.
+              paddingBottom: Math.max(130, 60 + 12 + Math.max(0, insets.bottom) + 24),
+            }}
             ListFooterComponent={
               archivedChats.length ? (
                 <ArchiveSection
@@ -1607,7 +1687,7 @@ const SearchField = React.forwardRef<
 >(function SearchField({ value, onChange, onClear, onFocus, onBlur, onSubmit, placeholder }, ref) {
   const theme = useTheme();
   return (
-    <View style={[styles.searchWrap, { borderColor: theme.line, backgroundColor: theme.surface }]}>
+    <View style={[styles.searchWrap, { borderColor: theme.line, backgroundColor: 'transparent' }]}>
       <Ionicons name="search" size={18} color={theme.textDisabled} />
       <TextInput
         ref={ref}

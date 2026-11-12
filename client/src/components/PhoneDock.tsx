@@ -10,6 +10,7 @@ import { Animated, Modal, Platform, Pressable, Text, View, StyleSheet, type Layo
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import { MotiView } from 'moti';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/useTheme';
 import { useHaptics } from './useHaptics';
 import { useReducedMotion } from './useReducedMotion';
@@ -24,6 +25,7 @@ const TILE_GAP = 6;
 
 export function PhoneDock() {
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const haptics = useHaptics();
   const reduced = useReducedMotion();
   const pathname = usePathname();
@@ -146,11 +148,13 @@ export function PhoneDock() {
   const onDockLayout = (e: LayoutChangeEvent) => setDockWidth(e.nativeEvent.layout.width);
 
   const enterTranslateY = enter.interpolate({ inputRange: [0, 1], outputRange: [16, 0] });
+  // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
+  const dockBottom = 12 + Math.max(0, insets.bottom);
 
   return (
     <Animated.View
       pointerEvents="box-none"
-      style={[styles.host, { opacity: enter, transform: [{ translateY: enterTranslateY }] }]}
+      style={[styles.host, { bottom: dockBottom, opacity: enter, transform: [{ translateY: enterTranslateY }] }]}
     >
       <View
         onLayout={onDockLayout}
@@ -248,7 +252,7 @@ export function PhoneDock() {
 
       <Modal visible={chatsMenuOpen} transparent animationType="fade" onRequestClose={() => setChatsMenuOpen(false)}>
         <Pressable style={styles.menuBackdrop} onPress={() => setChatsMenuOpen(false)} accessibilityLabel="Закрыть меню чатов">
-          <View style={styles.menuHost}>
+          <View style={[styles.menuHost, { bottom: 86 + Math.max(0, insets.bottom) }]}>
             <MotiView
               from={{ opacity: 0, translateY: reduced ? 0 : 10, scale: reduced ? 1 : 0.96 }}
               animate={{ opacity: 1, translateY: 0, scale: 1 }}

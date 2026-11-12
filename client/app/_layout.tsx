@@ -1,6 +1,6 @@
-/**
- * SwarmGram client root: query/provider, realtime, auth-редиректы,
- * персист темы и сессии.
+﻿/**
+ * SwarmGram client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
+ * РїРµСЂСЃРёСЃС‚ С‚РµРјС‹ Рё СЃРµСЃСЃРёРё.
  */
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
@@ -16,7 +16,6 @@ import { useBodyBackground } from '../src/theme/useBodyBackground';
 import { ToastHost } from '../src/components/Toast';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { ModuleAutoBanner } from '../src/components/ModuleAutoBanner';
-import { LoadingBar } from '../src/components/LoadingBar';
 import { GlobalHotkeys } from '../src/components/GlobalHotkeys';
 import { useSounds } from '../src/components/useSounds';
 import { useHaptics } from '../src/components/useHaptics';
@@ -37,7 +36,7 @@ const queryClient = new QueryClient({
 
 /* -------------------------------------------------------------- realtime -- */
 
-/** Тост о заявках включён по умолчанию; на web отключается через localStorage. */
+/** РўРѕСЃС‚ Рѕ Р·Р°СЏРІРєР°С… РІРєР»СЋС‡С‘РЅ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ; РЅР° web РѕС‚РєР»СЋС‡Р°РµС‚СЃСЏ С‡РµСЂРµР· localStorage. */
 function isRequestsNotifyEnabled(): boolean {
   try {
     if (typeof localStorage === 'undefined') return true;
@@ -55,7 +54,7 @@ function RealtimeBridge() {
   const sounds = useSounds();
   const haptics = useHaptics();
 
-  // Актуальные значения для долгоживущего WebSocket-эффекта.
+  // РђРєС‚СѓР°Р»СЊРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ РґРѕР»РіРѕР¶РёРІСѓС‰РµРіРѕ WebSocket-СЌС„С„РµРєС‚Р°.
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;
   const soundsRef = React.useRef(sounds);
@@ -69,26 +68,26 @@ function RealtimeBridge() {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let fallbackTimer: ReturnType<typeof setInterval> | null = null;
     let firstConnect = true;
-    // Счётчик неудачных попыток для exponential backoff; сбрасывается на onopen.
+    // РЎС‡С‘С‚С‡РёРє РЅРµСѓРґР°С‡РЅС‹С… РїРѕРїС‹С‚РѕРє РґР»СЏ exponential backoff; СЃР±СЂР°СЃС‹РІР°РµС‚СЃСЏ РЅР° onopen.
     let reconnectAttempt = 0;
     let lastFallbackAt = 0;
     let disposed = false;
 
-    /** Аккуратно патчим кэш списка чатов (активные и архив). */
+    /** РђРєРєСѓСЂР°С‚РЅРѕ РїР°С‚С‡РёРј РєСЌС€ СЃРїРёСЃРєР° С‡Р°С‚РѕРІ (Р°РєС‚РёРІРЅС‹Рµ Рё Р°СЂС…РёРІ). */
     const patchChatLists = (chatId: string, patch: (chat: any) => any) => {
       qc.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
         Array.isArray(prev) ? prev.map((c) => (c?.id === chatId ? patch(c) : c)) : prev,
       );
     };
 
-    /** Патч чата и в списках, и в точечном кэше ['chat', id]. */
+    /** РџР°С‚С‡ С‡Р°С‚Р° Рё РІ СЃРїРёСЃРєР°С…, Рё РІ С‚РѕС‡РµС‡РЅРѕРј РєСЌС€Рµ ['chat', id]. */
     const patchChatEverywhere = (chatId: string, patch: (chat: any) => any) => {
       patchChatLists(chatId, patch);
       const cached = qc.getQueryData<any>(['chat', chatId]);
       if (cached) qc.setQueryData(['chat', chatId], patch(cached));
     };
 
-    /** Патч одного сообщения в кэше; false — сообщения в кэше нет. */
+    /** РџР°С‚С‡ РѕРґРЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ РІ РєСЌС€Рµ; false вЂ” СЃРѕРѕР±С‰РµРЅРёСЏ РІ РєСЌС€Рµ РЅРµС‚. */
     const patchMessage = (chatId: string, messageId: string, patch: (m: any) => any): boolean => {
       const list = qc.getQueryData<any[]>(['messages', chatId]);
       if (!Array.isArray(list)) return false;
@@ -107,8 +106,8 @@ function RealtimeBridge() {
     const activeChatId = (): string | undefined => useStore.getState().activeChat?.id;
 
     /**
-     * Изменение состава/ролей участников: точечно правим members, myRole и
-     * membersCount, не перезапрашивая весь список чатов.
+     * РР·РјРµРЅРµРЅРёРµ СЃРѕСЃС‚Р°РІР°/СЂРѕР»РµР№ СѓС‡Р°СЃС‚РЅРёРєРѕРІ: С‚РѕС‡РµС‡РЅРѕ РїСЂР°РІРёРј members, myRole Рё
+     * membersCount, РЅРµ РїРµСЂРµР·Р°РїСЂР°С€РёРІР°СЏ РІРµСЃСЊ СЃРїРёСЃРѕРє С‡Р°С‚РѕРІ.
      */
     const applyMemberEvent = (
       type: 'chat_member_added' | 'chat_member_removed' | 'chat_member_role',
@@ -155,7 +154,7 @@ function RealtimeBridge() {
         return next;
       });
 
-      // Меня исключили — убираем чат из кэша, чтобы не висеть на 404.
+      // РњРµРЅСЏ РёСЃРєР»СЋС‡РёР»Рё вЂ” СѓР±РёСЂР°РµРј С‡Р°С‚ РёР· РєСЌС€Р°, С‡С‚РѕР±С‹ РЅРµ РІРёСЃРµС‚СЊ РЅР° 404.
       if (type === 'chat_member_removed' && uid && uid === meId) {
         qc.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
           Array.isArray(prev) ? prev.filter((c) => c?.id !== chatId) : prev,
@@ -163,12 +162,12 @@ function RealtimeBridge() {
         qc.removeQueries({ queryKey: ['chat', chatId] });
         qc.removeQueries({ queryKey: ['messages', chatId] });
       } else if (cachedBefore && !Array.isArray(cachedBefore.members)) {
-        // В кэше чата не было списка участников — точечно перечитаем только его.
+        // Р’ РєСЌС€Рµ С‡Р°С‚Р° РЅРµ Р±С‹Р»Рѕ СЃРїРёСЃРєР° СѓС‡Р°СЃС‚РЅРёРєРѕРІ вЂ” С‚РѕС‡РµС‡РЅРѕ РїРµСЂРµС‡РёС‚Р°РµРј С‚РѕР»СЊРєРѕ РµРіРѕ.
         void qc.invalidateQueries({ queryKey: ['chat', chatId] });
       }
     };
 
-    /** presence/user_online: обновляем online у direct-чата и профиля. */
+    /** presence/user_online: РѕР±РЅРѕРІР»СЏРµРј online Сѓ direct-С‡Р°С‚Р° Рё РїСЂРѕС„РёР»СЏ. */
     const applyPresence = (event: any) => {
       const userId =
         typeof event.userId === 'string'
@@ -200,7 +199,7 @@ function RealtimeBridge() {
         const cached = qc.getQueryData<any>(['chat', openId]);
         if (cached) qc.setQueryData(['chat', openId], patch(cached));
       }
-      // Профиль пользователя, если открыт: обновляем только его.
+      // РџСЂРѕС„РёР»СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ, РµСЃР»Рё РѕС‚РєСЂС‹С‚: РѕР±РЅРѕРІР»СЏРµРј С‚РѕР»СЊРєРѕ РµРіРѕ.
       const username = typeof event.username === 'string' ? event.username : '';
       if (username) {
         const profile = qc.getQueryData<any>(['profile', username]);
@@ -208,7 +207,7 @@ function RealtimeBridge() {
       }
     };
 
-    /** module_status: обновляем индикатор транспорта и, при необходимости, узлы. */
+    /** module_status: РѕР±РЅРѕРІР»СЏРµРј РёРЅРґРёРєР°С‚РѕСЂ С‚СЂР°РЅСЃРїРѕСЂС‚Р° Рё, РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё, СѓР·Р»С‹. */
     const applyModuleStatus = (event: any) => {
       const src = event.module && typeof event.module === 'object' ? event.module : event;
       const current = useStore.getState().transportModule;
@@ -217,12 +216,12 @@ function RealtimeBridge() {
       if (typeof gateway === 'boolean') {
         useStore.getState().setTransportModule({ gateway, model });
       }
-      // Узлы/модули обновляем точечно и только если они уже загружены.
+      // РЈР·Р»С‹/РјРѕРґСѓР»Рё РѕР±РЅРѕРІР»СЏРµРј С‚РѕС‡РµС‡РЅРѕ Рё С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕРЅРё СѓР¶Рµ Р·Р°РіСЂСѓР¶РµРЅС‹.
       void qc.invalidateQueries({ queryKey: ['nodes'], type: 'active' });
       void qc.invalidateQueries({ queryKey: ['modules'], type: 'active' });
     };
 
-    /** Просмотры сообщения: патчим viewsCount по id. */
+    /** РџСЂРѕСЃРјРѕС‚СЂС‹ СЃРѕРѕР±С‰РµРЅРёСЏ: РїР°С‚С‡РёРј viewsCount РїРѕ id. */
     const applyViews = (event: any) => {
       const chatId = typeof event.chatId === 'string' ? event.chatId : '';
       const messageId =
@@ -240,7 +239,7 @@ function RealtimeBridge() {
       }
     };
 
-    /** Мягкий догон после reconnect: только то, что могло устареть. */
+    /** РњСЏРіРєРёР№ РґРѕРіРѕРЅ РїРѕСЃР»Рµ reconnect: С‚РѕР»СЊРєРѕ С‚Рѕ, С‡С‚Рѕ РјРѕРіР»Рѕ СѓСЃС‚Р°СЂРµС‚СЊ. */
     const catchUp = () => {
       void qc.invalidateQueries({ queryKey: ['chats'] });
       void qc.invalidateQueries({ queryKey: ['messages'], type: 'active' });
@@ -249,10 +248,10 @@ function RealtimeBridge() {
       if (id) void qc.invalidateQueries({ queryKey: ['chat', id] });
     };
 
-    /** Exponential backoff 2s → 30s с джиттером ±20%. */
+    /** Exponential backoff 2s в†’ 30s СЃ РґР¶РёС‚С‚РµСЂРѕРј В±20%. */
     const scheduleReconnect = () => {
       if (disposed) return;
-      // Нет сети — ждём события `online`, не тратим попытки впустую.
+      // РќРµС‚ СЃРµС‚Рё вЂ” Р¶РґС‘Рј СЃРѕР±С‹С‚РёСЏ `online`, РЅРµ С‚СЂР°С‚РёРј РїРѕРїС‹С‚РєРё РІРїСѓСЃС‚СѓСЋ.
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       const base = Math.min(30_000, 2_000 * 2 ** Math.min(reconnectAttempt, 4));
@@ -266,7 +265,7 @@ function RealtimeBridge() {
 
     const connect = async (fallbackToken?: string) => {
       if (disposed) return;
-      // Если access-token истёк — обновляем до открытия сокета, иначе 401.
+      // Р•СЃР»Рё access-token РёСЃС‚С‘Рє вЂ” РѕР±РЅРѕРІР»СЏРµРј РґРѕ РѕС‚РєСЂС‹С‚РёСЏ СЃРѕРєРµС‚Р°, РёРЅР°С‡Рµ 401.
       const token = (await ensureAccessToken()) || fallbackToken;
       if (!token) return;
       const ws = new WebSocket(wsUrl(token));
@@ -274,7 +273,7 @@ function RealtimeBridge() {
       ws.onopen = () => {
         reconnectAttempt = 0;
         useStore.getState().setTransportOnline(true);
-        // Догон после переподключения: пока связи не было, события могли потеряться.
+        // Р”РѕРіРѕРЅ РїРѕСЃР»Рµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёСЏ: РїРѕРєР° СЃРІСЏР·Рё РЅРµ Р±С‹Р»Рѕ, СЃРѕР±С‹С‚РёСЏ РјРѕРіР»Рё РїРѕС‚РµСЂСЏС‚СЊСЃСЏ.
         if (!firstConnect) catchUp();
         firstConnect = false;
       };
@@ -327,7 +326,7 @@ function RealtimeBridge() {
             const patched = messageId
               ? patchMessage(event.chatId, messageId, patch)
               : false;
-            // Формат события без messageId/текста — перечитываем историю.
+            // Р¤РѕСЂРјР°С‚ СЃРѕР±С‹С‚РёСЏ Р±РµР· messageId/С‚РµРєСЃС‚Р° вЂ” РїРµСЂРµС‡РёС‚С‹РІР°РµРј РёСЃС‚РѕСЂРёСЋ.
             if (!patched) void qc.invalidateQueries({ queryKey: ['messages', event.chatId] });
           } else if (event.type === 'message_deleted') {
             const messageId = typeof event.messageId === 'string' ? event.messageId : '';
@@ -342,11 +341,11 @@ function RealtimeBridge() {
             }
             void qc.invalidateQueries({ queryKey: ['chats'] });
           } else if (event.type === 'join_request') {
-            // Заявка на вступление: тост (можно отключить в localStorage) и патч списков.
+            // Р—Р°СЏРІРєР° РЅР° РІСЃС‚СѓРїР»РµРЅРёРµ: С‚РѕСЃС‚ (РјРѕР¶РЅРѕ РѕС‚РєР»СЋС‡РёС‚СЊ РІ localStorage) Рё РїР°С‚С‡ СЃРїРёСЃРєРѕРІ.
             if (isRequestsNotifyEnabled()) {
-              useStore.getState().pushToast({ kind: 'info', message: 'Новая заявка на вступление в чат' });
+              useStore.getState().pushToast({ kind: 'info', message: 'РќРѕРІР°СЏ Р·Р°СЏРІРєР° РЅР° РІСЃС‚СѓРїР»РµРЅРёРµ РІ С‡Р°С‚' });
             }
-            // Умеренный тактильный отклик на важное событие (уважает sg:haptics).
+            // РЈРјРµСЂРµРЅРЅС‹Р№ С‚Р°РєС‚РёР»СЊРЅС‹Р№ РѕС‚РєР»РёРє РЅР° РІР°Р¶РЅРѕРµ СЃРѕР±С‹С‚РёРµ (СѓРІР°Р¶Р°РµС‚ sg:haptics).
             hapticsRef.current.tap();
             const requests = qc.getQueryData<any[]>(['requests', event.chatId]);
             if (Array.isArray(requests)) {
@@ -404,18 +403,18 @@ function RealtimeBridge() {
             }
             void qc.invalidateQueries({ queryKey: ['channels'] });
             const current = pathnameRef.current;
-            // Если удалили открытый чат — уходим из него, чтобы не висеть на 404.
+            // Р•СЃР»Рё СѓРґР°Р»РёР»Рё РѕС‚РєСЂС‹С‚С‹Р№ С‡Р°С‚ вЂ” СѓС…РѕРґРёРј РёР· РЅРµРіРѕ, С‡С‚РѕР±С‹ РЅРµ РІРёСЃРµС‚СЊ РЅР° 404.
             if (removedId && (current === `/chat/${removedId}` || current.startsWith(`/chat/${removedId}/`))) {
               router.replace('/chats' as never);
             }
           }
         } catch {
-          /* игнорируем некорректные фреймы */
+          /* РёРіРЅРѕСЂРёСЂСѓРµРј РЅРµРєРѕСЂСЂРµРєС‚РЅС‹Рµ С„СЂРµР№РјС‹ */
         }
       };
     };
 
-    /** Немедленный reconnect по online/visibility — без ожидания backoff. */
+    /** РќРµРјРµРґР»РµРЅРЅС‹Р№ reconnect РїРѕ online/visibility вЂ” Р±РµР· РѕР¶РёРґР°РЅРёСЏ backoff. */
     const reconnectNow = () => {
       if (disposed) return;
       if (!getSession()?.refreshToken) return;
@@ -431,9 +430,9 @@ function RealtimeBridge() {
     const onVisibility = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') reconnectNow();
     };
-    // Chrome ругается «Page entered Back-Forward Cache», если при уходе со
-    // страницы остаётся открытый WebSocket. Закрываем его на pagehide и
-    // поднимаем заново на pageshow.
+    // Chrome СЂСѓРіР°РµС‚СЃСЏ В«Page entered Back-Forward CacheВ», РµСЃР»Рё РїСЂРё СѓС…РѕРґРµ СЃРѕ
+    // СЃС‚СЂР°РЅРёС†С‹ РѕСЃС‚Р°С‘С‚СЃСЏ РѕС‚РєСЂС‹С‚С‹Р№ WebSocket. Р—Р°РєСЂС‹РІР°РµРј РµРіРѕ РЅР° pagehide Рё
+    // РїРѕРґРЅРёРјР°РµРј Р·Р°РЅРѕРІРѕ РЅР° pageshow.
     const onPageHide = () => {
       try {
         socket?.close();
@@ -445,7 +444,7 @@ function RealtimeBridge() {
     };
     const onPageShow = () => reconnectNow();
 
-    // В React Native есть глобальный window, но без addEventListener.
+    // Р’ React Native РµСЃС‚СЊ РіР»РѕР±Р°Р»СЊРЅС‹Р№ window, РЅРѕ Р±РµР· addEventListener.
     const hasDomEvents =
       typeof window !== 'undefined' &&
       typeof (window as unknown as { addEventListener?: unknown }).addEventListener === 'function' &&
@@ -459,7 +458,7 @@ function RealtimeBridge() {
       window.addEventListener('pageshow', onPageShow);
     }
 
-    // Лёгкий фолбэк: только при видимой вкладке, offline-сокете и не чаще раза в 30 с.
+    // Р›С‘РіРєРёР№ С„РѕР»Р±СЌРє: С‚РѕР»СЊРєРѕ РїСЂРё РІРёРґРёРјРѕР№ РІРєР»Р°РґРєРµ, offline-СЃРѕРєРµС‚Рµ Рё РЅРµ С‡Р°С‰Рµ СЂР°Р·Р° РІ 30 СЃ.
     fallbackTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (useStore.getState().transportOnline) return;
@@ -471,8 +470,8 @@ function RealtimeBridge() {
 
     void connect(session.accessToken);
 
-    // Входящие через модуль: обрабатываем как WS-событие только когда
-    // интернета нет, иначе сервер доставит их сам (и будет дубль).
+    // Р’С…РѕРґСЏС‰РёРµ С‡РµСЂРµР· РјРѕРґСѓР»СЊ: РѕР±СЂР°Р±Р°С‚С‹РІР°РµРј РєР°Рє WS-СЃРѕР±С‹С‚РёРµ С‚РѕР»СЊРєРѕ РєРѕРіРґР°
+    // РёРЅС‚РµСЂРЅРµС‚Р° РЅРµС‚, РёРЅР°С‡Рµ СЃРµСЂРІРµСЂ РґРѕСЃС‚Р°РІРёС‚ РёС… СЃР°Рј (Рё Р±СѓРґРµС‚ РґСѓР±Р»СЊ).
     const unsubMesh = onMeshEnvelope((raw) => {
       if (useStore.getState().transportOnline) return;
       const item = raw as unknown as Record<string, any>;
@@ -491,7 +490,7 @@ function RealtimeBridge() {
             chatId,
             seq: 0,
             senderUserId: item.senderUserId,
-            senderUsername: item.senderUsername || 'Модуль',
+            senderUsername: item.senderUsername || 'РњРѕРґСѓР»СЊ',
             kind: item.kind || 'text',
             createdAt: item.createdAt || new Date().toISOString(),
             nonce: item.nonce,
@@ -534,7 +533,7 @@ function RealtimeBridge() {
     const meId = getSession()?.userId;
     const mine = Boolean(meId && env.senderUserId === meId);
 
-    // Инкрементальный патч истории: оптимистичное сообщение заменяем по id/clientId.
+    // РРЅРєСЂРµРјРµРЅС‚Р°Р»СЊРЅС‹Р№ РїР°С‚С‡ РёСЃС‚РѕСЂРёРё: РѕРїС‚РёРјРёСЃС‚РёС‡РЅРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ Р·Р°РјРµРЅСЏРµРј РїРѕ id/clientId.
     const messages = queryClient.getQueryData<any[]>(['messages', env.chatId]);
     if (Array.isArray(messages)) {
       const index = messages.findIndex(
@@ -556,12 +555,12 @@ function RealtimeBridge() {
         };
         queryClient.setQueryData(['messages', env.chatId], next);
       } else {
-        // Новое сообщение нужно расшифровать — точечный refetch этого чата.
+        // РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РЅСѓР¶РЅРѕ СЂР°СЃС€РёС„СЂРѕРІР°С‚СЊ вЂ” С‚РѕС‡РµС‡РЅС‹Р№ refetch СЌС‚РѕРіРѕ С‡Р°С‚Р°.
         void queryClient.invalidateQueries({ queryKey: ['messages', env.chatId] });
       }
     }
 
-    // Список чатов патчим без полного refetch: превью, время, непрочитанные.
+    // РЎРїРёСЃРѕРє С‡Р°С‚РѕРІ РїР°С‚С‡РёРј Р±РµР· РїРѕР»РЅРѕРіРѕ refetch: РїСЂРµРІСЊСЋ, РІСЂРµРјСЏ, РЅРµРїСЂРѕС‡РёС‚Р°РЅРЅС‹Рµ.
     const activeId = useStore.getState().activeChat?.id;
     queryClient.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
       Array.isArray(prev)
@@ -585,9 +584,9 @@ function RealtimeBridge() {
         : prev,
     );
 
-    // квитанция не требует ключа: серверные и E2E-чаты доставляются одинаково
+    // РєРІРёС‚Р°РЅС†РёСЏ РЅРµ С‚СЂРµР±СѓРµС‚ РєР»СЋС‡Р°: СЃРµСЂРІРµСЂРЅС‹Рµ Рё E2E-С‡Р°С‚С‹ РґРѕСЃС‚Р°РІР»СЏСЋС‚СЃСЏ РѕРґРёРЅР°РєРѕРІРѕ
     if (env.senderUserId && meId && env.senderUserId !== meId) {
-      // Тихое «дин» и лёгкая вибрация для входящих, кроме приглушённых чатов.
+      // РўРёС…РѕРµ В«РґРёРЅВ» Рё Р»С‘РіРєР°СЏ РІРёР±СЂР°С†РёСЏ РґР»СЏ РІС…РѕРґСЏС‰РёС…, РєСЂРѕРјРµ РїСЂРёРіР»СѓС€С‘РЅРЅС‹С… С‡Р°С‚РѕРІ.
       if (!useStore.getState().mutedChats.includes(env.chatId)) {
         const mutedUser = useStore
           .getState()
@@ -618,7 +617,7 @@ export default function RootLayout() {
   const [ready, setReady] = React.useState(false);
   const [mounted, setMounted] = React.useState(false);
 
-  // Навигационная тема: фон прозрачный, чтобы единственным слоем был <body>.
+  // РќР°РІРёРіР°С†РёРѕРЅРЅР°СЏ С‚РµРјР°: С„РѕРЅ РїСЂРѕР·СЂР°С‡РЅС‹Р№, С‡С‚РѕР±С‹ РµРґРёРЅСЃС‚РІРµРЅРЅС‹Рј СЃР»РѕРµРј Р±С‹Р» <body>.
   const navTheme = React.useMemo(() => {
     const base = theme.dark ? DarkTheme : DefaultTheme;
     return {
@@ -640,26 +639,26 @@ export default function RootLayout() {
     void (async () => {
       const savedTheme = await kv.get('sg:theme');
       if (savedTheme === 'dark' || savedTheme === 'light' || savedTheme === 'system') useStore.getState().setThemeName(savedTheme);
-      // Акцентная палитра хранится отдельно от темы; неизвестное значение игнорируем.
+      // РђРєС†РµРЅС‚РЅР°СЏ РїР°Р»РёС‚СЂР° С…СЂР°РЅРёС‚СЃСЏ РѕС‚РґРµР»СЊРЅРѕ РѕС‚ С‚РµРјС‹; РЅРµРёР·РІРµСЃС‚РЅРѕРµ Р·РЅР°С‡РµРЅРёРµ РёРіРЅРѕСЂРёСЂСѓРµРј.
       const savedAccent = await kv.get('sg:accent');
       if (savedAccent && savedAccent in ACCENTS) useStore.getState().setAccent(savedAccent as AccentName);
-      // Язык по умолчанию берём локальный; серверные настройки применятся ниже.
+      // РЇР·С‹Рє РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Р±РµСЂС‘Рј Р»РѕРєР°Р»СЊРЅС‹Р№; СЃРµСЂРІРµСЂРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїСЂРёРјРµРЅСЏС‚СЃСЏ РЅРёР¶Рµ.
       const savedLocale = await kv.get('sg:locale');
       if (savedLocale) useStore.getState().setLocale(savedLocale);
       const s = await initSession();
-      // Сначала поднимаем локальный кэш: интерфейс должен рисоваться сразу,
-      // без ожидания сети. Затем уже догружаем серверные данные в фоне.
+      // РЎРЅР°С‡Р°Р»Р° РїРѕРґРЅРёРјР°РµРј Р»РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€: РёРЅС‚РµСЂС„РµР№СЃ РґРѕР»Р¶РµРЅ СЂРёСЃРѕРІР°С‚СЊСЃСЏ СЃСЂР°Р·Сѓ,
+      // Р±РµР· РѕР¶РёРґР°РЅРёСЏ СЃРµС‚Рё. Р—Р°С‚РµРј СѓР¶Рµ РґРѕРіСЂСѓР¶Р°РµРј СЃРµСЂРІРµСЂРЅС‹Рµ РґР°РЅРЅС‹Рµ РІ С„РѕРЅРµ.
       await loadCaches(s?.username ?? null).catch(() => undefined);
       useStore.getState().setSession(s);
-      // Профиль из кэша доступен сразу: без него списки чатов и настройки
-      // оставались бы пустыми до ответа сервера.
+      // РџСЂРѕС„РёР»СЊ РёР· РєСЌС€Р° РґРѕСЃС‚СѓРїРµРЅ СЃСЂР°Р·Сѓ: Р±РµР· РЅРµРіРѕ СЃРїРёСЃРєРё С‡Р°С‚РѕРІ Рё РЅР°СЃС‚СЂРѕР№РєРё
+      // РѕСЃС‚Р°РІР°Р»РёСЃСЊ Р±С‹ РїСѓСЃС‚С‹РјРё РґРѕ РѕС‚РІРµС‚Р° СЃРµСЂРІРµСЂР°.
       const cachedMe = getCachedMe();
       if (s && cachedMe) useStore.getState().setMe(cachedMe);
-      // Приглушённые чаты живут локально и не зависят от сервера.
+      // РџСЂРёРіР»СѓС€С‘РЅРЅС‹Рµ С‡Р°С‚С‹ Р¶РёРІСѓС‚ Р»РѕРєР°Р»СЊРЅРѕ Рё РЅРµ Р·Р°РІРёСЃСЏС‚ РѕС‚ СЃРµСЂРІРµСЂР°.
       void useStore.getState().hydrateMuted();
       void useStore.getState().hydrateMutedUsers();
-      // ВАЖНО: приложение готово к работе сразу после чтения локальной сессии.
-      // Сеть (api.me, refresh) догружается в фоне — без интернета запуск не блокируется.
+      // Р’РђР–РќРћ: РїСЂРёР»РѕР¶РµРЅРёРµ РіРѕС‚РѕРІРѕ Рє СЂР°Р±РѕС‚Рµ СЃСЂР°Р·Сѓ РїРѕСЃР»Рµ С‡С‚РµРЅРёСЏ Р»РѕРєР°Р»СЊРЅРѕР№ СЃРµСЃСЃРёРё.
+      // РЎРµС‚СЊ (api.me, refresh) РґРѕРіСЂСѓР¶Р°РµС‚СЃСЏ РІ С„РѕРЅРµ вЂ” Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р° Р·Р°РїСѓСЃРє РЅРµ Р±Р»РѕРєРёСЂСѓРµС‚СЃСЏ.
       useStore.getState().setReady(true);
       setReady(true);
       void loadProfileCaches();
@@ -670,10 +669,10 @@ export default function RootLayout() {
           try {
             const u = await api.me();
             useStore.getState().setMe(u);
-            // Настройки с сервера применяем без отправки обратно.
+            // РќР°СЃС‚СЂРѕР№РєРё СЃ СЃРµСЂРІРµСЂР° РїСЂРёРјРµРЅСЏРµРј Р±РµР· РѕС‚РїСЂР°РІРєРё РѕР±СЂР°С‚РЅРѕ.
             applyServerPreferences(u);
           } catch (meError) {
-            // протухший access — пробуем refresh
+            // РїСЂРѕС‚СѓС…С€РёР№ access вЂ” РїСЂРѕР±СѓРµРј refresh
             try {
               const s2 = getSession();
               if (!s2) throw new Error('no-session');
@@ -683,9 +682,9 @@ export default function RootLayout() {
               useStore.getState().setMe(u2);
               applyServerPreferences(u2);
             } catch (refreshError) {
-              // НИКОГДА не сбрасываем сессию автоматически: без интернета
-              // пользователь продолжает общаться через подключённый модуль.
-              // Выход из аккаунта — только вручную в настройках.
+              // РќРРљРћР“Р”Рђ РЅРµ СЃР±СЂР°СЃС‹РІР°РµРј СЃРµСЃСЃРёСЋ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё: Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р°
+              // РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РїСЂРѕРґРѕР»Р¶Р°РµС‚ РѕР±С‰Р°С‚СЊСЃСЏ С‡РµСЂРµР· РїРѕРґРєР»СЋС‡С‘РЅРЅС‹Р№ РјРѕРґСѓР»СЊ.
+              // Р’С‹С…РѕРґ РёР· Р°РєРєР°СѓРЅС‚Р° вЂ” С‚РѕР»СЊРєРѕ РІСЂСѓС‡РЅСѓСЋ РІ РЅР°СЃС‚СЂРѕР№РєР°С….
               void refreshError;
             }
           }
@@ -721,8 +720,8 @@ export default function RootLayout() {
     const hasSession = Boolean(sessionState) || getSession() !== null;
     const nextPath = typeof params.next === 'string' && params.next.startsWith('/') ? params.next : '/chats';
 
-    // Один переход за раз: повторный replace во время анимации нативного
-    // стека мог привести к зависанию интерфейса после входа/регистрации.
+    // РћРґРёРЅ РїРµСЂРµС…РѕРґ Р·Р° СЂР°Р·: РїРѕРІС‚РѕСЂРЅС‹Р№ replace РІРѕ РІСЂРµРјСЏ Р°РЅРёРјР°С†РёРё РЅР°С‚РёРІРЅРѕРіРѕ
+    // СЃС‚РµРєР° РјРѕРі РїСЂРёРІРµСЃС‚Рё Рє Р·Р°РІРёСЃР°РЅРёСЋ РёРЅС‚РµСЂС„РµР№СЃР° РїРѕСЃР»Рµ РІС…РѕРґР°/СЂРµРіРёСЃС‚СЂР°С†РёРё.
     const go = (to: string) => {
       if (pathname === to) return;
       const now = Date.now();
@@ -740,7 +739,7 @@ export default function RootLayout() {
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <QueryClientProvider client={queryClient} suppressHydrationWarning>
         <ThemeProvider value={navTheme}>
-        {/* Модуль восстанавливается сам при запуске; на экране логина не сканирует. */}
+        {/* РњРѕРґСѓР»СЊ РІРѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµС‚СЃСЏ СЃР°Рј РїСЂРё Р·Р°РїСѓСЃРєРµ; РЅР° СЌРєСЂР°РЅРµ Р»РѕРіРёРЅР° РЅРµ СЃРєР°РЅРёСЂСѓРµС‚. */}
         <ErrorBoundary>
         <ModuleProvider>
           {mounted ? (
@@ -756,8 +755,6 @@ export default function RootLayout() {
               {!ready ? <FullSkeleton /> : null}
               <ModuleAutoBanner />
               <ToastHost />
-              {/* Верхний прогресс-бар: сетевые запросы + инициализация сессии. */}
-              <LoadingBar forceVisible={!ready} />
             </>
           ) : (
             <FullSkeleton />
@@ -799,7 +796,7 @@ function FullSkeleton() {
         <View style={{ marginTop: 8 }}>
           <ActivityIndicator color={theme.accent} />
         </View>
-        <Text style={{ color: theme.textDisabled, fontSize: 11 }}>Проверяем сессию…</Text>
+        <Text style={{ color: theme.textDisabled, fontSize: 11 }}>РџСЂРѕРІРµСЂСЏРµРј СЃРµСЃСЃРёСЋвЂ¦</Text>
       </MotiView>
     </View>
   );

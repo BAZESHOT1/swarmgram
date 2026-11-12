@@ -820,6 +820,12 @@ export interface FirmwareBuild {
   config: FirmwareConfig;
   /** true — merged.bin (можно писать с 0x0 из браузера). */
   merged?: boolean;
+  /** Прогресс сборки 0..100 (растёт монотонно). */
+  progress?: number;
+  /** Фаза сборки: queued | preparing | compiling | linking | finalizing | ready | failed | timeout. */
+  phase?: string;
+  /** Момент фактического старта сборки. */
+  startedAt?: string | null;
   createdAt: string;
 }
 
@@ -1287,7 +1293,7 @@ export const api = {
 
   /* ---- серверная сборка прошивок ---- */
   buildFirmware: (config: FirmwareConfig) =>
-    req<{ id: string; status: FirmwareBuildStatus }>('/v1/firmware/build', {
+    req<{ id: string; status: FirmwareBuildStatus; progress?: number; phase?: string }>('/v1/firmware/build', {
       method: 'POST',
       body: JSON.stringify({ config }),
     }),

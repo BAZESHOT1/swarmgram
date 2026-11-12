@@ -209,6 +209,9 @@ interface BuildRow {
   log: string;
   bin_path: string;
   merged: boolean;
+  progress: number;
+  phase: string;
+  started_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -224,22 +227,31 @@ function toDto(row: BuildRow) {
     log: row.log,
     config: row.config,
     merged: row.merged === true,
+    progress: Number(row.progress ?? 0),
+    phase: row.phase || 'queued',
+    startedAt: row.started_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const BUILD_COLUMNS = 'id, user_id, status, config, version, size_bytes, sha256, log, bin_path, merged, created_at, updated_at';
+const BUILD_COLUMNS =
+  'id, user_id, status, config, version, size_bytes, sha256, log, bin_path, merged, progress, phase, started_at, created_at, updated_at';
 
-/** Помечает зависшие сборки (после перезапуска Hub/сборщика) как failed. */
+/**
+ * Помечает зависшие сборки (после перезапуска Hub/сборщика) как failed.
+ * Порог — 10 минут: дольше сборка жить не должна (таймаут builder/Hub 5 мин).
+ */
 async function failStaleBuilds(userId?: string): Promise<void> {
   await query(
     `UPDATE firmware_builds
         SET status = 'failed',
+            phase = 'timeout',
+            progress = 100,
             log = CASE WHEN log = '' THEN '[hub] build timed out' ELSE log || E'\n[hub] build timed out' END,
             updated_at = now()
       WHERE status IN ('queued', 'building')
-        AND updated_at < now() - interval '20 minutes'
+        AND updated_at < now() - interval '10 minutes'
         ${userId ? 'AND user_id = $1' : ''}`,
     userId ? [userId] : [],
   ).catch(() => undefined);
@@ -284,11 +296,43 @@ async function builderHealth(): Promise<BuilderHealth | null> {
   }
 }
 
-async function setBuildFailed(id: string, logText: string): Promise<void> {
+async function setBuildFailed(id: string, logText: string, phase = 'failed'): Promise<void> {
   await query(
-    `UPDATE firmware_builds SET status = 'failed', log = $2, updated_at = now() WHERE id = $1`,
-    [id, logText.slice(0, 100_000)],
+    `UPDATE firmware_builds
+        SET status = 'failed', phase = $3, progress = 100, log = $2, updated_at = now()
+      WHERE id = $1`,
+    [id, logText.slice(0, 100_000), phase],
   ).catch((e) => log('error', 'firmware_build_update_failed', { id, error: e instanceof Error ? e.message : String(e) }));
+}
+
+/** Таймаут запроса к builder. Сборка дольше 5 минут считается зависшей. */
+const BUILD_HTTP_TIMEOUT_MS = 300_000;
+/** Как часто Hub пишет прогресс в БД (клиент поллит каждые 2 с). */
+const PROGRESS_TICK_MS = 4_500;
+
+const BUILD_TIMEOUT_MESSAGE =
+  'Сборка превысила 5 минут и была прервана по таймауту. Сборщик мог зависнуть — попробуйте ещё раз; ' +
+  'если ошибка повторяется, проверьте firmware-builder (место на диске и процесс arduino-cli).';
+
+/** Фаза сборки по времени с её начала. */
+function phaseForElapsed(elapsedMs: number): string {
+  if (elapsedMs >= 80_000) return 'finalizing';
+  if (elapsedMs >= 40_000) return 'linking';
+  if (elapsedMs >= 10_000) return 'compiling';
+  return 'preparing';
+}
+
+/**
+ * Плавный прогресс 0..90 по времени: подготовка 0–10, компиляция 10–50,
+ * линковка 50–75, финализация 75–90 (за оставшиеся ~220 с). Значение
+ * монотонное, поэтому progress никогда не убывает.
+ */
+function progressForElapsed(elapsedMs: number): number {
+  const sec = Math.max(0, elapsedMs) / 1000;
+  if (sec < 10) return Math.round((sec / 10) * 10);
+  if (sec < 40) return Math.round(10 + ((sec - 10) / 30) * 40);
+  if (sec < 80) return Math.round(50 + ((sec - 40) / 40) * 25);
+  return Math.min(90, Math.round(75 + ((sec - 80) / 220) * 15));
 }
 
 /**
@@ -296,15 +340,47 @@ async function setBuildFailed(id: string, logText: string): Promise<void> {
  * Клиент поллит GET /v1/firmware/builds/:id.
  */
 async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
+  const startedAt = Date.now();
+  let ticker: ReturnType<typeof setInterval> | null = null;
+  let lastProgress = 0;
+  let lastPhase = 'preparing';
+
+  /** Обновляет progress/phase, не давая прогрессу откатиться назад. */
+  const writeProgress = async (): Promise<void> => {
+    const elapsed = Date.now() - startedAt;
+    const progress = Math.max(lastProgress, progressForElapsed(elapsed));
+    const phase = phaseForElapsed(elapsed);
+    if (progress === lastProgress && phase === lastPhase) return;
+    lastProgress = progress;
+    lastPhase = phase;
+    await query(
+      `UPDATE firmware_builds
+          SET progress = GREATEST(progress, $2), phase = $3, updated_at = now()
+        WHERE id = $1 AND status = 'building'`,
+      [id, progress, phase],
+    ).catch((e) => log('warn', 'firmware_build_progress_failed', {
+      id,
+      error: e instanceof Error ? e.message : String(e),
+    }));
+  };
+
   try {
-    await query(`UPDATE firmware_builds SET status = 'building', updated_at = now() WHERE id = $1`, [id]);
+    await query(
+      `UPDATE firmware_builds
+          SET status = 'building', phase = 'preparing', progress = 0,
+              started_at = now(), updated_at = now()
+        WHERE id = $1`,
+      [id],
+    );
+
+    ticker = setInterval(() => void writeProgress(), PROGRESS_TICK_MS);
 
     const res = await fetch(`${builderUrl()}/build`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(cfg),
-      // Чуть больше таймаута builder (600 с), чтобы получить его лог ошибки.
-      signal: AbortSignal.timeout(1_220_000),
+      // Таймаут builder тоже 5 минут; клиенту нужно успеть получить внятную ошибку.
+      signal: AbortSignal.timeout(BUILD_HTTP_TIMEOUT_MS),
     });
 
     const data = (await res.json().catch(() => ({}))) as BuilderResponse;
@@ -327,7 +403,8 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
 
     await query(
       `UPDATE firmware_builds
-          SET status = 'ready', version = $2, size_bytes = $3, sha256 = $4, log = $5,
+          SET status = 'ready', phase = 'ready', progress = 100,
+              version = $2, size_bytes = $3, sha256 = $4, log = $5,
               bin_path = $6, merged = $7, updated_at = now()
         WHERE id = $1`,
       [id, String(data.version ?? ''), bin.length, sha, logText.slice(0, 100_000), file, data.merged === true],
@@ -336,8 +413,18 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
   } catch (e) {
     const err = e as Error & { buildLog?: string };
     const buildLog = err.buildLog ?? '';
-    log('warn', 'firmware_build_failed', { id, error: err.message });
-    await setBuildFailed(id, buildLog || `builder: ${err.message}`);
+    const timedOut =
+      err.name === 'TimeoutError' ||
+      err.name === 'AbortError' ||
+      /timeout|timed out|aborted/i.test(err.message || '');
+    log('warn', 'firmware_build_failed', { id, error: err.message, timedOut });
+    if (timedOut) {
+      await setBuildFailed(id, BUILD_TIMEOUT_MESSAGE, 'timeout');
+    } else {
+      await setBuildFailed(id, buildLog || `builder: ${err.message}`);
+    }
+  } finally {
+    if (ticker) clearInterval(ticker);
   }
 }
 
@@ -401,7 +488,8 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
 
     const id = randomUUID();
     await query(
-      `INSERT INTO firmware_builds (id, user_id, status, config) VALUES ($1, $2, 'queued', $3)`,
+      `INSERT INTO firmware_builds (id, user_id, status, phase, progress, config)
+       VALUES ($1, $2, 'queued', 'queued', 0, $3)`,
       [id, me, JSON.stringify(cfg)],
     );
 
@@ -412,7 +500,7 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
       });
     });
 
-    return reply.status(202).send({ id, status: 'queued' });
+    return reply.status(202).send({ id, status: 'queued', progress: 0, phase: 'queued' });
   });
 
   /** Состояние build-сервиса: визард может показать честную плашку заранее. */

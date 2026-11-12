@@ -2,7 +2,7 @@
   "expo": {
     "name": "SwarmGram",
     "slug": "swarmgram",
-    "version": "1.4.5",
+    "version": "1.4.6",
     "orientation": "portrait",
     "scheme": "swarmgram",
     "userInterfaceStyle": "dark",
@@ -62,7 +62,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "10405",
+      "buildNumber": "10406",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
@@ -76,7 +76,8 @@
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 10405,
+      "versionCode": 10406,
+      "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

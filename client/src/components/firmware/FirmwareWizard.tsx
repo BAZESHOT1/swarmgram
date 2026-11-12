@@ -5,7 +5,7 @@
  * Черновик сохраняется в localStorage под ключом sg:firmware-draft.
  */
 import React from 'react';
-import { Linking, Platform, Text, View } from 'react-native';
+import { Animated, Easing, Linking, Platform, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useRouter } from 'expo-router';
@@ -42,6 +42,77 @@ import {
   type FirmwareBuild,
   type FirmwareConfig,
 } from './types';
+
+/**
+ * Локальный тип сборки: сервер отдаёт progress/phase/startedAt, а тип в
+ * ./types пока описывает только базовые поля. Расширение совместимо с ним
+ * и не требует менять общий модуль.
+ */
+type WizardBuild = FirmwareBuild & {
+  progress?: number;
+  phase?: string;
+  startedAt?: string | null;
+};
+
+/** Человекочитаемые фазы серверной сборки. */
+const BUILD_PHASE_LABEL: Record<string, string> = {
+  queued: 'В очереди',
+  preparing: 'Подготовка',
+  compiling: 'Компиляция',
+  linking: 'Линковка',
+  finalizing: 'Финализация',
+  ready: 'Готово',
+  failed: 'Ошибка',
+  timeout: 'Таймаут',
+};
+
+function buildPhaseLabel(build: WizardBuild | null): string {
+  if (!build) return BUILD_PHASE_LABEL.preparing;
+  if (build.status === 'ready') return BUILD_PHASE_LABEL.ready;
+  if (build.status === 'failed') return BUILD_PHASE_LABEL[build.phase ?? ''] ?? BUILD_PHASE_LABEL.failed;
+  return BUILD_PHASE_LABEL[build.phase ?? ''] ?? (build.status === 'queued' ? BUILD_PHASE_LABEL.queued : 'Подготовка');
+}
+
+/**
+ * Полоса прогресса, плавно доезжающая до нового значения (общий ProgressBar
+ * перезапускает анимацию с нуля, из-за чего обновления каждые 4.5 с мигают).
+ */
+function BuildProgressBar({ pct }: { pct: number }) {
+  const theme = useTheme();
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
+  const value = React.useRef(new Animated.Value(clamped)).current;
+
+  React.useEffect(() => {
+    const animation = Animated.timing(value, {
+      toValue: clamped,
+      duration: 900,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [clamped, value]);
+
+  return (
+    <View
+      style={{
+        height: 6,
+        borderRadius: 999,
+        overflow: 'hidden',
+        backgroundColor: theme.surfacePressed,
+      }}
+    >
+      <Animated.View
+        style={{
+          height: '100%',
+          borderRadius: 999,
+          backgroundColor: theme.accent,
+          width: value.interpolate({ inputRange: [0, 100], outputRange: ['0%', '100%'] }),
+        }}
+      />
+    </View>
+  );
+}
 
 function readDraft(): FirmwareConfig | null {
   if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return null;
@@ -186,7 +257,7 @@ export function FirmwareWizard() {
   const [step, setStep] = React.useState(1);
   const [stepError, setStepError] = React.useState('');
 
-  const [build, setBuild] = React.useState<FirmwareBuild | null>(null);
+  const [build, setBuild] = React.useState<WizardBuild | null>(null);
   const [building, setBuilding] = React.useState(false);
   const [buildError, setBuildError] = React.useState('');
   const [buildStartedAt, setBuildStartedAt] = React.useState<number | null>(null);
@@ -219,7 +290,7 @@ export function FirmwareWizard() {
         return;
       }
       try {
-        let detail: FirmwareBuild | null = null;
+        let detail: WizardBuild | null = null;
         try {
           detail = await firmwareBuild(build.id);
         } catch {
@@ -333,7 +404,7 @@ export function FirmwareWizard() {
     try {
       const result = await buildFirmware(config);
       if (!result?.id) throw new Error('Hub не вернул идентификатор сборки.');
-      setBuild({ id: result.id, status: result.status || 'queued' });
+      setBuild({ id: result.id, status: result.status || 'queued', progress: 0, phase: 'queued' });
       setBuildStartedAt(Date.now());
       setPollActive(true);
     } catch (error) {
@@ -375,17 +446,43 @@ export function FirmwareWizard() {
         return <HubStep config={config} onChange={patch} firmwareVersion={build?.version} />;
       case 7:
         return (
-          <ReviewStep
-            config={config}
-            build={build}
-            building={building}
-            buildError={buildError}
-            buildStartedAt={buildStartedAt}
-            onEditStep={goTo}
-            onBuild={() => void startBuild()}
-            onGoFlash={() => goTo(8)}
-            onDownload={() => void download(build)}
-          />
+          <View>
+            {build && !isTerminalStatus(build.status) ? (
+              <View style={{ marginBottom: 14 }}>
+                <GlassCard>
+                  <View style={{ padding: 13 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>
+                        {buildPhaseLabel(build)}
+                      </Text>
+                      <Text
+                        style={{
+                          color: theme.textSecondary,
+                          fontSize: 11.5,
+                          fontVariant: ['tabular-nums'] as never,
+                        }}
+                      >
+                        {Math.round(Math.max(0, Math.min(100, build.progress ?? 0)))}%
+                      </Text>
+                    </View>
+                    <View style={{ height: 8 }} />
+                    <BuildProgressBar pct={build.progress ?? 0} />
+                  </View>
+                </GlassCard>
+              </View>
+            ) : null}
+            <ReviewStep
+              config={config}
+              build={build}
+              building={building}
+              buildError={buildError}
+              buildStartedAt={buildStartedAt}
+              onEditStep={goTo}
+              onBuild={() => void startBuild()}
+              onGoFlash={() => goTo(8)}
+              onDownload={() => void download(build)}
+            />
+          </View>
         );
       case 8:
         return (

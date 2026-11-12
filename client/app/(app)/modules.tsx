@@ -10,10 +10,11 @@
  *
  * Подключение и прошивка идут через полноэкранный мастер ConnectModuleFlow.
  */
-import React, { useState } from 'react';
-import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
+import { useFocusEffect } from 'expo-router';
 import type { ModuleRow } from '../../src/data/api';
 import {
   humanError,
@@ -46,6 +47,7 @@ import { ConnectModuleFlow } from '../../src/components/modules/ConnectModuleFlo
 import { GatewayWifiModal } from '../../src/components/modules/GatewayWifiModal';
 import { ModuleCard } from '../../src/components/modules/ModuleCard';
 import { ModulesNetworkMap } from '../../src/components/modules/ModulesNetworkMap';
+import { SerialMonitor } from '../../src/components/modules/SerialMonitor';
 import {
   MESH_ALWAYS,
   moduleEnvironmentLabel,
@@ -56,6 +58,9 @@ import { useModuleConnection } from '../../src/modules/ModuleProvider';
 
 type ModuleFilter = 'all' | 'online' | 'offline' | 'blocked' | 'wearable' | 'repeater' | 'gateway';
 type FlowMode = 'prepared' | 'flash' | 'claim';
+
+/** Период опроса модулей, пока страница «Модули» в фокусе. */
+const MODULES_POLL_MS = 3000;
 
 const FILTERS: Array<{ id: ModuleFilter; label: string }> = [
   { id: 'all', label: 'Все' },
@@ -245,7 +250,7 @@ function ConnectedModuleCard({
               }}
             >
               <Ionicons
-                name={kind === 'ble' ? 'bluetooth' : 'usb-outline'}
+                name={kind === 'ble' ? 'bluetooth' : 'hardware-chip'}
                 size={20}
                 color={theme.accent}
               />
@@ -330,6 +335,57 @@ export default function ModulesScreen() {
   const [blockTarget, setBlockTarget] = useState<ModuleRow | null>(null);
   const [blockReason, setBlockReason] = useState('');
   const [gatewayTarget, setGatewayTarget] = useState<ModuleRow | null>(null);
+  /** События WebSocket, которые кладёт общий RealtimeBridge (второй сокет не нужен). */
+  const pushEvent = useStore((s) => s.pushEvent);
+
+  /* ------------------------------------------------- realtime модулей -- */
+  // Пока экран в фокусе и приложение активно, список обновляется каждые 3 с.
+  // При уходе со страницы интервал снимается — фонового трафика нет.
+  const focusedRef = useRef(false);
+  const appActiveRef = useRef(AppState.currentState !== 'background');
+  const refreshBusyRef = useRef(false);
+  const refetchRef = useRef(modules.refetch);
+  refetchRef.current = modules.refetch;
+
+  const refreshModules = useCallback(() => {
+    if (!focusedRef.current || !appActiveRef.current || refreshBusyRef.current) return;
+    refreshBusyRef.current = true;
+    void refetchRef
+      .current()
+      .catch(() => undefined)
+      .finally(() => {
+        refreshBusyRef.current = false;
+      });
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      focusedRef.current = true;
+      refreshModules();
+      const timer = setInterval(refreshModules, MODULES_POLL_MS);
+      return () => {
+        focusedRef.current = false;
+        clearInterval(timer);
+      };
+    }, [refreshModules]),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      appActiveRef.current = state === 'active';
+      if (state === 'active') refreshModules();
+    });
+    return () => subscription.remove();
+  }, [refreshModules]);
+
+  // Если push-событие о модуле всё же пришло через общий сокет — обновляем сразу.
+  useEffect(() => {
+    if (!pushEvent) return;
+    const kind = String(pushEvent.kind ?? '').toLowerCase();
+    if (!kind || !/module|status/.test(kind)) return;
+    if (!focusedRef.current || !appActiveRef.current) return;
+    void refetchRef.current().catch(() => undefined);
+  }, [pushEvent]);
 
   const list = modules.data ?? [];
   const realModules = list.filter((module) => !isShadow(module));
@@ -348,6 +404,15 @@ export default function ModulesScreen() {
   const directKind: 'usb' | 'ble' | null =
     localConnection.connection?.kind ??
     (directModule?.transport === 'ble' ? 'ble' : directModule?.transport === 'usb' ? 'usb' : null);
+
+  /** Причина, по которой Serial-монитор не должен занимать USB-порт. */
+  const serialBlockedReason = connectOpen
+    ? 'Открыт мастер подключения/прошивки. Закройте его, чтобы открыть Serial-порт.'
+    : localConnection.busy
+      ? 'Идёт поиск модуля по USB/BLE. Дождитесь окончания.'
+      : localConnection.connected
+        ? 'Модуль подключён к клиенту и занимает USB-порт. Сначала отключите его.'
+        : undefined;
 
   const openFlow = (mode?: FlowMode) => {
     setFlowMode(mode);
@@ -674,6 +739,17 @@ export default function ModulesScreen() {
               </View>
             </GlassCard>
           )}
+        </SettingsSection>
+      ) : null}
+
+      {/* 2b. SERIAL-МОНИТОР — отладка прошивки по USB только на ПК (web). */}
+      {Platform.OS === 'web' ? (
+        <SettingsSection
+          title="Отладка по USB"
+          delay={motion.staggerStepMs}
+          right={<Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>Serial · 115200</Text>}
+        >
+          <SerialMonitor blocked={Boolean(serialBlockedReason)} blockedReason={serialBlockedReason} />
         </SettingsSection>
       ) : null}
 
