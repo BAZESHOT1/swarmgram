@@ -823,7 +823,7 @@ export default function ChatsScreen() {
           if (!cancelled) await new Promise((resolve) => setTimeout(resolve, 300));
         }
       })();
-    }, 1200);
+    }, 5000);
 
     return () => {
       cancelled = true;

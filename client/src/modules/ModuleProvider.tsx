@@ -533,14 +533,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
   useEffect(() => {
     if (!session) return undefined;
-    // Небольшая задержка: даём нативному стеку завершить переход после входа,
-    // и только потом трогаем BLE (скан не конкурирует с анимацией).
-    const timer = setTimeout(() => void restore(), 1500);
+    // Большая задержка после входа: iOS-диалог BLE-разрешения не должен
+    // пересекаться с монтированием чатов и первым рендером главного экрана.
+    const timer = setTimeout(() => void restore(), 4500);
+    let activeTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void restore();
+      if (state !== 'active') return;
+      if (activeTimer) clearTimeout(activeTimer);
+      activeTimer = setTimeout(() => void restore(), 3000);
     });
     return () => {
       clearTimeout(timer);
+      if (activeTimer) clearTimeout(activeTimer);
       sub.remove();
     };
   }, [session?.userId, restore, session]);
