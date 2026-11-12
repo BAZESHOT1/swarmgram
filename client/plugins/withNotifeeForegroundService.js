@@ -9,11 +9,13 @@
 const { withAndroidManifest } = require('@expo/config-plugins');
 
 const SERVICE_NAME = 'app.notifee.core.ForegroundService';
-const SERVICE_TYPES = 'connectedDevice|dataSync|shortService';
+const SERVICE_TYPES = 'connectedDevice|dataSync';
 
 module.exports = function withNotifeeForegroundService(config) {
   return withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults.manifest;
+    if (!manifest.$) manifest.$ = {};
+    if (!manifest.$['xmlns:tools']) manifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     const application = manifest.application && manifest.application[0];
     if (!application) return mod;
 
@@ -26,6 +28,7 @@ module.exports = function withNotifeeForegroundService(config) {
       application.service.push(service);
     }
     service.$['android:foregroundServiceType'] = SERVICE_TYPES;
+    service.$['tools:replace'] = 'android:foregroundServiceType';
     return mod;
   });
 };

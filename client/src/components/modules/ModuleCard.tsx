@@ -404,7 +404,13 @@ export function ModuleCard({
               }}
             >
               <DiagRow label="Публичный ID" value={publicId || '—'} />
-              <DiagRow label="hardwareId" value={hardwareId || '—'} />
+              <DiagRow label="MAC (идентичность)" value={hardwareId || '—'} />
+              <DiagRow label="Кластер" value={module.clusterId || '—'} />
+              <DiagRow label="Border-нода" value={module.border ? 'да' : 'нет'} />
+              <DiagRow
+                label="Активные транспорты"
+                value={(module.transports ?? []).length ? (module.transports ?? []).join(' · ') : '—'}
+              />
               <DiagRow label="Роль / среда" value={`${moduleRoleLabel(module.role)} · ${moduleEnvironmentLabel(module.kind, module.transport)}`} />
               <DiagRow label="Прошивка" value={module.firmware || '—'} />
               <DiagRow label="Uptime" value={formatUptime(module.uptime)} />

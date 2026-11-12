@@ -197,6 +197,10 @@ interface ModuleRecord {
   last_claim_at: string | null;
   created_at: string;
   token_version: number;
+  cluster_id: string;
+  border: boolean;
+  transports: string[];
+  last_neighbors: unknown;
 }
 
 /** Реальный online: свежесть check-in + для wearable факт подключения к клиенту. */
@@ -241,6 +245,10 @@ function moduleView(m: ModuleRecord, blockedHashes?: Set<string>) {
     lastSeenAt: m.last_seen_at,
     lastClaimAt: m.last_claim_at,
     createdAt: m.created_at,
+    clusterId: m.cluster_id || '',
+    border: Boolean(m.border),
+    transports: Array.isArray(m.transports) ? m.transports : [],
+    neighborsList: Array.isArray(m.last_neighbors) ? m.last_neighbors : [],
     blocked,
     blockReason: m.block_reason || '',
     shadow: false,
@@ -486,7 +494,8 @@ function transferView(t: TransferQueryRow, me: string) {
 const MODULE_COLUMNS = `m.id, m.owner_id, m.board_uuid, m.hardware_id, m.public_id, m.role, m.transport, m.kind,
   m.module_type, m.is_public, m.firmware, m.name, m.board, m.firmware_config, m.battery, m.gateway, m.neighbors, m.status,
   m.attached, m.attached_at, m.rssi, m.uptime, m.blocked, m.block_reason,
-  m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at, m.token_version`;
+  m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at, m.token_version,
+  m.cluster_id, m.border, m.transports, m.last_neighbors`;
 
 /** Имя модуля: username владельца + порядковый номер. */
 async function assignModuleName(ownerId: string, moduleId: string, force = false): Promise<void> {
@@ -1464,6 +1473,11 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];      claimToken?: string;
       rssi?: number;
       uptime?: number;
+      cluster_id?: string | number;
+      clusterId?: string | number;
+      border?: boolean | number;
+      wifi?: boolean | number;
+      lora?: boolean | number;
     };
 
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId, 'hardwareId', { max: 64 }));
@@ -1538,6 +1552,13 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const rssi = Math.trunc(Number(body.rssi ?? 0)) | 0;
     const uptime = Math.max(0, Math.trunc(Number(body.uptime ?? 0)));
     const adoptOwner = claimOwner && existing && existing.owner_id === system.id ? claimOwner : null;
+    const clusterId = String(body.cluster_id ?? body.clusterId ?? '').slice(0, 24);
+    const border = body.border === true || Number(body.border ?? 0) !== 0;
+    const transports: string[] = [];
+    if (body.wifi === true || Number(body.wifi ?? 0) !== 0) transports.push('wifi');
+    if (body.lora === true || Number(body.lora ?? 0) !== 0) transports.push('lora');
+    if (!transports.length) transports.push(kind === 'lora' ? 'lora' : 'wifi');
+    if (transport === 'ble' || transport === 'usb') transports.push(transport);
     if (existing) {
       moduleId = existing.id;
       tokenVersion = Number(existing.token_version ?? 0);
@@ -1548,16 +1569,20 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
                 rssi = CASE WHEN $11 <> 0 THEN $11 ELSE rssi END,
                 uptime = CASE WHEN $12 > 0 THEN $12 ELSE uptime END,
                 neighbors = $13,
-                owner_id = COALESCE($10, owner_id)
+                owner_id = COALESCE($10, owner_id),
+                cluster_id = $14, border = $15, transports = $16::text[],
+                last_neighbors = $17::jsonb
           WHERE id = $1`,
-        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner, rssi, uptime, neighbors.length],
+        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner, rssi, uptime, neighbors.length,
+          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32))],
       );
       publicId = existing.public_id || (await assignPublicId(moduleId, hardwareId));
     } else {
       const inserted = await one<{ id: string }>(
-        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors)
-         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12) RETURNING id`,
-        [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, rssi, uptime, neighbors.length],
+        `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip, rssi, uptime, neighbors, cluster_id, border, transports, last_neighbors)
+         VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9,$10,$11,$12,$13,$14,$15,$16::jsonb) RETURNING id`,
+        [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, rssi, uptime, neighbors.length,
+          clusterId, border, transports, JSON.stringify(neighbors.slice(0, 32))],
       );
       moduleId = inserted!.id;
       publicId = await assignPublicId(moduleId, hardwareId);

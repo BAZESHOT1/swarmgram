@@ -738,6 +738,12 @@ export interface ModuleRow {
   detachedToOther?: boolean;
   /** Пояснение для shadow-карточки. */
   message?: string;
+  /** Текущий кластер mesh и признак border-ноды. */
+  clusterId?: string;
+  border?: boolean;
+  /** Активные транспорты: wifi, lora, ble, usb. */
+  transports?: string[];
+  neighborsList?: { hardwareId?: string; publicId?: string; rssi?: number }[];
 }
 
 /** Shadow-запись модуля, привязанного на другом устройстве. */
