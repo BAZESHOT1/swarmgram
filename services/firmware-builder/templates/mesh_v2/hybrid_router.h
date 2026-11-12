@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include "beacon_format.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define KINTO_ROUTE_MAX 64
 #define KINTO_DUP_RING 256
 #define KINTO_ROUTE_EXPIRY_MS 45000
@@ -40,5 +44,9 @@ uint8_t kinto_ttl_for_iface(kinto_iface_t iface, uint8_t incoming_ttl);
 
 /* duplicate detection по (src, seq). */
 bool kinto_is_duplicate(const uint8_t src[KINTO_MESH_ADDR_LEN], uint32_t seq, uint32_t now_ms);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

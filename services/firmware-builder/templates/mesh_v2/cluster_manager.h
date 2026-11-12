@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include "beacon_format.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define KINTO_BORDER_MIN_RSSI (-95)
 #define KINTO_BORDER_MAX_QUEUE 8
 #define KINTO_BORDER_MAX 2
@@ -46,5 +50,9 @@ unsigned kinto_elect_border_nodes(
 
 /* true — пакет видит оба кластера и подходит на роль моста. */
 bool kinto_is_border_candidate(const kinto_cluster_neighbor_t *neighbors, unsigned count);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

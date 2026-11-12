@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
   KINTO_CLASS_TEXT = 0,
   KINTO_CLASS_TELEMETRY,
@@ -24,5 +28,9 @@ kinto_traffic_class_t kinto_classify(const char *kind, uint32_t size_bytes);
 kinto_traffic_policy_t kinto_traffic_policy(kinto_traffic_class_t cls);
 bool kinto_can_use_lora(kinto_traffic_class_t cls, uint32_t size_bytes, uint8_t lora_queue_depth);
 const char *kinto_drop_reason(kinto_traffic_class_t cls, uint32_t size_bytes, uint8_t lora_queue_depth);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
