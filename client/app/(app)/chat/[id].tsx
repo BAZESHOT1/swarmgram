@@ -58,6 +58,7 @@ import * as api from '../../../src/data/api';
 import { useStore } from '../../../src/state/useStore';
 import { useSounds } from '../../../src/components/useSounds';
 import { useHaptics } from '../../../src/components/useHaptics';
+import { CONNECTION_LABEL, useConnectionPhase } from '../../../src/components/ConnectionStatus';
 
 /** Chat + новые поля контракта (data-слой реализует параллельно). */
 type ChatExt = api.Chat & {
@@ -112,6 +113,7 @@ export default function ChatScreen() {
   const pushToast = useStore((s) => s.pushToast);
   const sounds = useSounds();
   const haptics = useHaptics();
+  const connectionPhase = useConnectionPhase();
   const typingEntry = useStore(
     (s) => (s as unknown as { typingByChat?: Record<string, { username: string; at: number }> }).typingByChat?.[chatId],
   );
@@ -1487,6 +1489,7 @@ export default function ChatScreen() {
           title={title || 'Диалог'}
           channel={channel}
           linkMode={linkMode}
+          statusText={connectionPhase ? CONNECTION_LABEL[connectionPhase] : null}
           secret={secret}
           typingUsername={typingUsername}
           scrollY={scrollY}

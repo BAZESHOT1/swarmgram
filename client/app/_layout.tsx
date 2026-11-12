@@ -756,13 +756,31 @@ export default function RootLayout() {
     setMounted(true);
   }, []);
 
-  // Веб: просим разрешение на уведомления при первом посещении, даже до входа.
+  // Веб: просим разрешение на уведомления при первом посещении. Некоторые
+  // браузеры игнорируют запрос без жеста — повторяем по первому тапу/клавише.
   useEffect(() => {
-    if (Platform.OS !== 'web') return undefined;
-    const timer = setTimeout(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
+    let done = false;
+    const attempt = () => {
+      if (done) return;
+      if (typeof Notification === 'undefined' || Notification.permission !== 'default') {
+        done = true;
+        cleanup();
+        return;
+      }
       void ensureWebPushPermission().catch(() => undefined);
-    }, 1500);
-    return () => clearTimeout(timer);
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointerdown', attempt, true);
+      window.removeEventListener('keydown', attempt, true);
+    };
+    const timer = setTimeout(attempt, 1500);
+    window.addEventListener('pointerdown', attempt, true);
+    window.addEventListener('keydown', attempt, true);
+    return () => {
+      clearTimeout(timer);
+      cleanup();
+    };
   }, []);
 
   useEffect(() => {

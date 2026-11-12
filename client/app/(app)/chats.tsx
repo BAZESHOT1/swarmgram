@@ -50,6 +50,7 @@ import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
 import { HeaderCreateMenu } from '../../src/components/HeaderCreateMenu';
 import { ModuleStatusPill } from '../../src/components/ModuleStatusPill';
+import { ConnectionPill, useConnectionPhase } from '../../src/components/ConnectionStatus';
 import { kv } from '../../src/crypto/storage';
 import { PressableScale } from '../../src/components/chat/PressableScale';
 import { ChatContextMenu } from '../../src/components/chat/ChatContextMenu';
@@ -625,6 +626,7 @@ export default function ChatsScreen() {
   // Поле появится в store от параллельного агента — читаем безопасно.
   const storeHistory = useStore((s) => (s as unknown as { searchHistory?: SearchHistoryEntry[] }).searchHistory);
   const myUsername = useStore((s) => s.me?.username) ?? api.getSession()?.username ?? '';
+  const connectionPhase = useConnectionPhase();
   const mutedSet = useMemo(() => new Set(mutedChats), [mutedChats]);
 
   const searchRef = useRef<TextInput | null>(null);
@@ -1479,7 +1481,14 @@ export default function ChatsScreen() {
         >
           <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: theme.fontXl }}>Чаты</Text>
         </MotiView>
-        <ModuleStatusPill />
+        <MotiView
+          key={connectionPhase ?? 'module-status'}
+          from={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ type: 'timing', duration: 200 }}
+        >
+          {connectionPhase ? <ConnectionPill phase={connectionPhase} /> : <ModuleStatusPill />}
+        </MotiView>
         <MotiView
           from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -6, scale: 0.96 }}
           animate={{ opacity: 1, translateY: 0, scale: 1 }}

@@ -22,7 +22,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const wide = useIsWide();
   const pathname = usePathname();
   const theme = useTheme();
-  const inChat = pathname.startsWith('/chat/') || pathname.startsWith('/compose');
+  const actualInChat = pathname.startsWith('/chat/') || pathname.startsWith('/compose');
+  // Не меняем боковые отступы во время анимации перехода: иначе ширина
+  // страницы меняется на лету и сообщения/строки «дёргаются».
+  const [inChat, setInChat] = React.useState(actualInChat);
+  React.useEffect(() => {
+    if (!actualInChat) {
+      setInChat(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setInChat(true), 320);
+    return () => clearTimeout(timer);
+  }, [actualInChat]);
   useBodyBackground();
 
   return (

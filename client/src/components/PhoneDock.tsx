@@ -150,7 +150,7 @@ export function PhoneDock() {
 
   const enterTranslateY = enter.interpolate({ inputRange: [0, 1], outputRange: [16, 0] });
   // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
-  const dockBottom = 24 + Math.max(0, insets.bottom);
+  const dockBottom = 12;
 
   // Док только на «Чатах», «Настройках» и при просмотре чужих профилей.
   const userMatch = /^\/user\/([^/]+)(?:\/edit)?/.exec(pathname);
@@ -244,28 +244,9 @@ export function PhoneDock() {
         })}
       </View>
 
-      <View
-        pointerEvents="none"
-        accessibilityLabel={`Состояние сети: ${netLabel}`}
-        style={[
-          styles.netBadge,
-          { backgroundColor: theme.glass, borderColor: theme.glassBorder },
-          Platform.OS === 'web'
-            ? ({ backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)' } as object)
-            : null,
-        ]}
-      >
-        <MotiView
-          animate={netPulse ? { opacity: [0.35, 1, 0.35], scale: [0.9, 1.1, 0.9] } : { opacity: 1, scale: 1 }}
-          transition={netPulse ? { loop: true, type: 'timing', duration: 1600 } : { type: 'timing', duration: 0 }}
-          style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: netColor }}
-        />
-        <Ionicons name={netIcon} size={11} color={netColor} />
-      </View>
-
       <Modal visible={chatsMenuOpen} transparent animationType="fade" onRequestClose={() => setChatsMenuOpen(false)}>
         <Pressable style={styles.menuBackdrop} onPress={() => setChatsMenuOpen(false)} accessibilityLabel="Закрыть меню чатов">
-          <View style={[styles.menuHost, { bottom: 98 + Math.max(0, insets.bottom) }]}>
+          <View style={[styles.menuHost, { bottom: 80 }]}>
             <MotiView
               from={{ opacity: 0, translateY: reduced ? 0 : 10, scale: reduced ? 1 : 0.96 }}
               animate={{ opacity: 1, translateY: 0, scale: 1 }}
@@ -303,7 +284,7 @@ export function PhoneDock() {
 }
 
 const styles = StyleSheet.create({
-  host: { position: 'absolute', left: 16, right: 16, bottom: 24, alignItems: 'center', zIndex: 50 },
+  host: { position: 'absolute', left: 16, right: 16, bottom: 12, alignItems: 'center', zIndex: 50 },
   dock: {
     flexDirection: 'row',
     borderRadius: 22,

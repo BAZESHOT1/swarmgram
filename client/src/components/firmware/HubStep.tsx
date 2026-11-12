@@ -52,6 +52,9 @@ export function HubStep({
   const [networkBusy, setNetworkBusy] = React.useState(false);
   const [networkError, setNetworkError] = React.useState('');
   const [showNetworkPass, setShowNetworkPass] = React.useState(false);
+  const networkPassword = typeof network?.password === 'string' ? network.password : '';
+  const networkSsid = typeof network?.ssid === 'string' ? network.ssid : '';
+  const networkId = typeof network?.networkId === 'string' ? network.networkId : '';
 
   const errorMessage = (error: unknown): string =>
     error instanceof Error && error.message ? error.message : humanError(error);
@@ -206,13 +209,13 @@ export function HubStep({
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
               <Text style={{ color: theme.textSecondary, fontSize: 12, flex: 1 }}>SSID</Text>
               <Text selectable style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>
-                {network.ssid}
+                {networkSsid}
               </Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
               <Text style={{ color: theme.textSecondary, fontSize: 12, flex: 1 }}>Пароль</Text>
               <Text selectable style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>
-                {showNetworkPass ? network.password : '•'.repeat(Math.min(16, network.password.length))}
+                {showNetworkPass ? networkPassword : '•'.repeat(Math.min(16, networkPassword.length))}
               </Text>
               <Pressable
                 onPress={() => setShowNetworkPass((value) => !value)}
@@ -230,7 +233,7 @@ export function HubStep({
               <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>скрытая</Text>
             </View>
             <Text selectable style={{ color: theme.textDisabled, fontSize: 10.5, marginTop: 8 }}>
-              networkId: {network.networkId}
+              networkId: {networkId}
             </Text>
           </View>
         ) : null}

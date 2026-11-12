@@ -91,6 +91,7 @@ export function ChatHeader({
   chatType,
   membersCount,
   linkMode,
+  statusText,
 }: {
   title: string;
   channel: ChatChannel;
@@ -111,6 +112,8 @@ export function ChatHeader({
   avatar?: { objectId: string; key: string; mime: string } | null;
   /** Тип чата — определяет подпись «участники/подписчики». */
   chatType?: 'direct' | 'group' | 'channel';
+  /** Временный статус соединения вместо метода доставки. */
+  statusText?: string | null;
   /** Количество участников/подписчиков. */
   membersCount?: number;
   /** Текущий канал доставки (для бейджа в шапке). */
@@ -154,13 +157,15 @@ export function ChatHeader({
 
   const subtitle = typingUsername
     ? `${typingUsername} печатает…`
-    : secret
-      ? '🔒 Секретный (E2E)'
-      : chatType === 'channel' && membersCount
-        ? `${membersCount} ${plural(membersCount, 'подписчик', 'подписчика', 'подписчиков')}`
-        : chatType === 'group' && membersCount
-          ? `${membersCount} ${plural(membersCount, 'участник', 'участника', 'участников')}`
-          : STATUS_LABEL[channel];
+    : statusText
+      ? statusText
+      : secret
+        ? '🔒 Секретный (E2E)'
+        : chatType === 'channel' && membersCount
+          ? `${membersCount} ${plural(membersCount, 'подписчик', 'подписчика', 'подписчиков')}`
+          : chatType === 'group' && membersCount
+            ? `${membersCount} ${plural(membersCount, 'участник', 'участника', 'участников')}`
+            : STATUS_LABEL[channel];
 
   return (
     <Animated.View
