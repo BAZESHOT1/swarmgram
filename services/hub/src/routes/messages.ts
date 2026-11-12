@@ -292,6 +292,46 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     );
   });
 
+  /* ------------------------------------------- одно сообщение (превью) ----- */
+  app.get('/chats/:id/messages/:messageId', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id: chatId, messageId } = req.params as { id: string; messageId: string };
+    const me = req.auth!.userId;
+    if (!/^[0-9a-fA-F-]{36}$/.test(messageId)) throw notFound('message');
+    const membership = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chatId, me]);
+    if (!membership) throw forbidden('not_a_member');
+    const r = await one<MsgRow>(
+      `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
+              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id
+         FROM messages m
+         JOIN users u ON u.id = m.sender_user_id
+         LEFT JOIN objects o ON o.id = m.object_id
+        WHERE m.chat_id = $1 AND m.id = $2`,
+      [chatId, messageId],
+    );
+    if (!r) throw notFound('message');
+    const meta = headerMeta(r.header);
+    return reply.send({
+      id: r.id,
+      seq: r.seq,
+      chatId,
+      kind: r.kind,
+      objectId: r.object_id,
+      sizeBytes: r.size_bytes,
+      nonce: extractNonce(r.header),
+      header: r.header,
+      replyTo: r.reply_to,
+      asChannel: r.as_channel,
+      scheme: meta.scheme,
+      keyVersion: meta.keyVersion,
+      edited: meta.edited,
+      reactions: [],
+      createdAt: r.created_at,
+      senderUserId: r.sender_user_id,
+      senderUsername: r.sender_username,
+      senderDeviceId: r.sender_device_id,
+    });
+  });
+
   /* ------------------------------------------------------------ просмотр - */
   // Отметка «я посмотрел сообщение». Повторный вызов безопасен (PK + DO NOTHING).
   app.post('/chats/:id/messages/:messageId/view', { onRequest: [requireAuth()] }, async (req, reply) => {

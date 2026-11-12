@@ -82,6 +82,8 @@ export function useChats() {
     enabled: Boolean(me),
     staleTime: STALE.chats,
     gcTime: 30 * 60_000,
+    // Страховка от потерянных WS-событий: список чатов обновляется сам.
+    refetchInterval: 30_000,
     initialData: () => (username ? getCachedChats(username) ?? undefined : undefined),
     initialDataUpdatedAt: 0,
     placeholderData: (prev) => prev ?? (username ? getCachedChats(username) ?? undefined : undefined),
@@ -175,6 +177,8 @@ export function useChatMessages(chat: Chat | null) {
     initialDataUpdatedAt: 0,
     staleTime: STALE.messages,
     gcTime: 10 * 60_000,
+    // Открытый чат не должен «зависать», даже если сокет потерял событие.
+    refetchInterval: 15_000,
     placeholderData: (prev) => prev ?? (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
   });
 }

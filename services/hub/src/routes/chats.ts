@@ -436,6 +436,11 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
                WHERE pm.chat_id = c.id AND pm.user_id <> $1
             )
           )
+          -- Пустой direct-чат видит только инициатор: получатель не должен
+          -- обнаруживать диалог, пока ему ничего не написали.
+          AND NOT (
+            c.type = 'direct' AND c.last_seq = 0 AND c.owner_id IS DISTINCT FROM $1
+          )
         ORDER BY (SELECT c2.updated_at FROM chats c2 WHERE c2.id = cm.chat_id) DESC`,
       [me, archived],
     );
@@ -719,11 +724,13 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     const body = (req.body ?? {}) as { seq?: number };
     const seq = Number(body.seq ?? 0);
     if (Number.isFinite(seq) && seq > 0) {
-      await query('UPDATE chat_members SET last_read_seq = GREATEST(last_read_seq, $3) WHERE chat_id = $1 AND user_id = $2', [
-        id,
-        me,
-        seq,
-      ]);
+      // seq — глобальный bigserial; не позволяем записать чужое/будущее значение.
+      await query(
+        `UPDATE chat_members
+            SET last_read_seq = GREATEST(last_read_seq, LEAST($3, (SELECT last_seq FROM chats WHERE id = $1)))
+          WHERE chat_id = $1 AND user_id = $2`,
+        [id, me, seq],
+      );
       // репорт о прочтении ко всем отправителям в чате
       const others = await query<{ user_id: string }>(
         'SELECT user_id FROM chat_members WHERE chat_id = $1 AND user_id <> $2',
@@ -1468,6 +1475,14 @@ export async function chatInfo(chatId: string, viewerId: string) {
   );
 
   const my = members.find((m) => m.user_id === viewerId);
+  // Непрочитанные считаем реальным количеством сообщений после last_read_seq,
+  // не включая собственные. seq — глобальный bigserial, поэтому разность
+  // last_seq - last_read_seq давала абсурдные числа.
+  const unreadRow = await one<{ c: number }>(
+    `SELECT count(*)::int AS c FROM messages
+      WHERE chat_id = $1 AND seq > $2 AND sender_user_id <> $3`,
+    [chatId, my?.last_read_seq ?? 0, viewerId],
+  );
   const perms = effectivePermissions({ permissions: chat.permissions });
   const myRole: ChatRole = chat.owner_id === viewerId ? 'owner' : normRole(my?.role);
 
@@ -1515,9 +1530,10 @@ export async function chatInfo(chatId: string, viewerId: string) {
     createdAt: chat.created_at,
     updatedAt: chat.updated_at,
     lastSeq: chat.last_seq,
+    lastReadSeq: my?.last_read_seq ?? 0,
     membersCount: members.length,
     ownerUsername: chat.owner_username,
-    unread: Math.max(0, chat.last_seq - (my?.last_read_seq ?? 0)),
+    unread: Math.max(0, unreadRow?.c ?? 0),
     /** Архив — персональный флаг зрителя. */
     archived: Boolean(my?.archived),
     pinnedMessageId: chat.pinned_message_id,

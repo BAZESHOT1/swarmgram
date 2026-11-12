@@ -27,7 +27,7 @@ import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
-import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, findCachedChat } from '../src/data/cache';
+import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCachedChatPreviews, findCachedChat } from '../src/data/cache';
 import { initPush } from '../src/push';
 import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
@@ -94,6 +94,8 @@ function RealtimeBridge() {
     // РЎС‡С‘С‚С‡РёРє РЅРµСѓРґР°С‡РЅС‹С… РїРѕРїС‹С‚РѕРє РґР»СЏ exponential backoff; СЃР±СЂР°СЃС‹РІР°РµС‚СЃСЏ РЅР° onopen.
     let reconnectAttempt = 0;
     let lastFallbackAt = 0;
+    let lastInboundAt = Date.now();
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let disposed = false;
 
     /** РђРєРєСѓСЂР°С‚РЅРѕ РїР°С‚С‡РёРј РєСЌС€ СЃРїРёСЃРєР° С‡Р°С‚РѕРІ (Р°РєС‚РёРІРЅС‹Рµ Рё Р°СЂС…РёРІ). */
@@ -274,8 +276,6 @@ function RealtimeBridge() {
     /** Exponential backoff 2s в†’ 30s СЃ РґР¶РёС‚С‚РµСЂРѕРј В±20%. */
     const scheduleReconnect = () => {
       if (disposed) return;
-      // РќРµС‚ СЃРµС‚Рё вЂ” Р¶РґС‘Рј СЃРѕР±С‹С‚РёСЏ `online`, РЅРµ С‚СЂР°С‚РёРј РїРѕРїС‹С‚РєРё РІРїСѓСЃС‚СѓСЋ.
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       const base = Math.min(30_000, 2_000 * 2 ** Math.min(reconnectAttempt, 4));
       const delay = Math.round(base * (0.8 + Math.random() * 0.4));
@@ -313,6 +313,7 @@ function RealtimeBridge() {
         scheduleReconnect();
       };
       ws.onmessage = (raw) => {
+        lastInboundAt = Date.now();
         try {
           const event = JSON.parse(String(raw.data));
           if (event.type === 'message') void onEnvelope(event.message as Envelope);
@@ -324,6 +325,14 @@ function RealtimeBridge() {
             qc.setQueriesData<any>({ queryKey: ['messages', event.chatId] }, (prev: any) =>
               Array.isArray(prev) ? prev.map((m: any) => (m.seq <= event.seq && m.mine ? { ...m, delivered: true, pending: false } : m)) : prev,
             );
+            // Собственное прочтение обнуляет счётчик в списке чатов.
+            if (event.userId && event.userId === getSession()?.userId) {
+              qc.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
+                Array.isArray(prev)
+                  ? prev.map((c) => (c?.id === event.chatId ? { ...c, unread: 0 } : c))
+                  : prev,
+              );
+            }
           } else if (event.type === 'typing') {
             if (typeof event.chatId === 'string' && typeof event.username === 'string' && event.username) {
               useStore.getState().setTyping(event.chatId, event.username);
@@ -447,7 +456,7 @@ function RealtimeBridge() {
     const reconnectNow = () => {
       if (disposed) return;
       if (!getSession()?.refreshToken) return;
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.CLOSING)) return;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -488,14 +497,48 @@ function RealtimeBridge() {
     }
 
     // Р›С‘РіРєРёР№ С„РѕР»Р±СЌРє: С‚РѕР»СЊРєРѕ РїСЂРё РІРёРґРёРјРѕР№ РІРєР»Р°РґРєРµ, offline-СЃРѕРєРµС‚Рµ Рё РЅРµ С‡Р°С‰Рµ СЂР°Р·Р° РІ 30 СЃ.
+    // Страховка от «полуживого» сокета: клиентский ping раз в 25 с и watchdog.
+    heartbeatTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const ws = socket;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      } catch {
+        /* ignore */
+      }
+      if (Date.now() - lastInboundAt > 80_000) {
+        // Сокет считается открытым, но данные не идут — принудительно рвём.
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        socket = null;
+        useStore.getState().setTransportOnline(false);
+        scheduleReconnect();
+      }
+    }, 25_000);
+
+    // Возврат приложения из фона: переподключаемся и догоняем данные.
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      reconnectNow();
+      catchUp();
+    });
+
+    // Fallback, пока сокет недоступен: возвращаем связь и обновляем данные.
     fallbackTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      if (useStore.getState().transportOnline) return;
       const now = Date.now();
-      if (now - lastFallbackAt < 30_000) return;
+      if (now - lastFallbackAt < 20_000) return;
       lastFallbackAt = now;
-      void qc.invalidateQueries({ queryKey: ['chats'] });
-    }, 30_000);
+      if (!useStore.getState().transportOnline) {
+        reconnectNow();
+        void qc.invalidateQueries({ queryKey: ['chats'] });
+        void qc.invalidateQueries({ queryKey: ['messages'], type: 'active' });
+      }
+    }, 20_000);
 
     void connect(session.accessToken);
 
@@ -545,6 +588,8 @@ function RealtimeBridge() {
       unsubMesh();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (fallbackTimer) clearInterval(fallbackTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      appStateSub.remove();
       if (hasDomEvents) {
         window.removeEventListener('online', onBrowserOnline);
         document.removeEventListener('visibilitychange', onVisibility);
@@ -593,25 +638,71 @@ function RealtimeBridge() {
     const activeId = useStore.getState().activeChat?.id;
     queryClient.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
       Array.isArray(prev)
-        ? prev.map((c) =>
-            c?.id === env.chatId
-              ? {
-                  ...c,
-                  lastMessage: {
-                    id: env.id,
-                    seq: env.seq,
-                    kind: env.kind,
-                    createdAt: env.createdAt,
-                    senderUserId: env.senderUserId,
-                    senderUsername: env.senderUsername,
-                  },
-                  updatedAt: env.createdAt,
-                  unread: mine || activeId === env.chatId ? c.unread ?? 0 : (c.unread ?? 0) + 1,
-                }
-              : c,
-          )
+        ? prev.map((c) => {
+            if (c?.id !== env.chatId) return c;
+            // Событие может прийти повторно (несколько сокетов/устройств):
+            // считаем новым только seq больше уже известного.
+            const isNew = env.seq > (c.lastSeq ?? 0);
+            const active = activeId === env.chatId;
+            return {
+              ...c,
+              lastMessage: {
+                id: env.id,
+                seq: env.seq,
+                kind: env.kind,
+                createdAt: env.createdAt,
+                senderUserId: env.senderUserId,
+                senderUsername: env.senderUsername,
+              },
+              updatedAt: env.createdAt,
+              lastSeq: Math.max(c.lastSeq ?? 0, env.seq),
+              unread: active ? 0 : mine || !isNew ? c.unread ?? 0 : (c.unread ?? 0) + 1,
+            };
+          })
         : prev,
     );
+
+    // Превью для списка чатов + in-app уведомление, если чат не открыт.
+    if (activeId !== env.chatId) {
+      const meName = useStore.getState().me?.username ?? '';
+      const chat =
+        queryClient.getQueryData<any>(['chat', env.chatId]) ??
+        findCachedChat(meName, env.chatId) ??
+        ({ id: env.chatId, type: 'direct', encryption: 'server', title: '', members: [] } as any);
+      let text = '';
+      try {
+        const vm = await decryptEnvelopeAuto(env as never, chat as never, meName);
+        text = String(vm.text ?? '').trim();
+      } catch {
+        text = '';
+      }
+      if (text || env.kind !== 'text') {
+        useStore.getState().setChatPreview(env.chatId, {
+          id: env.id,
+          text,
+          kind: env.kind,
+          mine,
+          at: env.createdAt,
+        });
+      }
+      const muted = useStore.getState().mutedChats.includes(env.chatId);
+      const mutedUser = useStore
+        .getState()
+        .mutedUsers.includes(String(env.senderUsername ?? '').toLowerCase());
+      if (!mine && !muted && !mutedUser) {
+        const title =
+          chat?.type === 'direct'
+            ? String(env.senderUsername || chat?.title || 'Сообщение')
+            : String(chat?.title || env.senderUsername || 'Сообщение');
+        useStore.getState().pushInApp({
+          kind: 'message',
+          chatId: env.chatId,
+          messageId: env.id,
+          title,
+          body: text || (env.kind === 'text' ? 'Новое сообщение' : 'Вложение'),
+        });
+      }
+    }
 
     // РєРІРёС‚Р°РЅС†РёСЏ РЅРµ С‚СЂРµР±СѓРµС‚ РєР»СЋС‡Р°: СЃРµСЂРІРµСЂРЅС‹Рµ Рё E2E-С‡Р°С‚С‹ РґРѕСЃС‚Р°РІР»СЏСЋС‚СЃСЏ РѕРґРёРЅР°РєРѕРІРѕ
     if (env.senderUserId && meId && env.senderUserId !== meId) {
@@ -623,32 +714,6 @@ function RealtimeBridge() {
         if (!mutedUser) {
           soundsRef.current.receive();
           hapticsRef.current.receive();
-        }
-        if (activeId !== env.chatId) {
-          // Уведомление внутри приложения — только если этот чат не открыт.
-          const meName = useStore.getState().me?.username ?? '';
-          const chat =
-            queryClient.getQueryData<any>(['chat', env.chatId]) ??
-            findCachedChat(meName, env.chatId) ??
-            ({ id: env.chatId, type: 'direct', encryption: 'server', title: '', members: [] } as any);
-          let text = '';
-          try {
-            const vm = await decryptEnvelopeAuto(env as never, chat as never, meName);
-            text = String(vm.text ?? '').trim();
-          } catch {
-            text = '';
-          }
-          const title =
-            chat?.type === 'direct'
-              ? String(env.senderUsername || chat?.title || 'Сообщение')
-              : String(chat?.title || env.senderUsername || 'Сообщение');
-          useStore.getState().pushInApp({
-            kind: 'message',
-            chatId: env.chatId,
-            messageId: env.id,
-            title,
-            body: text || (env.kind === 'text' ? 'Новое сообщение' : 'Вложение'),
-          });
         }
       }
       await api.postReceipt(env.chatId, env.id).catch(() => undefined);
@@ -713,7 +778,9 @@ export default function RootLayout() {
       // РЎРЅР°С‡Р°Р»Р° РїРѕРґРЅРёРјР°РµРј Р»РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€: РёРЅС‚РµСЂС„РµР№СЃ РґРѕР»Р¶РµРЅ СЂРёСЃРѕРІР°С‚СЊСЃСЏ СЃСЂР°Р·Сѓ,
       // Р±РµР· РѕР¶РёРґР°РЅРёСЏ СЃРµС‚Рё. Р—Р°С‚РµРј СѓР¶Рµ РґРѕРіСЂСѓР¶Р°РµРј СЃРµСЂРІРµСЂРЅС‹Рµ РґР°РЅРЅС‹Рµ РІ С„РѕРЅРµ.
       await loadCaches(s?.username ?? null).catch(() => undefined);
-      useStore.getState().setSession(s);      // РџСЂРѕС„РёР»СЊ РёР· РєСЌС€Р° РґРѕСЃС‚СѓРїРµРЅ СЃСЂР°Р·Сѓ: Р±РµР· РЅРµРіРѕ СЃРїРёСЃРєРё С‡Р°С‚РѕРІ Рё РЅР°СЃС‚СЂРѕР№РєРё
+      useStore.getState().setSession(s);
+      const cachedPreviews = s ? getCachedChatPreviews(s.username) : null;
+      if (cachedPreviews) useStore.getState().hydrateChatPreviews(cachedPreviews);      // РџСЂРѕС„РёР»СЊ РёР· РєСЌС€Р° РґРѕСЃС‚СѓРїРµРЅ СЃСЂР°Р·Сѓ: Р±РµР· РЅРµРіРѕ СЃРїРёСЃРєРё С‡Р°С‚РѕРІ Рё РЅР°СЃС‚СЂРѕР№РєРё
       // РѕСЃС‚Р°РІР°Р»РёСЃСЊ Р±С‹ РїСѓСЃС‚С‹РјРё РґРѕ РѕС‚РІРµС‚Р° СЃРµСЂРІРµСЂР°.
       const cachedMe = getCachedMe();
       if (s && cachedMe) useStore.getState().setMe(cachedMe);

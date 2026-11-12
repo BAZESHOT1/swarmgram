@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { kv } from '../crypto/storage';
+import { saveChatPreview, type ChatPreview } from '../data/cache';
 import type { Chat, SearchHistoryEntry, User } from '../data/api';
 import type { AccentName } from '../theme/theme';
 
@@ -88,6 +89,10 @@ interface AppState {
   pushInApp: (n: Omit<InAppNotice, 'id' | 'createdAt'>) => void;
   dismissInApp: (id: string) => void;
   dismissAllInApp: () => void;
+  /** Расшифрованные превью последних сообщений для списка чатов. */
+  chatPreviews: Record<string, ChatPreview>;
+  hydrateChatPreviews: (previews: Record<string, ChatPreview>) => void;
+  setChatPreview: (chatId: string, preview: ChatPreview) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -201,6 +206,12 @@ export const useStore = create<AppState>((set, get) => ({
   },
   dismissInApp: (id) => set({ inApp: get().inApp.filter((n) => n.id !== id) }),
   dismissAllInApp: () => set({ inApp: [] }),
+  chatPreviews: {},
+  hydrateChatPreviews: (chatPreviews) => set({ chatPreviews }),
+  setChatPreview: (chatId, preview) => {
+    set({ chatPreviews: { ...get().chatPreviews, [chatId]: preview } });
+    saveChatPreview(get().me?.username, chatId, preview);
+  },
 }));
 
 setTimeout(() => void kv.get('sg:theme').then?.((v: string | null) => {

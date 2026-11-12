@@ -42,6 +42,16 @@ const chatsKey = (username: string) => `${PREFIX}chats:${username}`;
 /** Каналы: отдельный список подписок, потому что `/v1/chats` их не отдаёт. */
 const subsKey = (username: string) => `${PREFIX}channels:${username}`;
 const MESSAGE_INDEX_KEY = `${PREFIX}messages:index`;
+const previewsKey = (username: string) => `${PREFIX}previews:${username}`;
+
+/** Последнее сообщение чата для строки списка (текст уже расшифрован). */
+export interface ChatPreview {
+  id: string;
+  text: string;
+  kind: string;
+  mine: boolean;
+  at: string;
+}
 
 interface Envelope<T> {
   v: number;
@@ -161,8 +171,40 @@ export function findCachedChat(
   return null;
 }
 
-/* ------------------------------------------------------------- профили ---- */
+/* ------------------------------------------- превью последнего сообщения ---- */
 
+const previewWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function getCachedChatPreviews(
+  username: string | null | undefined,
+): Record<string, ChatPreview> | null {
+  if (!username) return null;
+  const value = memory.get(`previews:${username}`);
+  return isObject(value) ? (value as Record<string, ChatPreview>) : null;
+}
+
+export function saveChatPreview(
+  username: string | null | undefined,
+  chatId: string | null | undefined,
+  preview: ChatPreview | null | undefined,
+): void {
+  if (!username || !chatId) return;
+  const current = getCachedChatPreviews(username) ?? {};
+  const next = { ...current };
+  if (preview) next[chatId] = preview;
+  else delete next[chatId];
+  memory.set(`previews:${username}`, next);
+  // Пишем на диск не на каждое сообщение, а пачкой.
+  if (previewWriteTimers.has(username)) return;
+  const timer = setTimeout(() => {
+    previewWriteTimers.delete(username);
+    const latest = getCachedChatPreviews(username);
+    if (latest) writeEntry(previewsKey(username), latest);
+  }, 1200);
+  previewWriteTimers.set(username, timer);
+}
+
+/* ------------------------------------------------------------- профили ---- */
 export function getCachedProfile(username: string | null | undefined): UserProfile | null {
   if (!username) return null;
   const value = memory.get(`profile:${username.trim().toLowerCase()}`);
@@ -304,6 +346,7 @@ export function clearCaches(username?: string | null): void {
     void kv.remove(ME_KEY).catch(() => undefined);
     if (name) void kv.remove(chatsKey(name)).catch(() => undefined);
     if (name) void kv.remove(subsKey(name)).catch(() => undefined);
+    if (name) void kv.remove(previewsKey(name)).catch(() => undefined);
     messageIndex.forEach((id) => void kv.remove(messageKey(id)).catch(() => undefined));
     messageIndex = [];
     void kv.remove(MESSAGE_INDEX_KEY).catch(() => undefined);
@@ -399,6 +442,9 @@ export async function loadCaches(username?: string | null): Promise<void> {
       if (Array.isArray(chats)) memory.set(`chats:${name}`, chats.slice(0, MAX_CACHED_CHATS));
       const channels = await readEntry<Chat[]>(subsKey(name));
       if (Array.isArray(channels)) memory.set(`channels:${name}`, channels.slice(0, MAX_CACHED_CHATS));
+
+      const previews = await readEntry<Record<string, ChatPreview>>(previewsKey(name));
+      if (isObject(previews)) memory.set(`previews:${name}`, previews);
 
       // Самые свежие ленты греем до первого кадра, остальные — в фоне.
       const index = await readEntry<string[]>(MESSAGE_INDEX_KEY);

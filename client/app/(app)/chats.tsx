@@ -11,6 +11,7 @@ import {
   Animated,
   Easing,
   FlatList,
+  Keyboard,
   PanResponder,
   Platform,
   Pressable,
@@ -42,7 +43,7 @@ import {
   humanError,
   prefetchChat,
 } from '../../src/data/queries';
-import { searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
+import { decryptEnvelopeAuto, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
 import { Avatar } from '../../src/components/Avatar';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
@@ -603,9 +604,45 @@ export default function ChatsScreen() {
   const mutedSet = useMemo(() => new Set(mutedChats), [mutedChats]);
 
   const searchRef = useRef<TextInput | null>(null);
+  const searchHostRef = useRef<View | null>(null);
+  const searchBottomRef = useRef(220);
   const openRowRef = useRef<(row: SearchRow) => void>(() => undefined);
   const historyRef = useRef<SearchHistoryEntry[]>([]);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const blurSearch = useCallback(() => {
+    searchRef.current?.blur();
+    Keyboard.dismiss();
+    setSearchFocused(false);
+  }, []);
+
+  const measureSearch = useCallback(() => {
+    searchHostRef.current?.measureInWindow((_x, y, _w, h) => {
+      searchBottomRef.current = y + h;
+    });
+  }, []);
+
+  // На native тап по любой точке ниже окна поиска закрывает клавиатуру.
+  const onScreenTouch = useCallback(
+    (event: { nativeEvent?: { pageY?: number } }) => {
+      if (!searchFocused) return;
+      const pageY = Number(event?.nativeEvent?.pageY ?? 0);
+      if (pageY > 0 && pageY > searchBottomRef.current + 6) blurSearch();
+    },
+    [searchFocused, blurSearch],
+  );
+
+  // На web надёжнее обычный mousedown: target вне окна поиска.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !searchFocused || typeof document === 'undefined') return undefined;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as (HTMLElement & { closest?: (s: string) => Element | null }) | null;
+      if (target?.closest?.('#sg-chats-search')) return;
+      blurSearch();
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [searchFocused, blurSearch]);
 
   /* ------------------------------------------------------------- загрузка */
 
@@ -702,8 +739,61 @@ export default function ChatsScreen() {
     (subs.data ?? []).forEach((c) => {
       if (!c.archived && !map.has(c.id)) map.set(c.id, c);
     });
-    return [...map.values()];
-  }, [activeChats, subs.data]);
+    // Пустой direct-чат, созданный собеседником, не показываем: он появится,
+    // как только тот напишет первое сообщение.
+    return [...map.values()].filter((c) => {
+      if (c.type !== 'direct') return true;
+      if (c.lastMessage || (c.lastSeq ?? 0) > 0) return true;
+      if (!c.ownerUsername) return true;
+      return c.ownerUsername === myUsername;
+    });
+  }, [activeChats, subs.data, myUsername]);
+
+  /* ------------------------- превью последних сообщений (расшифровка) ----- */
+  const chatPreviews = useStore((s) => s.chatPreviews);
+  const previewTried = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    const targets = allChats
+      .filter((chat) => {
+        const last = chat.lastMessage;
+        if (!last || previewTried.current.has(last.id)) return false;
+        const preview = chatPreviews[chat.id];
+        return !preview || preview.id !== last.id;
+      })
+      .slice(0, 40);
+    if (!targets.length) return undefined;
+
+    void (async () => {
+      for (let i = 0; i < targets.length; i += 3) {
+        if (cancelled) return;
+        await Promise.all(
+          targets.slice(i, i + 3).map(async (chat) => {
+            const last = chat.lastMessage!;
+            previewTried.current.add(last.id);
+            try {
+              const env = await api.api.getMessage(chat.id, last.id);
+              const vm = await decryptEnvelopeAuto(env, chat, myUsername);
+              if (cancelled) return;
+              useStore.getState().setChatPreview(chat.id, {
+                id: env.id,
+                text: String(vm.text ?? ''),
+                kind: env.kind,
+                mine: env.senderUsername === myUsername,
+                at: env.createdAt,
+              });
+            } catch {
+              /* превью не критично: останется нейтральный текст */
+            }
+          }),
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allChats, chatPreviews, myUsername]);
 
   const activeIds = useMemo(() => new Set(allChats.map((c) => c.id)), [allChats]);
 
@@ -1343,7 +1433,7 @@ export default function ChatsScreen() {
   /* ------------------------------------------------------------------ рендер */
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1 }} onTouchStart={onScreenTouch}>
       <View style={styles.header}>
         <MotiView
           from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -8 }}
@@ -1414,11 +1504,13 @@ export default function ChatsScreen() {
           }}
         >
           <View
+            ref={searchHostRef}
             nativeID="sg-chats-search"
             style={{ position: 'relative', zIndex: 40 }}
             onLayout={(e) => {
               const h = e.nativeEvent.layout.height;
               if (h > 0 && Math.abs(h - searchHeight) > 0.5) setSearchHeight(h);
+              measureSearch();
             }}
           >
             <SearchField
@@ -1838,6 +1930,9 @@ function FilterTabs({
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
+      // На web ScrollView растягивается по высоте (flexGrow:1) и уводит
+      // результаты поиска вниз — фиксируем высоту ленты фильтров.
+      style={{ flexGrow: 0, flexShrink: 0 }}
       contentContainerStyle={{ gap: 6, paddingVertical: 6 }}
       keyboardShouldPersistTaps="handled"
     >
@@ -2175,19 +2270,31 @@ function ChatRow({
     void prefetchChat(qc, chat);
   }, [qc, chat]);
   const peer = peerOf(chat, myUsername);
+  const localPreview = useStore((s) => s.chatPreviews[chat.id]);
   const last = chat.lastMessage as
     | (NonNullable<Chat['lastMessage']> & { text?: string; delivered?: boolean; read?: boolean })
     | null;
-  const who = last?.senderUsername === myUsername ? 'Вы: ' : '';
-  const body = last
-    ? typeof last.text === 'string' && last.text
-      ? last.text
-      : last.kind === 'media'
-        ? 'Медиа'
-        : 'Сообщение'
-    : chat.type === 'channel'
-      ? 'нет постов'
-      : 'нет сообщений';
+  // Расшифрованный текст последнего сообщения берём из локального превью:
+  // сервер отдаёт только метаданные (kind/sender/time).
+  const freshPreview =
+    localPreview &&
+    (!last ||
+      localPreview.id === last.id ||
+      new Date(localPreview.at).getTime() >= new Date(last.createdAt).getTime())
+      ? localPreview
+      : null;
+  const who = freshPreview?.mine || last?.senderUsername === myUsername ? 'Вы: ' : '';
+  const previewText = freshPreview?.text || (typeof last?.text === 'string' ? last.text : '');
+  const mediaKind = freshPreview?.kind ?? last?.kind ?? '';
+  const body = previewText
+    ? previewText
+    : last || freshPreview
+      ? mediaKind === 'text' || !mediaKind
+        ? 'Сообщение'
+        : 'Медиа'
+      : chat.type === 'channel'
+        ? 'нет постов'
+        : 'нет сообщений';
   const preview = `${who}${body}`;
   const timeStr = last ? timeAgo(last.createdAt) : '';
   const pendingRequests = chat.pendingRequests ?? 0;

@@ -288,6 +288,16 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!chatId || !allMessages.length) return;
     saveMessages(chatId, allMessages);
+    const last = allMessages[allMessages.length - 1];
+    if (last && (last.text || last.kind !== 'text')) {
+      useStore.getState().setChatPreview(chatId, {
+        id: last.id,
+        text: String(last.text ?? ''),
+        kind: last.kind,
+        mine: Boolean(last.mine),
+        at: last.createdAt,
+      });
+    }
   }, [chatId, allMessages]);
 
   useEffect(() => {

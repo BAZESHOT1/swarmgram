@@ -594,6 +594,8 @@ export interface Chat {
   createdAt: string;
   updatedAt: string;
   lastSeq: number;
+  /** До какого seq текущий пользователь прочитал чат. */
+  lastReadSeq?: number;
   membersCount?: number;
   ownerUsername?: string | null;
   unread: number;
@@ -1163,6 +1165,8 @@ export const api = {
     qs.set('limit', String(params.limit ?? 50));
     return req<Envelope[]>(`/v1/chats/${chatId}/messages?${qs.toString()}`);
   },
+  getMessage: (chatId: string, messageId: string) =>
+    req<Envelope>(`/v1/chats/${chatId}/messages/${messageId}`),
 
   sendMessage: (
     chatId: string,
