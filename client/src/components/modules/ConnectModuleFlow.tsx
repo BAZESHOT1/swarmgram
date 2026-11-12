@@ -25,7 +25,7 @@ import { humanError } from '../../data/queries';
 import { useModuleConnection } from '../../modules/ModuleProvider';
 import { MESH_ALWAYS, moduleRoleLabel } from './moduleUi';
 import { SimpleFirmwareWizard, type SimpleFirmwareResult } from './SimpleFirmwareWizard';
-import { isWebSecureContext, secureWebUrl } from '../../utils/secureContext';
+import { isWebSecureContext, openSecureWeb, secureWebUrl } from '../../utils/secureContext';
 
 type Stage = 'prepared-or-flash' | 'role' | 'wearable' | 'claim' | 'flash' | 'success';
 
@@ -488,7 +488,7 @@ export function ConnectModuleFlow({
                             title="Открыть HTTPS-версию"
                             size="s"
                             onPress={() => {
-                              if (typeof window !== 'undefined') window.location.href = secureWebUrl();
+                              openSecureWeb();
                             }}
                           />
                         ) : null}

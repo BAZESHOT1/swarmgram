@@ -16,7 +16,7 @@ import { Btn } from '../Btn';
 import { useTheme } from '../../theme/useTheme';
 import { GlassCard } from '../settings/SettingsUI';
 import { StatusBadge } from '../settings/SettingsWidgets';
-import { isWebSecureContext, secureWebUrl } from '../../utils/secureContext';
+import { isWebSecureContext, openSecureWeb, secureWebUrl } from '../../utils/secureContext';
 
 const BAUD_RATE = 115200;
 const MAX_LINES = 500;
@@ -328,7 +328,7 @@ export function SerialMonitor({ blocked = false, blockedReason }: { blocked?: bo
                 title="Открыть HTTPS-версию"
                 size="s"
                 onPress={() => {
-                  if (typeof window !== 'undefined') window.location.href = secureWebUrl();
+                  openSecureWeb();
                 }}
               />
             ) : null}

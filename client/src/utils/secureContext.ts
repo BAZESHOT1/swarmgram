@@ -3,6 +3,7 @@
  * (Web Serial, Web Bluetooth): HTTPS или localhost.
  */
 import { Platform } from 'react-native';
+import { getSession } from '../data/api';
 
 function loc(): Location | null {
   if (Platform.OS !== 'web') return null;
@@ -37,4 +38,34 @@ export function secureWebUrl(): string {
   if (!host) return '';
   const secureHost = /^\d+\.\d+\.\d+\.\d+$/.test(host) ? `${host.replace(/\./g, '-')}.nip.io` : host;
   return `https://${secureHost}:3443`;
+}
+
+/**
+ * Открывает HTTPS-версию, перенося текущую сессию через window.name.
+ * Так после перехода не нужно логиниться заново (localStorage у другого
+ * origin свой, а window.name сохраняется в пределах вкладки).
+ */
+export function openSecureWeb(): void {
+  const url = secureWebUrl();
+  if (!url) return;
+  try {
+    const session = getSession();
+    if (session) window.name = `kinto-session:${JSON.stringify(session)}`;
+  } catch {
+    /* сессия не критична: пользователь просто войдёт заново */
+  }
+  if (typeof window !== 'undefined') window.location.href = url;
+}
+
+/** Забирает сессию, переданную из HTTP-версии при переходе на HTTPS. */
+export function takeHandoffSession(): unknown | null {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
+  try {
+    const value = window.name;
+    if (!value || !value.startsWith('kinto-session:')) return null;
+    window.name = '';
+    return JSON.parse(value.slice('kinto-session:'.length));
+  } catch {
+    return null;
+  }
 }

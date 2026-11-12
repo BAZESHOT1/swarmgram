@@ -29,6 +29,7 @@ import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, typ
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
 import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, findCachedChat } from '../src/data/cache';
 import { initPush } from '../src/push';
+import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
 const queryClient = new QueryClient({
@@ -699,6 +700,15 @@ export default function RootLayout() {
       // РЇР·С‹Рє РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Р±РµСЂС‘Рј Р»РѕРєР°Р»СЊРЅС‹Р№; СЃРµСЂРІРµСЂРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїСЂРёРјРµРЅСЏС‚СЃСЏ РЅРёР¶Рµ.
       const savedLocale = await kv.get('sg:locale');
       if (savedLocale) useStore.getState().setLocale(savedLocale);
+      // Переход http → https: забираем сессию, переданную через window.name.
+      const handoff = takeHandoffSession();
+      if (handoff && typeof handoff === 'object' && (handoff as { accessToken?: string }).accessToken) {
+        try {
+          setSession(handoff as never);
+        } catch {
+          /* ignore */
+        }
+      }
       const s = await initSession();
       // РЎРЅР°С‡Р°Р»Р° РїРѕРґРЅРёРјР°РµРј Р»РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€: РёРЅС‚РµСЂС„РµР№СЃ РґРѕР»Р¶РµРЅ СЂРёСЃРѕРІР°С‚СЊСЃСЏ СЃСЂР°Р·Сѓ,
       // Р±РµР· РѕР¶РёРґР°РЅРёСЏ СЃРµС‚Рё. Р—Р°С‚РµРј СѓР¶Рµ РґРѕРіСЂСѓР¶Р°РµРј СЃРµСЂРІРµСЂРЅС‹Рµ РґР°РЅРЅС‹Рµ РІ С„РѕРЅРµ.
