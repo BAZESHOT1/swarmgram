@@ -16,7 +16,7 @@ const meshRoutes: FastifyPluginAsync = async (app) => {
   app.get('/devices', { onRequest: [requireAuth()] }, async (req) => {
     const me = req.auth!.userId;
     return query(
-      `SELECT d.id, d.mesh_addr AS "meshAddr", d.ble_mac AS "bleMac", d.public_id AS "publicId",
+      `SELECT d.mesh_addr AS "meshAddr", d.ble_mac AS "bleMac", d.public_id AS "publicId",
               d.role, d.transport, d.kind, d.status, d.last_seen_at AS "lastSeenAt",
               d.cluster_id AS "clusterId", d.border, d.transports, d.neighbors, d.firmware
          FROM mesh_devices d
@@ -64,6 +64,16 @@ const meshRoutes: FastifyPluginAsync = async (app) => {
               last_seen_at = now(), status = 'online', updated_at = now()
         WHERE id = $1`,
       [mod.moduleId, clusterId, neighbors, border, transports],
+    ).catch(() => undefined);
+    await query(
+      `INSERT INTO mesh_devices (mesh_addr, hardware_id, cluster_id, border, transports, neighbors, status, last_seen_at)
+       VALUES ($1,$1,$2,$3,$4::text[],$5,'online',now())
+       ON CONFLICT (mesh_addr) DO UPDATE SET
+         cluster_id = CASE WHEN EXCLUDED.cluster_id <> '' THEN EXCLUDED.cluster_id ELSE mesh_devices.cluster_id END,
+         border = EXCLUDED.border,
+         transports = CASE WHEN EXCLUDED.transports = '{}' THEN mesh_devices.transports ELSE EXCLUDED.transports END,
+         neighbors = EXCLUDED.neighbors, status = 'online', last_seen_at = now(), updated_at = now()`,
+      [meshAddr, clusterId, border, transports, neighbors],
     ).catch(() => undefined);
 
     return reply.send({ ok: true, meshAddr, clusterId });

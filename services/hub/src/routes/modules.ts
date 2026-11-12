@@ -1657,6 +1657,28 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       ).catch(() => undefined);
     }
 
+    // DeviceRegistry: одна запись на физический модуль, ключ — mesh_addr.
+    await query(
+      `INSERT INTO mesh_devices
+         (mesh_addr, hardware_id, ble_mac, user_id, public_id, role, transport, kind,
+          cluster_id, border, transports, neighbors, last_rssi, firmware, status, last_seen_at)
+       VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10::text[],$11,$12,$13,'online',now())
+       ON CONFLICT (mesh_addr) DO UPDATE SET
+         ble_mac = CASE WHEN EXCLUDED.ble_mac <> '' THEN EXCLUDED.ble_mac ELSE mesh_devices.ble_mac END,
+         user_id = COALESCE(EXCLUDED.user_id, mesh_devices.user_id),
+         public_id = COALESCE(NULLIF(EXCLUDED.public_id, ''), mesh_devices.public_id),
+         role = EXCLUDED.role, transport = EXCLUDED.transport, kind = EXCLUDED.kind,
+         cluster_id = CASE WHEN EXCLUDED.cluster_id <> '' THEN EXCLUDED.cluster_id ELSE mesh_devices.cluster_id END,
+         border = EXCLUDED.border,
+         transports = CASE WHEN EXCLUDED.transports = '{}' THEN mesh_devices.transports ELSE EXCLUDED.transports END,
+         neighbors = EXCLUDED.neighbors, last_rssi = EXCLUDED.last_rssi,
+         firmware = COALESCE(NULLIF(EXCLUDED.firmware, ''), mesh_devices.firmware),
+         status = 'online', last_seen_at = now(), updated_at = now()`,
+      [hardwareId, bleMac, adoptOwner ?? claimOwner ?? existing?.owner_id ?? system.id, publicId,
+        role, transport, kind, clusterId, border, transports, neighbors.length, rssi,
+        body.firmware ?? ''],
+    ).catch(() => undefined);
+
     // Смена кластера = завершённый хендовер. Логируем для мониторинга
     // аномалий (частые перескоки между кластерами).
     if (existing && existing.cluster_id && clusterId && existing.cluster_id !== clusterId) {

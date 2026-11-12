@@ -74,25 +74,35 @@ static void sort_anchors(const char **anchors, unsigned count) {
   }
 }
 
+/** CRC32 (IEEE 802.3), как в требовании: CRC32(sorted(anchor MACs)). */
+static uint32_t crc32_bytes(const uint8_t *data, unsigned len, uint32_t crc) {
+  crc = ~crc;
+  for (unsigned i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
+    }
+  }
+  return ~crc;
+}
+
 uint32_t kinto_compute_cluster_id(const char *const *anchors, unsigned count) {
   if (!anchors || count == 0) return 0;
   const char *sorted[32];
   if (count > 32) count = 32;
   for (unsigned i = 0; i < count; i++) sorted[i] = anchors[i];
   sort_anchors(sorted, count);
-  uint32_t hash = 0x811c9dc5u;
+  uint32_t crc = 0;
   for (unsigned i = 0; i < count; i++) {
-    if (i > 0) {
-      hash ^= (uint8_t)'|';
-      hash *= 0x01000193u;
-    }
     const char *p = sorted[i];
-    while (p && *p) {
-      hash ^= (uint8_t)*p++;
-      hash *= 0x01000193u;
+    if (!p) continue;
+    if (i > 0) {
+      const uint8_t sep = '|';
+      crc = crc32_bytes(&sep, 1, crc);
     }
+    crc = crc32_bytes((const uint8_t *)p, (unsigned)strlen(p), crc);
   }
-  return hash;
+  return crc;
 }
 
 bool kinto_is_border_candidate(const kinto_cluster_neighbor_t *neighbors, unsigned count) {
@@ -130,7 +140,9 @@ unsigned kinto_elect_border_nodes(
       if (now_ms - b->last_seen_ms > 12000u) continue;
       int rssi = a->rssi < b->rssi ? a->rssi : b->rssi;
       int queue = a->queue_depth > b->queue_depth ? a->queue_depth : b->queue_depth;
-      int16_t score = (int16_t)(rssi - queue * 4);
+      int battery = a->battery < b->battery ? a->battery : b->battery;
+      // score = w_rssi*rssi + w_batt*battery + w_queue*(1-load)
+      int16_t score = (int16_t)(rssi + battery - queue * 8);
       bool duplicate = false;
       for (unsigned k = 0; k < found; k++) {
         if (memcmp(out[k].mesh_addr, a->mesh_addr, KINTO_MESH_ADDR_LEN) == 0) duplicate = true;

@@ -278,7 +278,7 @@ enum MeshType {
 // LoRa-фрагментация: 150 байт данных × до 16 фрагментов.
 static const uint16_t SG_LORA_FRAG_DATA = 150;
 static const uint8_t  SG_MAX_FRAGMENTS = 16;
-static const uint16_t SG_FRAG_MAX_TOTAL = 24 + SG_MAX_PAYLOAD; // MeshHeader(24) + payload
+static const uint16_t SG_FRAG_MAX_TOTAL = 36 + SG_MAX_PAYLOAD; // MeshHeader(36) + payload
 
 static const uint32_t MESH_BROADCAST = 0xFFFFFFFFUL;
 
@@ -293,14 +293,16 @@ struct MeshHeader {
   uint8_t  hop;
   uint8_t  reserved;      // выравнивание: заголовок ровно 24 байта
   uint16_t payloadLen;    // LE
-  uint32_t src;           // LE
+  uint32_t src;           // LE, CRC32/derived node id (для совместимости таблиц)
   uint32_t dst;           // LE
   uint32_t packetId;      // LE
+  uint8_t  srcMac[6];     // mesh_addr: заводской MAC Wi-Fi STA отправителя
+  uint8_t  dstMac[6];     // mesh_addr получателя (FF..FF = broadcast)
   uint16_t crc;           // LE, CRC16-CCITT по заголовку (crc=0) + payload
 };
 #pragma pack(pop)
 
-static_assert(sizeof(MeshHeader) == 24, "MeshHeader must be 24 bytes");
+static_assert(sizeof(MeshHeader) == 36, "MeshHeader must be 36 bytes");
 
 /* ------------------------------------------------- типы (до функций!) ---- */
 // Arduino preprocessor вставляет прототипы функций в начало файла, поэтому
@@ -376,6 +378,8 @@ static Preferences gPrefs;
 static uint32_t gBootMs = 0;
 static String gHardwareId;
 static String gPublicId;
+/** Заводской MAC Wi-Fi STA — mesh address. */
+static uint8_t gMac[6] = {0, 0, 0, 0, 0, 0};
 /** BLE-алиас (может отличаться от Wi-Fi MAC на некоторых платах). */
 static String gBleMac;
 static uint32_t gNodeId = 0;
@@ -607,6 +611,20 @@ static void initIdentity() {
     prefs.end();
   }
   gHardwareId = stored.length() ? stored : macToHardwareId(mac);
+  // Восстанавливаем gMac из канонической строки (NVS может хранить её).
+  {
+    const char *hex = gHardwareId.c_str();
+    if (strncmp(hex, "esp32-", 6) == 0) hex += 6;
+    for (int i = 0; i < 6; i++) {
+      auto nibble = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+        if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+        return 0;
+      };
+      gMac[i] = (uint8_t)((nibble(hex[i * 2]) << 4) | nibble(hex[i * 2 + 1]));
+    }
+  }
 
   uint8_t bt[6] = {0, 0, 0, 0, 0, 0};
   bool btOk = false;
@@ -1017,6 +1035,7 @@ static uint32_t gAnchorNodeId = 0;   // gateway-якорь текущего кл
 static uint8_t  gHandoverState = HO_IDLE;
 static uint32_t gHandoverPeer = 0;
 static uint32_t gHandoverTargetCluster = 0;
+static uint32_t gHandoverSourceCluster = 0;
 static uint32_t gHandoverSinceMs = 0;
 static uint8_t  gHandoverAttempts = 0;
 static uint32_t gHandoverCooldownUntilMs = 0;
@@ -1223,54 +1242,37 @@ static int meshAddrCmp(const uint8_t a[8], const uint8_t b[8]) {
   return 0;
 }
 
-// Cluster ID = FNV1a32(publicId ближайшего gateway-якоря); gateway — свой id.
-// Все узлы вокруг одного шлюза получают одинаковый cluster_id.
+// Cluster ID = CRC32(sorted(anchor MACs)) — как в SpectraMesh-расширении.
+// Якоря: шлюзы и стационарные ретрансляторы в зоне видимости.
 static uint32_t clusterComputeSelfId() {
-  // Шлюз всегда якорь собственного кластера.
-  if (isGateway()) {
-    gAnchorNodeId = 0;
-    const char *selfAnchor[1] = {gHardwareId.c_str()};
-    return kinto_compute_cluster_id(selfAnchor, 1);
-  }
-
-  int best = -1;
-  int bestRssi = -10000;
   const uint32_t now = millis();
 
-  for (int i = 0; i < 8; i++) {
-    if (!gNeighbors[i].used || !gNeighbors[i].gateway) continue;
+  String anchors[9];
+  const char *ptrs[9];
+  unsigned ac = 0;
+
+  // Шлюз всегда якорь собственного кластера.
+  if (isGateway()) {
+    anchors[ac] = gHardwareId;
+    ptrs[ac] = anchors[ac].c_str();
+    ac++;
+  }
+  for (int i = 0; i < 8 && ac < 9; i++) {
+    if (!gNeighbors[i].used) continue;
     if (now - gNeighbors[i].lastMs > 12000UL) continue;
-    if (gNeighbors[i].id == gAnchorNodeId) {
-      // Гистерезис: не прыгаем между шлюзами из-за пары дБ.
-      if (gNeighbors[i].rssi >= bestRssi - 10) {
-        best = i;
-        bestRssi = gNeighbors[i].rssi;
-      }
-      continue;
-    }
-    if (gNeighbors[i].rssi > bestRssi) {
-      best = i;
-      bestRssi = gNeighbors[i].rssi;
-    }
+    if (!gNeighbors[i].gateway) continue;
+    anchors[ac] = gNeighbors[i].hw[0] ? String(gNeighbors[i].hw)
+                                     : publicIdForNode(gNeighbors[i].id);
+    ptrs[ac] = anchors[ac].c_str();
+    ac++;
   }
 
-  if (best >= 0) {
-    if (gAnchorNodeId != gNeighbors[best].id) {
-      gAnchorNodeId = gNeighbors[best].id;
-      sgLog("[cluster] anchor -> %s rssi=%d", publicIdForNode(gAnchorNodeId).c_str(),
-            (int)gNeighbors[best].rssi);
-    }
-    // CRC32(sorted(anchor MACs)): используем реальный MAC соседа.
-    String anchor = gNeighbors[best].hw[0] ? String(gNeighbors[best].hw)
-                                           : publicIdForNode(gNeighbors[best].id);
-    const char *anchors[1] = {anchor.c_str()};
-    return kinto_compute_cluster_id(anchors, 1);
+  if (!ac) {
+    // Нет ни одного шлюза-якоря — кластера пока нет.
+    gAnchorNodeId = 0;
+    return 0;
   }
-
-  // Нет ни одного шлюза-якоря — кластера пока нет. Раньше узел делал
-  // якорем себя и создавал фантомный кластер без связи.
-  gAnchorNodeId = 0;
-  return 0;
+  return kinto_compute_cluster_id(ptrs, ac);
 }
 
 static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
@@ -1285,6 +1287,7 @@ static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
   out[n].cluster_id = gSelfClusterId;
   out[n].rssi = -40;
   out[n].queue_depth = (uint8_t)min((uint16_t)queueLoadValue(), (uint16_t)255);
+  out[n].battery = 100;
   out[n].last_seen_ms = now ? now : 1;
   n++;
 
@@ -1296,6 +1299,7 @@ static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
     out[n].cluster_id = gNeighbors[i].clusterId;
     out[n].rssi = gNeighbors[i].rssi;
     out[n].queue_depth = gNeighbors[i].load;
+    out[n].battery = gNeighbors[i].batt;
     out[n].last_seen_ms = now;   // сосед виден в текущем окне
     n++;
   }
@@ -1370,18 +1374,41 @@ static void clusterTick() {
 
   if (now - gLastClusterLogMs > 30000UL) {
     gLastClusterLogMs = now;
-    sgLog("[cluster] cid=%lu border=%d peers=%u nc=%u anchor=%s",
+    sgLog("[cluster] cid=%lu border=%d peers=%u nc=%u",
           (unsigned long)gSelfClusterId, gBorderNode ? 1 : 0,
-          (unsigned)gBeaconNeighborClusterCount, (unsigned)count,
-          gAnchorNodeId ? publicIdForNode(gAnchorNodeId).c_str() : "self");
+          (unsigned)gBeaconNeighborClusterCount, (unsigned)count);
   }
 
-  if (prevAnchor && gAnchorNodeId && gPrevClusterId && gSelfClusterId &&
-      gPrevClusterId != gSelfClusterId) {
-    sgLog("[cluster] moved %lu -> %lu", (unsigned long)gPrevClusterId,
-          (unsigned long)gSelfClusterId);
-    if (isWearable() && gHandoverState == HO_IDLE) {
-      handoverStart(gSelfClusterId);
+  // Триггер хендовера (SpectraMesh-расширение): текущий кластер слабее
+  // -85 dBm, а соседний стабильно сильнее -75 dBm три beacon-интервала.
+  static uint8_t weakStreak = 0;
+  if (isWearable() && gHandoverState == HO_IDLE) {
+    int currentRssi = -127;
+    int bestOtherRssi = -127;
+    uint32_t bestOtherCluster = 0;
+    for (int i = 0; i < 8; i++) {
+      if (!gNeighbors[i].used) continue;
+      if (now - gNeighbors[i].lastMs > 12000UL) continue;
+      if (!gNeighbors[i].clusterId) continue;
+      if (gNeighbors[i].clusterId == gSelfClusterId || gNeighbors[i].gateway) {
+        if (gNeighbors[i].rssi > currentRssi) currentRssi = gNeighbors[i].rssi;
+      } else if (gNeighbors[i].clusterId != gSelfClusterId) {
+        if (gNeighbors[i].rssi > bestOtherRssi) {
+          bestOtherRssi = gNeighbors[i].rssi;
+          bestOtherCluster = gNeighbors[i].clusterId;
+        }
+      }
+    }
+    if (currentRssi < -85 && bestOtherRssi > -75 && bestOtherCluster) {
+      weakStreak++;
+      if (weakStreak >= 3) {
+        weakStreak = 0;
+        sgLog("[handover] trigger cur=%d other=%d cluster=%lu",
+              currentRssi, bestOtherRssi, (unsigned long)bestOtherCluster);
+        handoverStart(bestOtherCluster);
+      }
+    } else {
+      weakStreak = 0;
     }
   }
 }
@@ -1461,6 +1488,7 @@ static void handoverStart(uint32_t newCluster) {
   gHandoverState = HO_REQUESTED;
   gHandoverPeer = peer;
   gHandoverTargetCluster = newCluster;
+  gHandoverSourceCluster = gSelfClusterId;
   gHandoverSinceMs = millis();
   gHandoverAttempts = 1;
   sgLog("[handover] request peer=%s cluster=%lu", publicIdForNode(peer).c_str(),
@@ -1529,22 +1557,37 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
     if (gHandoverTargetCluster) {
       handoverSend("request", h.src, gHandoverTargetCluster);
     }
+  } else if (op == "abort") {
+    if (gHandoverState == HO_IDLE) return;
+    if (gHandoverPeer && h.src != gHandoverPeer) return;
+    if (gHandoverSourceCluster) gSelfClusterId = gHandoverSourceCluster;
+    gHandoverState = HO_IDLE;
+    gHandoverPeer = 0;
+    gHandoverTargetCluster = 0;
+    gHandoverCooldownUntilMs = millis() + 5000UL;
+    sgLog("[handover] abort from %s", publicIdForNode(h.src).c_str());
   }
 }
 
 static void handoverTick() {
   if (!handoverInProgress()) return;
   const uint32_t now = millis();
-  if (now - gHandoverSinceMs < 5000UL) return;
-  gHandoverSinceMs = now;
-  if (gHandoverAttempts >= 3) {
-    sgLog("[handover] timeout cluster=%lu -> idle",
-          (unsigned long)gHandoverTargetCluster);
+  // HANDOVER_TIMEOUT = 10 c на весь переход, затем ABORT и возврат.
+  if (now - gHandoverSinceMs >= 10000UL && gHandoverState != HO_ACCEPTED) {
+    if (gHandoverPeer) handoverSend("abort", gHandoverPeer, gHandoverSourceCluster);
+    sgLog("[handover] abort cluster=%lu -> back %lu",
+          (unsigned long)gHandoverTargetCluster, (unsigned long)gHandoverSourceCluster);
+    if (gHandoverSourceCluster) {
+      gSelfClusterId = gHandoverSourceCluster;
+      gPrevClusterId = gHandoverSourceCluster;
+    }
     gHandoverState = HO_IDLE;
     gHandoverPeer = 0;
-    gHandoverCooldownUntilMs = millis() + 10000UL;
+    gHandoverCooldownUntilMs = now + 10000UL;
     return;
   }
+  if (now - gHandoverSinceMs < 3000UL) return;
+  if (gHandoverAttempts >= 3) return;
   gHandoverAttempts++;
   const uint32_t peer = gHandoverPeer ? gHandoverPeer
                                       : handoverBestPeer(gHandoverTargetCluster);
@@ -1558,6 +1601,54 @@ static void handoverTick() {
 }
 
 /* ----------------------------------------------------------- mesh сборка - */
+
+/** "esp32-aabbccddeeff" -> 6 байт. */
+static bool macFromHardwareId(const char *text, uint8_t out[6]) {
+  if (!text || !out) return false;
+  const char *hex = text;
+  if (strncmp(hex, "esp32-", 6) == 0) hex += 6;
+  if (strlen(hex) < 12) return false;
+  for (int i = 0; i < 6; i++) {
+    auto nibble = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+      return -1;
+    };
+    const int hi = nibble(hex[i * 2]);
+    const int lo = nibble(hex[i * 2 + 1]);
+    if (hi < 0 || lo < 0) return false;
+    out[i] = (uint8_t)((hi << 4) | lo);
+  }
+  return true;
+}
+
+static String meshMacText(const uint8_t mac[6]) {
+  char buf[20];
+  snprintf(buf, sizeof(buf), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
+
+/** MAC получателя по nodeId. Broadcast — FF:FF:..; неизвестный — нули. */
+static void meshMacForNode(uint32_t id, uint8_t out[6]) {
+  memset(out, 0, 6);
+  if (id == gNodeId) {
+    memcpy(out, gMac, 6);
+    return;
+  }
+  if (id == MESH_BROADCAST) {
+    memset(out, 0xFF, 6);
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    if (gNeighbors[i].used && gNeighbors[i].id == id && gNeighbors[i].hw[0]) {
+      if (macFromHardwareId(gNeighbors[i].hw, out)) return;
+    }
+  }
+  // Для удалённых узлов route table хранит только 32-bit id; MAC придёт
+  // из beacon и обновится при следующем пакете.
+}
 
 static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
                         uint32_t packetId, uint8_t ttl, uint8_t hop,
@@ -1577,6 +1668,8 @@ static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
   h.src = gNodeId;
   h.dst = dst;
   h.packetId = packetId;
+  memcpy(h.srcMac, gMac, 6);
+  meshMacForNode(dst, h.dstMac);
   h.crc = 0;
   memcpy(out, &h, sizeof(h));
   if (len) memcpy(out + sizeof(h), payload, len);
@@ -2185,10 +2278,11 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
 
   // Первый хоп от соседа: по этим строкам видно, работает ли транспорт.
   if (h.hop == 0 && h.type != MT_PRESENCE) {
-    sgLog("[mesh] rx %s type=%u src=%08lx dst=%s len=%u ttl=%u",
-          fromLora ? "lora" : "wifi", (unsigned)h.type, (unsigned long)h.src,
-          h.dst == MESH_BROADCAST ? "bcast" : "uni", (unsigned)h.payloadLen,
-          (unsigned)h.ttl);
+    sgLog("[mesh] rx %s type=%u src=%s (%08lx) dst=%s len=%u ttl=%u",
+          fromLora ? "lora" : "wifi", (unsigned)h.type,
+          meshMacText(h.srcMac).c_str(), (unsigned long)h.src,
+          h.dst == MESH_BROADCAST ? "bcast" : meshMacText(h.dstMac).c_str(),
+          (unsigned)h.payloadLen, (unsigned)h.ttl);
   }
 
   // LoRa-фрагменты: собрать; дальнейшая обработка произойдёт после сборки.
@@ -3421,6 +3515,35 @@ static void hubRegister() {
   }
 }
 
+static void hubTelemetry() {
+  if (!gatewayUp() || !gModuleToken.length() || gHubAuthRejected) return;
+  const uint32_t now = millis();
+  static uint32_t lastMs = 0;
+  if (now - lastMs < 30000UL) return;
+  lastMs = now;
+
+  int rssiSum = 0;
+  int count = 0;
+  for (int i = 0; i < 8; i++) {
+    if (!gNeighbors[i].used) continue;
+    if (now - gNeighbors[i].lastMs > 60000UL) continue;
+    rssiSum += gNeighbors[i].rssi;
+    count++;
+  }
+  const int avg = count ? rssiSum / count : 0;
+  String body = String("{\"meshAddr\":\"") + gHardwareId +
+                "\",\"clusterId\":" + String((unsigned long)gSelfClusterId) +
+                ",\"border\":" + String(gBorderNode ? 1 : 0) +
+                ",\"neighbors\":" + String(count) +
+                ",\"avgRssi\":" + String(avg) +
+                ",\"outboxDepth\":" + String((unsigned)gQueueCount) +
+                ",\"hues\":[" + (wifiTransportEnabled() ? "\"wifi\"" : "") +
+                (wifiTransportEnabled() && loraTransportEnabled() ? "," : "") +
+                (loraTransportEnabled() ? "\"lora\"" : "") + "]}";
+  String resp;
+  hubPostJson("/v1/mesh/telemetry", body, resp, true);
+}
+
 static void hubRelayQueue() {
   if (!gatewayUp() || gHubAuthRejected || !gModuleToken.length()) return;
 
@@ -3530,6 +3653,7 @@ static void hubLoop() {
     gLastRegisterMs = now;
     hubRegister();
   }
+  hubTelemetry();
   hubOtaTick();
   if (now - gLastRelayMs >= 5000UL) {
     gLastRelayMs = now;

@@ -18,6 +18,7 @@ typedef struct {
   uint32_t cluster_id;
   int8_t rssi;
   uint8_t queue_depth;
+  uint8_t battery; /* 0..100, для border election */
   uint8_t streaks; /* сколько beacon-интервалов подряд видим */
   uint32_t last_seen_ms;
 } kinto_cluster_neighbor_t;

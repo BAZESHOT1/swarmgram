@@ -33,6 +33,7 @@ import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCa
 import { ensureWebPushPermission, initPush } from '../src/push';
 import { showMeshLocalNotification } from '../src/push/local';
 import { startNetworkStateMonitor } from '../src/mesh/NetworkStateMonitor';
+import { flushSignedOfflineBatch } from '../src/mesh/OfflineSyncService';
 import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
@@ -72,7 +73,11 @@ function RealtimeBridge() {
   useEffect(() => {
     const flush = () => {
       if (!useStore.getState().transportOnline) return;
-      void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '')
+      // Сначала фиксируем подписанный батч (ESK), затем отправляем очередь
+      // обычным путём. Обе операции идемпотентны по clientId.
+      void flushSignedOfflineBatch()
+        .catch(() => undefined)
+        .then(() => flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? ''))
         .then((sent) => {
           if (sent.length) {
             void queryClient.invalidateQueries({ queryKey: ['chats'] });
