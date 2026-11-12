@@ -560,7 +560,7 @@ export async function loadChatMessages(chat: Chat, myUsername: string, limit = 6
   const cached = (await loadCachedMessages(chat.id).catch(() => null)) as ViewMessage[] | null;
   if (Array.isArray(cached)) {
     for (const m of cached) {
-      if (!m || m.seq > 0) continue;
+      if (!m || (!m.pending && !m.failed && m.seq > 0)) continue;
       if (m.clientId && confirmedClients.has(m.clientId)) continue;
       if (m.id && serverIds.has(m.id)) continue;
       if (pending.some((p) => p.clientId && p.clientId === m.clientId)) continue;
