@@ -33,6 +33,8 @@ export interface WebPushSession {
   deviceId?: string;
 }
 
+import { isPushContentHidden } from './pushPrefs';
+
 const noop: WebPushCleanup = () => undefined;
 
 let vapidWarned = false;
@@ -52,6 +54,23 @@ function openChatFromData(data: Record<string, string> | undefined): void {
     window.location.assign(url);
   } catch {
     /* навигация может быть запрещена — не ломаем вкладку */
+  }
+}
+
+/**
+ * Просит разрешение на уведомления при первом посещении (если ещё не решено)
+ * и заранее регистрирует service worker. Безопасно вызывать без сессии.
+ */
+export async function ensureWebPushPermission(): Promise<NotificationPermission | 'unsupported'> {
+  if (!isWebPushSupported()) return 'unsupported';
+  try {
+    // SW регистрируем до запроса, чтобы браузер связывал разрешение с worker.
+    await navigator.serviceWorker.register(SW_PATH).catch(() => undefined);
+    await navigator.serviceWorker.ready.catch(() => undefined);
+    if (Notification.permission !== 'default') return Notification.permission;
+    return await Notification.requestPermission();
+  } catch {
+    return Notification.permission;
   }
 }
 
@@ -102,7 +121,6 @@ export async function registerWebPush(
     if (permission !== 'granted') return noop;
 
     const registration = await navigator.serviceWorker.register(SW_PATH);
-    // getToken сам дожидается активации, но ready делает поведение предсказуемым.
     await navigator.serviceWorker.ready.catch(() => undefined);
 
     const token = await getToken(messaging, {
@@ -118,8 +136,10 @@ export async function registerWebPush(
 
     // Foreground-сообщения (вкладка в фокусе) FCM не показывает сам.
     const unsubscribe = onMessage(messaging, (payload) => {
-      const title = payload.notification?.title ?? 'Kinto';
-      const body = payload.notification?.body ?? '';
+      void (async () => {
+      const hidden = await isPushContentHidden();
+      const title = hidden ? 'Kinto' : (payload.notification?.title ?? payload.data?.title ?? 'Kinto');
+      const body = hidden ? 'Новое сообщение' : (payload.notification?.body ?? payload.data?.body ?? '');
       const data = payload.data;
 
       try {
@@ -149,6 +169,7 @@ export async function registerWebPush(
         kind: 'info',
         message: body ? `${title}: ${body}` : title,
       });
+      })();
     });
 
     return () => {

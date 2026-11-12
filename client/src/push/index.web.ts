@@ -4,4 +4,5 @@
  */
 export { registerWebPush } from './push.web';
 export { registerWebPush as initPush } from './push.web';
+export { ensureWebPushPermission } from './push.web';
 export type { WebPushCleanup, WebPushSession } from './push.web';

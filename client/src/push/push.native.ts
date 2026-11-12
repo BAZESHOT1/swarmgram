@@ -26,6 +26,7 @@ import notifee, {
 } from '@notifee/react-native';
 import BackgroundFetch from 'react-native-background-fetch';
 import { router } from 'expo-router';
+import { isPushContentHidden } from './pushPrefs';
 
 import * as api from '../data/api';
 import type { PushCleanup, PushData, PushDisplayOptions, PushSession } from './types';
@@ -192,10 +193,18 @@ export async function displayPushNotification(options: PushDisplayOptions): Prom
   }
 }
 
-function notificationFromMessage(message: RemoteMessage): PushDisplayOptions {
+function notificationFromMessage(message: RemoteMessage, hidden = false): PushDisplayOptions {
   const data = normalizeData(message.data);
+  if (hidden) {
+    return {
+      title: 'Kinto',
+      body: data.kind === 'media' ? 'Медиа' : 'Новое сообщение',
+      data: { chatId: data.chatId, messageId: data.messageId, kind: data.kind },
+      channelId: channelForData(data),
+    };
+  }
   return {
-    title: message.notification?.title || data.title || 'Kinto',
+    title: message.notification?.title || data.title || data.senderDisplayName || data.senderUsername || 'Kinto',
     body: message.notification?.body || data.body || data.text || '',
     data,
     channelId: channelForData(data),
@@ -236,7 +245,7 @@ function ensureBackgroundMessageHandler(): boolean {
       // notification from the data/notification payload.
       if (Platform.OS !== 'android') return;
       try {
-        await displayPushNotification(notificationFromMessage(message));
+        await displayPushNotification(notificationFromMessage(message, await isPushContentHidden()));
       } catch (error) {
         warn('Background message handler failed', error);
       }
@@ -271,7 +280,7 @@ function registerForegroundMessageHandler(): PushCleanup {
     return messaging.onMessage((message) => {
       void (async () => {
         try {
-          await displayPushNotification(notificationFromMessage(message));
+          await displayPushNotification(notificationFromMessage(message, await isPushContentHidden()));
         } catch (error) {
           warn('Foreground message handler failed', error);
         }
@@ -440,12 +449,13 @@ export async function pollPending(): Promise<number> {
         (typeof raw.message === 'string' && raw.message) ||
         (typeof raw.text === 'string' && raw.text) ||
         '';
+      const hidden = await isPushContentHidden();
 
       await displayPushNotification({
         id: `pending-${notificationId}`,
-        title,
-        body,
-        data,
+        title: hidden ? 'Kinto' : title,
+        body: hidden ? 'Новое сообщение' : body,
+        data: hidden ? { chatId: data.chatId, messageId: data.messageId, kind: data.kind } : data,
       });
 
       try {

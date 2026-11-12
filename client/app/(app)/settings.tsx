@@ -22,6 +22,7 @@ import { SettingsDashboardSkeleton } from '../../src/components/skeletons/PageSk
 import { PressableScale } from '../../src/components/profile/PressableScale';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useMe, useModules, useNodes } from '../../src/data/queries';
+import { hasNetworkAccess } from '../../src/data/access';
 import { logout } from '../../src/data/auth';
 import { useStore } from '../../src/state/useStore';
 
@@ -131,7 +132,9 @@ export default function SettingsScreen() {
   const adminVisible = isAdmin && match('админка', 'админ', 'управление', 'аккаунты', 'сеть');
   const logoutVisible = match('выйти', 'выход', 'аккаунт', 'logout');
 
-  const visibleRows = SECTION_ROWS.filter((row) => match(row.title, row.subtitle, ...row.keywords));
+  const visibleRows = SECTION_ROWS.filter(
+    (row) => match(row.title, row.subtitle, ...row.keywords) && (row.key !== 'network' || hasNetworkAccess(me.data)),
+  );
 
   const anyVisible =
     profileVisible ||

@@ -149,7 +149,7 @@ export function PhoneDock() {
 
   const enterTranslateY = enter.interpolate({ inputRange: [0, 1], outputRange: [16, 0] });
   // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
-  const dockBottom = 12 + Math.max(0, insets.bottom);
+  const dockBottom = 24 + Math.max(0, insets.bottom);
 
   return (
     <Animated.View
@@ -252,7 +252,7 @@ export function PhoneDock() {
 
       <Modal visible={chatsMenuOpen} transparent animationType="fade" onRequestClose={() => setChatsMenuOpen(false)}>
         <Pressable style={styles.menuBackdrop} onPress={() => setChatsMenuOpen(false)} accessibilityLabel="Закрыть меню чатов">
-          <View style={[styles.menuHost, { bottom: 86 + Math.max(0, insets.bottom) }]}>
+          <View style={[styles.menuHost, { bottom: 98 + Math.max(0, insets.bottom) }]}>
             <MotiView
               from={{ opacity: 0, translateY: reduced ? 0 : 10, scale: reduced ? 1 : 0.96 }}
               animate={{ opacity: 1, translateY: 0, scale: 1 }}
@@ -290,7 +290,7 @@ export function PhoneDock() {
 }
 
 const styles = StyleSheet.create({
-  host: { position: 'absolute', left: 16, right: 16, bottom: 12, alignItems: 'center', zIndex: 50 },
+  host: { position: 'absolute', left: 16, right: 16, bottom: 24, alignItems: 'center', zIndex: 50 },
   dock: {
     flexDirection: 'row',
     borderRadius: 22,
@@ -338,7 +338,7 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   menuBackdrop: { flex: 1 },
-  menuHost: { position: 'absolute', left: 16, right: 16, bottom: 86, alignItems: 'center' },
+  menuHost: { position: 'absolute', left: 16, right: 16, bottom: 98, alignItems: 'center' },
   menuCard: { width: '100%', maxWidth: 380, borderRadius: 18, borderWidth: 1, padding: 6 },
   menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, paddingVertical: 9, borderRadius: 12 },
   menuIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },

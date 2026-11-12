@@ -10,7 +10,7 @@ import { MotiView } from 'moti';
 import { Ionicons } from '@expo/vector-icons';
 import { ThemeProvider, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
-import { AppState, View, ActivityIndicator, StyleSheet, Text } from 'react-native';
+import { AppState, Platform, View, ActivityIndicator, StyleSheet, Text } from 'react-native';
 import { useTheme } from '../src/theme/useTheme';
 import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
@@ -29,7 +29,7 @@ import { kv } from '../src/crypto/storage';
 import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
 import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCachedChatPreviews, findCachedChat } from '../src/data/cache';
-import { initPush } from '../src/push';
+import { ensureWebPushPermission, initPush } from '../src/push';
 import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
@@ -754,6 +754,15 @@ export default function RootLayout() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  // Веб: просим разрешение на уведомления при первом посещении, даже до входа.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return undefined;
+    const timer = setTimeout(() => {
+      void ensureWebPushPermission().catch(() => undefined);
+    }, 1500);
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {

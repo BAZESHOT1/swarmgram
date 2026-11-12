@@ -58,6 +58,7 @@ import { motion } from '../../src/theme/motion';
 import { useHaptics } from '../../src/components/useHaptics';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
+import { hasNetworkAccess } from '../../src/data/access';
 import { onReadAllRequest } from '../../src/state/chatEvents';
 import { dbGet, dbSet } from '../../src/data/db';
 import { useSearchGroupsSafe, type GroupSearchItem } from '../../src/components/chatinfo/ManageData';
@@ -2687,11 +2688,13 @@ function ArchiveSection({
 function OnboardingCard() {
   const theme = useTheme();
   const reduced = useReducedMotion();
-  const items = [
+  const networkAccess = useStore((s) => hasNetworkAccess(s.me));
+  const allItems = [
     { key: 'chat', icon: 'chatbubbles-outline' as const, title: 'Чат', text: 'Начните переписку', href: '/compose?mode=direct' },
     { key: 'node', icon: 'server-outline' as const, title: 'Узел', text: 'Своё хранилище', href: '/nodes' },
     { key: 'module', icon: 'hardware-chip-outline' as const, title: 'Модуль', text: 'ESP32 по BLE', href: '/modules' },
   ];
+  const items = allItems.filter((item) => item.key !== 'node' || networkAccess);
   return (
     <MotiView
       from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 12 }}

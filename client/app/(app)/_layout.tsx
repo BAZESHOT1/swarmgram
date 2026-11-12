@@ -42,13 +42,16 @@ export default function AppLayout() {
         <Stack.Screen
           name="chats"
           options={({ route }) => ({
+            // Корневая вкладка: свайп назад не должен уводить на другой экран.
+            gestureEnabled: false,
+            fullScreenGestureEnabled: false,
             // Из «Настроек» в «Чаты» на телефоне — анимация слева.
             animation: (route.params as { __nav?: string } | undefined)?.__nav === 'left'
               ? 'slide_from_left'
               : 'slide_from_right',
           })}
         />
-        <Stack.Screen name="settings" />
+        <Stack.Screen name="settings" options={{ gestureEnabled: false, fullScreenGestureEnabled: false }} />
         <Stack.Screen name="settings/params" />
         <Stack.Screen name="settings/notifications" />
         <Stack.Screen name="settings/appearance" />

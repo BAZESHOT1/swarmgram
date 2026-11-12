@@ -6,3 +6,8 @@
 export * from './push.native';
 export { initNativePush as initPush } from './push.native';
 export * from './types';
+
+/** На native разрешение уже запрашивается при регистрации push. */
+export async function ensureWebPushPermission(): Promise<'unsupported'> {
+  return 'unsupported';
+}

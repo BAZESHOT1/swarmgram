@@ -241,6 +241,8 @@ export async function sendMessage(
       replyTo: opts.replyTo,
       // Поле контракта data-слоя: публикация от имени канала.
       ...(opts.asChannel ? { asChannel: true } : {}),
+      // Короткий предпросмотр для push (только для текста, не для E2E-секретов).
+      ...(kind === 'text' ? { pushText: String(payload.text ?? '').slice(0, 300) } : {}),
     } as never);
     // Hub обязан вернуть сохранённое сообщение с id/seq. Иначе это не доставка.
     if (!saved || typeof (saved as { id?: unknown }).id !== 'string' || !Number.isFinite(Number((saved as { seq?: unknown }).seq))) {
@@ -335,6 +337,9 @@ export async function flushOutbox(myUsername: string): Promise<ViewMessage[]> {
         clientId: item.clientId,
         replyTo: queuedReplyTo,
         ...(parsed.asChannel === true ? { asChannel: true } : {}),
+        ...(item.kind === 'text' && typeof (item as { text?: unknown }).text === 'string'
+          ? { pushText: String((item as { text?: string }).text).slice(0, 300) }
+          : {}),
       } as never);
       await removeOutbox(item.id);
       out.push({

@@ -28,6 +28,7 @@ interface TokenRow {
   id: string;
   token: string;
   platform: string;
+  hide_content: boolean;
 }
 
 interface NotificationRow {
@@ -152,7 +153,7 @@ export async function sendNotification(id: string): Promise<void> {
   }
 
   const tokens = await query<TokenRow>(
-    'SELECT id, token, platform FROM push_tokens WHERE user_id = $1 AND enabled = true',
+    'SELECT id, token, platform, hide_content FROM push_tokens WHERE user_id = $1 AND enabled = true',
     [notification.user_id],
   );
 
@@ -166,37 +167,79 @@ export async function sendNotification(id: string): Promise<void> {
     return;
   }
 
-  const dataStrings = stringifyData(notification.data);
   const invalidTokens: string[] = [];
   const errors = new Set<string>();
   let success = 0;
   let failure = 0;
 
   try {
-    // sendEachForMulticast принимает максимум 500 токенов за вызов.
-    for (let offset = 0; offset < tokens.length; offset += 500) {
-      const chunk = tokens.slice(offset, offset + 500);
-      const res = await withTimeout(
-        fcm.sendEachForMulticast({
-          tokens: chunk.map((t) => t.token),
-          notification: { title: notification.title, body: notification.body },
-          data: dataStrings,
-        }),
-        15_000,
-      );
+    // Группируем по платформе и настройке скрытия: Android получает data-only
+    // (текст рисует Notifee), iOS/web — готовый alert, скрытый при настройке.
+    const groups = new Map<string, TokenRow[]>();
+    for (const t of tokens) {
+      const key = `${t.platform}:${t.hide_content ? '1' : '0'}`;
+      const list = groups.get(key) ?? [];
+      list.push(t);
+      groups.set(key, list);
+    }
 
-      res.responses.forEach((r, idx) => {
-        if (r.success) {
-          success += 1;
-          return;
-        }
-        failure += 1;
-        const code = r.error?.code ?? 'send_failed';
-        errors.add(code);
-        if (INVALID_TOKEN_CODES.has(code)) {
-          invalidTokens.push(chunk[idx].token);
-        }
-      });
+    for (const group of groups.values()) {
+      const platform = group[0]?.platform ?? 'android';
+      const hidden = Boolean(group[0]?.hide_content);
+      const variant = hidden
+        ? {
+            title: 'Kinto',
+            body: notification.kind === 'message' ? 'Новое сообщение' : 'Системное уведомление',
+          }
+        : { title: notification.title, body: notification.body };
+      const dataPayload = hidden
+        ? { chatId: notification.data?.chatId, messageId: notification.data?.messageId, kind: notification.data?.kind }
+        : { ...notification.data, title: variant.title, body: variant.body };
+      const dataStrings = stringifyData(dataPayload);
+      const isAndroid = platform === 'android';
+
+      // sendEachForMulticast принимает максимум 500 токенов за вызов.
+      for (let offset = 0; offset < group.length; offset += 500) {
+        const chunk = group.slice(offset, offset + 500);
+        const res = await withTimeout(
+          fcm.sendEachForMulticast({
+            tokens: chunk.map((t) => t.token),
+            data: dataStrings,
+            ...(isAndroid
+              ? { android: { priority: 'high' as const, ttl: 3600_000 } }
+              : {
+                  notification: variant,
+                  ...(platform === 'ios'
+                    ? {
+                        apns: {
+                          payload: {
+                            aps: {
+                              sound: 'default',
+                              'mutable-content': 1,
+                              'thread-id': String(notification.data?.chatId ?? 'kinto'),
+                            },
+                          },
+                        },
+                      }
+                    : {}),
+                }),
+          }),
+          15_000,
+        );
+
+        res.responses.forEach((r, idx) => {
+          if (r.success) {
+            success += 1;
+            return;
+          }
+          failure += 1;
+          const code = r.error?.code ?? 'send_failed';
+          errors.add(code);
+          if (INVALID_TOKEN_CODES.has(code)) {
+            invalidTokens.push(chunk[idx].token);
+          }
+        });
+      }
     }
 
     if (invalidTokens.length) {

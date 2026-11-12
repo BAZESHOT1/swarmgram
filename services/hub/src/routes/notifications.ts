@@ -60,17 +60,28 @@ const notificationRoutes: FastifyPluginAsync = async (app) => {
 
     // Один токен принадлежит одному пользователю/устройству — переносим его.
     await query(
-      `INSERT INTO push_tokens (user_id, platform, token, device_id)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO push_tokens (user_id, platform, token, device_id, hide_content)
+       VALUES ($1, $2, $3, $4, COALESCE((SELECT notify_hide_content FROM users WHERE id = $1), false))
        ON CONFLICT (token) DO UPDATE
           SET user_id = EXCLUDED.user_id,
               platform = EXCLUDED.platform,
               device_id = EXCLUDED.device_id,
+              hide_content = COALESCE((SELECT notify_hide_content FROM users WHERE id = EXCLUDED.user_id), push_tokens.hide_content),
               enabled = true,
               last_seen_at = now()`,
       [me, body.platform, token, deviceId ?? null],
     );
     return reply.send({ ok: true });
+  });
+
+  /** Скрывать ли отправителя и текст в push (применяется ко всем токенам). */
+  app.post('/push/preferences', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const body = (req.body ?? {}) as { hideContent?: unknown };
+    if (typeof body.hideContent !== 'boolean') throw badRequest('invalid_hide_content');
+    await query('UPDATE users SET notify_hide_content = $2 WHERE id = $1', [me, body.hideContent]);
+    await query('UPDATE push_tokens SET hide_content = $2 WHERE user_id = $1', [me, body.hideContent]);
+    return reply.send({ ok: true, hideContent: body.hideContent });
   });
 
   app.delete('/push/token', { onRequest: [requireAuth()] }, async (req, reply) => {

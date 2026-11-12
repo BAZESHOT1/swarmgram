@@ -12,6 +12,7 @@ import { useRouter } from 'expo-router';
 import { useTheme } from '../theme/useTheme';
 import { logout } from '../data/auth';
 import { useStore } from '../state/useStore';
+import { hasNetworkAccess } from '../data/access';
 
 const HOLD_MS = 1000;
 
@@ -23,6 +24,7 @@ export function PCMenuDropdown({ onHide }: { onHide: () => void }) {
   const [elapsed, setElapsed] = React.useState(0);
   const [loggingOut, setLoggingOut] = useStateSafe();
   const isAdmin = useStore((s) => s.me?.role === 'admin');
+  const networkAccess = useStore((s) => hasNetworkAccess(s.me));
 
   function useStateSafe() {
     return React.useState(false);
@@ -82,7 +84,9 @@ export function PCMenuDropdown({ onHide }: { onHide: () => void }) {
       <Item icon="person-outline" label="Профиль" onPress={() => go('/settings')} theme={theme} />
       <Sep theme={theme} />
       <Item icon="chatbubbles-outline" label="Чаты" onPress={() => go('/chats')} theme={theme} />
-      <Item icon="server-outline" label="Узлы хранения" onPress={() => go('/nodes')} theme={theme} />
+      {networkAccess ? (
+        <Item icon="server-outline" label="Узлы хранения" onPress={() => go('/nodes')} theme={theme} />
+      ) : null}
       <Item icon="radio-outline" label="Модули расширения" onPress={() => go('/modules')} theme={theme} />
       <Item icon="stats-chart-outline" label="Сеть и статистика" onPress={() => go('/settings')} theme={theme} />
       {isAdmin ? <Item icon="shield-checkmark-outline" label="Админка" onPress={() => go('/admin')} theme={theme} /> : null}

@@ -16,19 +16,24 @@ import {
 } from '../../../src/components/settings/SettingsUI';
 import { SettingsRowsSkeleton } from '../../../src/components/skeletons/PageSkeletons';
 import { useChats } from '../../../src/data/queries';
+import { api } from '../../../src/data/api';
 import { kv } from '../../../src/crypto/storage';
 import { useStore } from '../../../src/state/useStore';
 
-/** Читает булеву настройку из localStorage/AsyncStorage: отсутствие = включено. */
-function useStoredToggle(key: string, eventName: string): [boolean, (v: boolean) => void] {
-  const [value, setValue] = React.useState(true);
+/** Читает булеву настройку из localStorage/AsyncStorage. */
+function useStoredToggle(
+  key: string,
+  eventName: string,
+  defaultValue = true,
+): [boolean, (v: boolean) => void] {
+  const [value, setValue] = React.useState(defaultValue);
 
   React.useEffect(() => {
     let alive = true;
     void kv
       .get(key)
       .then((raw) => {
-        if (alive) setValue(raw !== '0');
+        if (alive) setValue(raw === null ? defaultValue : raw !== '0');
       })
       .catch(() => undefined);
     return () => {
@@ -72,6 +77,20 @@ export default function NotificationsScreen() {
   const [sounds, setSounds] = useStoredToggle('sg:sounds', 'sg-sounds-changed');
   const [haptics, setHaptics] = useStoredToggle('sg:haptics', 'sg-haptics-changed');
   const [requests, setRequests] = useStoredToggle('sg:notify-requests', 'sg-notify-requests-changed');
+  const [hideContent, setHideContent] = useStoredToggle(
+    'sg:notify-hide-content',
+    'sg-notify-hide-content-changed',
+    false,
+  );
+
+  const changeHideContent = React.useCallback(
+    (value: boolean) => {
+      setHideContent(value);
+      // Синхронизируем с сервером: именно он формирует push для iOS/web.
+      void api.setPushPreferences(value).catch(() => undefined);
+    },
+    [setHideContent],
+  );
 
   const chatTitles = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -110,6 +129,24 @@ export default function NotificationsScreen() {
         </GlassCard>
         <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 }}>
           Настройки применяются на этом устройстве. Звук можно отключить отдельно для каждого чата ниже.
+        </Text>
+      </SettingsSection>
+
+      {/* ------------------------------------------------ push-контент ----- */}
+      <SettingsSection title="Push-уведомления" delay={30}>
+        <GlassCard>
+          <SettingsToggle
+            icon="eye-off-outline"
+            title="Скрывать отправителя и текст"
+            subtitle="В уведомлениях будет только «Kinto · Новое сообщение»"
+            value={hideContent}
+            onValueChange={changeHideContent}
+          />
+        </GlassCard>
+        <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 }}>
+          {hideContent
+            ? 'Текст и имя отправителя не показываются на экране блокировки и в шторке.'
+            : 'Уведомления показывают отправителя, группу/канал и текст сообщения.'}
         </Text>
       </SettingsSection>
 

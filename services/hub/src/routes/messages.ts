@@ -69,6 +69,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       clientId?: string;
       /** Опубликовать от имени канала (только канал + право publish). */
       asChannel?: boolean;
+      /** Короткий текст для push (не хранится в истории; можно отключить настройкой). */
+      pushText?: string;
     };
 
     // Публикация от имени канала: только в каналах и только при праве publish.
@@ -109,7 +111,10 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const id = uuid();
-    const user = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [me]);
+    const user = await one<{ username: string; display_name: string }>(
+      'SELECT username, display_name FROM users WHERE id = $1',
+      [me],
+    );
     // идемпотентность: доставка того же клиентского сообщения через mesh + интернет не дублируется
     if (body.clientId) {
       const found = await one<{ id: string; seq: number; created_at: string; header: unknown; object_id: string | null; reply_to: string | null; as_channel: boolean }>(
@@ -174,11 +179,15 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     // должна зависеть от FCM. Текст уведомления не содержит содержимого.
     void notifyMessageRecipients({
       chatId,
+      chatType: chat.type,
       chatTitle: chat.title,
       messageId: id,
       kind,
       senderId: me,
       senderUsername: user?.username ?? '',
+      senderDisplayName: user?.display_name ?? '',
+      asChannel,
+      pushText: typeof body.pushText === 'string' ? body.pushText.slice(0, 500) : '',
       members: members.map((m) => m.user_id),
     }).catch(() => undefined);
 
@@ -497,17 +506,22 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
 
 interface NotifyRecipientsInput {
   chatId: string;
+  chatType: string;
   chatTitle: string;
   messageId: string;
   kind: string;
   senderId: string;
   senderUsername: string;
+  senderDisplayName: string;
+  asChannel: boolean;
+  pushText: string;
   members: string[];
 }
 
 /**
- * Ставит push-уведомления получателям сообщения. Приватный текст и содержимое
- * не передаются — только факт нового сообщения и метаданные чата.
+ * Ставит push-уведомления получателям сообщения.
+ * pushText — короткий предпросмотр, переданный отправителем; хранится только
+ * в push-записи и может быть скрыт настройкой получателя.
  */
 async function notifyMessageRecipients(input: NotifyRecipientsInput): Promise<void> {
   const recipients = input.members.filter((id) => id !== input.senderId);
@@ -518,10 +532,19 @@ async function notifyMessageRecipients(input: NotifyRecipientsInput): Promise<vo
     [recipients],
   );
 
-  const title = (input.chatTitle
-    ? `@${input.senderUsername || 'user'} в ${input.chatTitle}`
-    : 'Новое сообщение').slice(0, 200);
-  const body = input.kind === 'media' ? 'Медиа' : 'Новое сообщение';
+  const sender = (input.senderDisplayName || input.senderUsername || 'Пользователь').slice(0, 120);
+  const chatTitle = String(input.chatTitle || '').slice(0, 160);
+  const title = (
+    input.chatType === 'direct'
+      ? sender
+      : input.chatType === 'channel' && input.asChannel
+        ? chatTitle || sender
+        : chatTitle
+          ? `${sender} · ${chatTitle}`
+          : sender
+  ).slice(0, 200);
+  const fallbackBody = input.kind === 'media' ? 'Медиа' : 'Новое сообщение';
+  const body = (input.pushText.trim() || fallbackBody).slice(0, 300);
 
   for (const user of users) {
     // Заблокированные/удалённые аккаунты уведомления не получают.
@@ -533,7 +556,18 @@ async function notifyMessageRecipients(input: NotifyRecipientsInput): Promise<vo
       kind: 'message',
       title,
       body,
-      data: { chatId: input.chatId, messageId: input.messageId, kind: input.kind },
+      data: {
+        chatId: input.chatId,
+        chatType: input.chatType,
+        chatTitle,
+        messageId: input.messageId,
+        kind: input.kind,
+        senderUsername: input.senderUsername,
+        senderDisplayName: input.senderDisplayName,
+        asChannel: input.asChannel ? '1' : '0',
+        title,
+        body,
+      },
     });
   }
 }

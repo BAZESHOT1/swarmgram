@@ -898,6 +898,11 @@ export const api = {
     req<{ ok: true }>('/v1/push/token', { method: 'POST', body: JSON.stringify(input) }),
   unregisterPushToken: (token: string) =>
     req<{ ok: true }>('/v1/push/token', { method: 'DELETE', body: JSON.stringify({ token }) }),
+  setPushPreferences: (hideContent: boolean) =>
+    req<{ ok: true; hideContent: boolean }>('/v1/push/preferences', {
+      method: 'POST',
+      body: JSON.stringify({ hideContent }),
+    }),
   pushHistory: () => req<any[]>('/v1/notifications'),
   pendingNotifications: (platform: string, deviceId?: string) =>
     req<any[]>(`/v1/notifications/pending?platform=${encodeURIComponent(platform)}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`),

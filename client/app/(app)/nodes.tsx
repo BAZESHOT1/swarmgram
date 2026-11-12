@@ -24,6 +24,7 @@ import { useTheme } from '../../src/theme/useTheme';
 import { motion } from '../../src/theme/motion';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
+import { hasNetworkAccess } from '../../src/data/access';
 import { GlassCard, SettingsPage, SettingsSection } from '../../src/components/settings/SettingsUI';
 import { CardsSkeleton, SummaryTilesSkeleton } from '../../src/components/skeletons/PageSkeletons';
 import {
@@ -270,6 +271,20 @@ export default function NodesScreen() {
       setDrainError(humanError(error));
     }
   };
+
+  if (!hasNetworkAccess(me)) {
+    return (
+      <SettingsPage title="Сеть" subtitle="Монитор узлов и общее хранилище сообщества">
+        <View style={{ minHeight: 420, justifyContent: 'center' }}>
+          <EmptyState
+            icon="lock-closed-outline"
+            title="Доступ только для PRO"
+            subtitle="Раздел «Сеть» доступен на тарифе PRO и выше. Роль PRO выдаётся вручную."
+          />
+        </View>
+      </SettingsPage>
+    );
+  }
 
   return (
     <SettingsPage
