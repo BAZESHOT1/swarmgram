@@ -186,6 +186,17 @@
 #include <mbedtls/sha256.h>
 #endif
 
+/* --- Mesh v2 core: кластеры, гибридный роутинг, классификатор трафика --- */
+#ifndef SG_MESH_V2
+#define SG_MESH_V2 0
+#endif
+#if SG_MESH_V2
+#include "mesh_v2/beacon_format.h"
+#include "mesh_v2/cluster_manager.h"
+#include "mesh_v2/hybrid_router.h"
+#include "mesh_v2/traffic_classifier.h"
+#endif
+
 #if SG_USE_LORA
 #if SG_LORA_CHIP_SX1262
 #include <RadioLib.h>

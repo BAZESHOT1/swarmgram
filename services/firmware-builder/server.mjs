@@ -13,7 +13,7 @@ import http from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile, rm, readdir, stat, statfs } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, readdir, stat, statfs, cp } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -464,6 +464,9 @@ async function compileFirmware(config, version) {
     await mkdir(buildDir, { recursive: true });
     await writeFile(join(sketchDir, `${sketchName}.ino`), template, 'utf8');
     await writeFile(join(sketchDir, 'config.h'), generateConfigHeader(config, version), 'utf8');
+    // mesh v2 core (cluster/border/маршрутизация/классификатор) кладём рядом
+    // со скетчем; подключается через SG_MESH_V2.
+    await cp(join(TEMPLATE_DIR, 'mesh_v2'), sketchDir, { recursive: true }).catch(() => undefined);
 
     log('build_start', { board, fqbn, version });
     log('build_stage', { board, stage: 'compiling' });
