@@ -964,7 +964,9 @@ export default function ChatScreen() {
         const vm = await sendMessage(chatId, { text: body }, 'text', myUsername, { replyTo: replyId, clientId, asChannel: postAsChannel });
         upsertOptimistic({ ...vm, clientId: vm.clientId ?? clientId, uploadStage: null });
         scheduleOptimisticCleanup(clientId);
-        if (!vm.failed) await chatQuery.refetch();
+        // Сообщение уже отправлено: сбой фонового обновления ленты не должен
+        // помечать пузырь как ошибочный.
+        if (!vm.failed) await chatQuery.refetch().catch(() => undefined);
         else haptics.error();
       } catch (e: unknown) {
         patchOptimistic(clientId, { pending: false, failed: true });
@@ -1020,7 +1022,7 @@ export default function ChatScreen() {
           } catch {
             /* звук не критичен */
           }
-          await chatQuery.refetch();
+          await chatQuery.refetch().catch(() => undefined);
         } else {
           patchOptimistic(clientId, { pending: false, failed: true, uploadStage: null, uploadProgress: 0 });
           haptics.error();

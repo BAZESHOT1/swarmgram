@@ -277,9 +277,11 @@ async function localFallback(
     mine: true,
     createdAt: new Date().toISOString(),
     kind,
-    failed: true,
+    // Ключей устройства нет — сообщение остаётся в ленте без красной ошибки,
+    // отправим после синхронизации ключей.
+    failed: false,
     delivered: false,
-    pending: false,
+    pending: true,
     clientId,
   };
 }
