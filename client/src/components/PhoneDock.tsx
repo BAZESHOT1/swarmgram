@@ -30,6 +30,7 @@ export function PhoneDock() {
   const reduced = useReducedMotion();
   const pathname = usePathname();
   const chats = useChats();
+  const myUsername = useStore((s) => s.me?.username ?? s.session?.username ?? '');
   const mutedChats = useStore((s) => s.mutedChats);
   const transportOnline = useStore((s) => s.transportOnline);
   const directPeer = useStore((s) => s.transportDirectPeer);
@@ -117,20 +118,18 @@ export function PhoneDock() {
 
   const tiles = [
     { id: 'chats', label: 'Чаты', icon: 'chatbubbles' as const, href: '/chats', badge: unread },
-    { id: 'modules', label: 'Модули', icon: 'hardware-chip-outline' as const, href: '/modules' },
     { id: 'settings', label: 'Настройки', icon: 'settings-outline' as const, href: '/settings' },
   ];
 
   const activeId = pathname.startsWith('/chats')
     ? 'chats'
-    : pathname.startsWith('/modules')
-      ? 'modules'
-      : pathname.startsWith('/settings') ||
-          pathname.startsWith('/admin') ||
-          pathname.startsWith('/nodes') ||
-          pathname.startsWith('/language')
-        ? 'settings'
-        : '';
+    : pathname.startsWith('/settings') ||
+        pathname.startsWith('/admin') ||
+        pathname.startsWith('/nodes') ||
+        pathname.startsWith('/modules') ||
+        pathname.startsWith('/language')
+      ? 'settings'
+      : '';
   const activeIndex = tiles.findIndex((t) => t.id === activeId);
 
   /** Переход по разделу: навигация без блокировки по «уже активен». */
@@ -153,8 +152,16 @@ export function PhoneDock() {
   // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
   const dockBottom = 24 + Math.max(0, insets.bottom);
 
-  // Док показываем только на «Чатах» и «Модулях».
-  const dockVisible = pathname.startsWith('/chats') || pathname.startsWith('/modules');
+  // Док только на «Чатах», «Настройках» и при просмотре чужих профилей.
+  const userMatch = /^\/user\/([^/]+)(?:\/edit)?/.exec(pathname);
+  const viewingOtherProfile =
+    Boolean(userMatch) &&
+    !pathname.endsWith('/edit') &&
+    decodeURIComponent(userMatch?.[1] ?? '').toLowerCase() !== myUsername.toLowerCase();
+  const dockVisible =
+    pathname.startsWith('/chats') ||
+    pathname.startsWith('/settings') ||
+    viewingOtherProfile;
   if (!dockVisible) return null;
 
   return (

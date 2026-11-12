@@ -43,7 +43,8 @@ import {
   humanError,
   prefetchChat,
 } from '../../src/data/queries';
-import { decryptEnvelopeAuto, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
+import { loadChatMessages, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
+import { saveMessages } from '../../src/data/cache';
 import { Avatar } from '../../src/components/Avatar';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
@@ -588,6 +589,7 @@ export default function ChatsScreen() {
   const [error, setError] = useState('');
   const [busyUser, setBusyUser] = useState('');
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
+  const [chatPage, setChatPage] = useState(30);
   const [openRowId, setOpenRowId] = useState<string | null>(null);
   const swipingRef = useRef(false);
   const swipeCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -778,54 +780,54 @@ export default function ChatsScreen() {
     });
   }, [activeChats, subs.data, myUsername]);
 
-  /* ------------------------- превью последних сообщений (расшифровка) ----- */
-  const chatPreviews = useStore((s) => s.chatPreviews);
-  const previewTried = useRef<Set<string>>(new Set());
+  /* ------------- фоновый прогрев: 8 прочитанных + 8 непрочитанных -------- */
+  const preloadedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
     const targets = allChats
-      .filter((chat) => {
-        const last = chat.lastMessage;
-        if (!last || previewTried.current.has(last.id)) return false;
-        const preview = chatPreviews[chat.id];
-        return !preview || preview.id !== last.id;
-      })
-      .slice(0, 6);
+      .filter((chat) => chat.lastMessage && !preloadedRef.current.has(chat.id))
+      .slice(0, Math.min(8, Math.max(4, chatPage)));
     if (!targets.length) return undefined;
 
     const timer = setTimeout(() => {
       void (async () => {
-        for (let i = 0; i < targets.length; i += 3) {
+        for (const chat of targets) {
           if (cancelled) return;
-          await Promise.all(
-            targets.slice(i, i + 3).map(async (chat) => {
-              const last = chat.lastMessage!;
-              previewTried.current.add(last.id);
-              try {
-                const env = await api.api.getMessage(chat.id, last.id);
-                const vm = await decryptEnvelopeAuto(env, chat, myUsername);
-                if (cancelled) return;
+          preloadedRef.current.add(chat.id);
+          try {
+            // 24 последних сообщений достаточно, чтобы получить 8 read + 8 unread.
+            const list = await loadChatMessages(chat, myUsername, 24);
+            if (cancelled) return;
+            const lastRead = Number(chat.lastReadSeq ?? 0);
+            const read = list.filter((m) => Number(m.seq) > 0 && Number(m.seq) <= lastRead).slice(-8);
+            const unread = list.filter((m) => Number(m.seq) > lastRead).slice(-8);
+            const keep = [...read, ...unread];
+            if (keep.length) {
+              saveMessages(chat.id, keep);
+              const last = keep[keep.length - 1];
+              if (last) {
                 useStore.getState().setChatPreview(chat.id, {
-                  id: env.id,
-                text: String(vm.text ?? ''),
-                kind: env.kind,
-                mine: env.senderUsername === myUsername,
-                at: env.createdAt,
-              });
-            } catch {
-              /* превью не критично: останется нейтральный текст */
+                  id: last.id,
+                  text: String(last.text ?? ''),
+                  kind: last.kind,
+                  mine: Boolean(last.mine),
+                  at: last.createdAt,
+                });
+              }
             }
-          }),
-        );
-      }
-    })();
-    }, 800);
+          } catch {
+            /* прогрев не критичен: кэш останется прежним */
+          }
+          if (!cancelled) await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+      })();
+    }, 1200);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [allChats, chatPreviews, myUsername]);
+  }, [allChats, myUsername, chatPage]);
 
   const activeIds = useMemo(() => new Set(allChats.map((c) => c.id)), [allChats]);
 
@@ -1421,7 +1423,9 @@ export default function ChatsScreen() {
   const chatRows = useMemo<ChatListRow[]>(() => {
     const sorted = [...allChats].sort((a, b) => activityOf(b) - activityOf(a));
     const pinnedList = sorted.filter((c) => isPinned(c.id));
-    const rest = sorted.filter((c) => !isPinned(c.id));
+    const restAll = sorted.filter((c) => !isPinned(c.id));
+    // Телеграм-подобная пагинация: сначала 30 строк, остальное по скроллу.
+    const rest = restAll.slice(0, Math.max(0, chatPage - pinnedList.length));
     const rows: ChatListRow[] = [];
     if (pinnedList.length) {
       rows.push({ kind: 'section', title: 'Закреплённые', count: pinnedList.length });
@@ -1432,7 +1436,7 @@ export default function ChatsScreen() {
       rest.forEach((chat) => rows.push({ kind: 'chat', chat }));
     }
     return rows;
-  }, [allChats, isPinned]);
+  }, [allChats, isPinned, chatPage]);
 
   const noChats = allChats.length === 0 && archivedChats.length === 0;
   const queryTooShort = Boolean(search.trim()) && search.trim().replace(/^@+/, '').length < 2;
@@ -1653,6 +1657,8 @@ export default function ChatsScreen() {
           <FlatList
             data={chatRows}
             keyExtractor={(r, i) => (r.kind === 'section' ? `s${i}-${r.title}` : r.chat.id)}
+            onEndReached={() => setChatPage((n) => n + 30)}
+            onEndReachedThreshold={0.6}
             keyboardShouldPersistTaps="handled"
             onRefresh={() => void refreshAll()}
             refreshing={refreshing}

@@ -27,7 +27,7 @@ const ARDUINO_DATA = join(DATA_DIR, 'arduino');
 const ARDUINO_USER = join(DATA_DIR, 'arduino-user');
 const TEMPLATE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'templates');
 
-const BUILD_TIMEOUT_MS = 300_000;
+const BUILD_TIMEOUT_MS = 600_000;
 const CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 64 * 1024;
 // Минимум свободного места для компиляции (временные файлы ядра).
@@ -474,16 +474,24 @@ async function compileFirmware(config, version) {
 
     log('build_start', { board, fqbn, version });
     log('build_stage', { board, stage: 'compiling' });
-    const { stdout, stderr } = await arduinoCli(
-      [
-        'compile',
-        '--fqbn', fqbn,
-        '--build-path', buildDir,
-        '--output-dir', outDir,
-        join(work, 'sketch', sketchName),
-      ],
-      BUILD_TIMEOUT_MS,
-    );
+    const compileArgs = [
+      'compile',
+      '--fqbn', fqbn,
+      '--build-path', buildDir,
+      '--output-dir', outDir,
+      join(work, 'sketch', sketchName),
+    ];
+    let stdout = '';
+    let stderr = '';
+    try {
+      ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
+    } catch (firstError) {
+      // Повреждённый incremental build — частая причина «ошибка сборки».
+      log('build_retry', { board, error: String(firstError).slice(0, 300) });
+      await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);
+      await mkdir(buildDir, { recursive: true });
+      ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
+    }
     const compileLog = `${stdout}\n${stderr}`.trim();
 
     // Для браузерной прошивки нужен merged.bin с адреса 0x0.

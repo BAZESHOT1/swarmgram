@@ -177,6 +177,7 @@ export default function ChatScreen() {
    * (первое открытие, отправка, новое входящее), а не на каждый layout.
    */
   const pendingScrollRef = useRef(false);
+  const userScrolledRef = useRef(false);
   const firstUnreadIndexRef = useRef(0);
   const unreadSeenRef = useRef<Set<string>>(new Set());
   const messageIndexRef = useRef<Map<string, number>>(new Map());
@@ -196,6 +197,7 @@ export default function ChatScreen() {
   const atBottomRef = useRef(true);
   const prevIdsRef = useRef<Set<string> | null>(null);
   const initialScrollRef = useRef(false);
+  const serverAdjustedRef = useRef(false);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingSentAtRef = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,10 +288,14 @@ export default function ChatScreen() {
     return [...out, ...pending];
   }, [older, data, optimistic]);
 
-  // Сохраняем ленту на диск: офлайн-открытие и live-сообщения.
+  // Сохраняем ленту на диск: 40 прочитанных + 40 непрочитанных, не больше.
   useEffect(() => {
     if (!chatId || !allMessages.length) return;
-    saveMessages(chatId, allMessages);
+    const lastRead = Number(chat?.lastReadSeq ?? 0);
+    const read = allMessages.filter((m) => Number(m.seq) > 0 && Number(m.seq) <= lastRead).slice(-40);
+    const unread = allMessages.filter((m) => Number(m.seq) > lastRead).slice(-40);
+    const keep = read.length || unread.length ? [...read, ...unread] : allMessages.slice(-80);
+    saveMessages(chatId, keep);
     const last = allMessages[allMessages.length - 1];
     if (last && (last.text || last.kind !== 'text')) {
       useStore.getState().setChatPreview(chatId, {
@@ -300,7 +306,7 @@ export default function ChatScreen() {
         at: last.createdAt,
       });
     }
-  }, [chatId, allMessages]);
+  }, [chatId, allMessages, chat?.lastReadSeq]);
 
   useEffect(() => {
     messageIndexRef.current = new Map(allMessages.map((m, index) => [m.id, index]));
@@ -347,6 +353,8 @@ export default function ChatScreen() {
     loadingOlderRef.current = false;
     initialPagedRef.current = false;
     initialScrollRef.current = false;
+    serverAdjustedRef.current = false;
+    userScrolledRef.current = false;
     pendingScrollRef.current = false;
     prevIdsRef.current = null;
     prependAnchorRef.current = null;
@@ -811,7 +819,7 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!chat || initialScrollRef.current || allMessages.length === 0) return;
     initialScrollRef.current = true;
-    const totalUnread = Math.max(0, Number(chat.unread ?? 0));
+    const totalUnread = Math.max(0, Math.min(Number(chat.unread ?? 0), allMessages.length));
     const firstUnread = Math.max(0, allMessages.length - totalUnread);
     firstUnreadIndexRef.current = firstUnread;
     unreadSeenRef.current = new Set();
@@ -820,15 +828,14 @@ export default function ChatScreen() {
 
     if (totalUnread > 0) {
       pendingScrollRef.current = false;
-      const t = setTimeout(() => {
-        listRef.current?.scrollToIndex({
-          index: Math.max(0, firstUnread - 1),
-          animated: false,
-          // Последнее прочитанное — у нижней границы экрана, ниже видны непрочитанные.
-          viewPosition: 0.85,
-        });
-      }, 220);
-      return () => clearTimeout(t);
+      const target = Math.max(0, firstUnread - 1);
+      const timers = [250, 650, 1100].map((delay) =>
+        setTimeout(() => {
+          if (userScrolledRef.current) return;
+          listRef.current?.scrollToIndex({ index: target, animated: false, viewPosition: 0.85 });
+        }, delay),
+      );
+      return () => timers.forEach(clearTimeout);
     }
 
     pendingScrollRef.current = true;
@@ -839,6 +846,21 @@ export default function ChatScreen() {
     }, 180);
     return () => clearTimeout(t);
   }, [chat, allMessages.length, scrollToEnd]);
+
+  // Когда с сервера пришла полная лента, ещё раз встаём на последнее
+  // прочитанное: кэш мог содержать только 8+8 сообщений.
+  useEffect(() => {
+    if (!chat || !chatQuery.isFetchedAfterMount || serverAdjustedRef.current || userScrolledRef.current) return undefined;
+    serverAdjustedRef.current = true;
+    const unread = Math.max(0, Math.min(Number(chat.unread ?? 0), allMessages.length));
+    if (unread <= 0) return undefined;
+    const index = Math.max(0, allMessages.length - unread - 1);
+    const t = setTimeout(() => {
+      if (userScrolledRef.current) return;
+      listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.85 });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [chat, chatQuery.isFetchedAfterMount, allMessages.length]);
 
   function setHeaderCollapsed(next: boolean) {
     if (headerCollapsedRef.current === next) return;
@@ -1670,6 +1692,9 @@ export default function ChatScreen() {
               viewabilityConfig={viewabilityConfig}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              onScrollBeginDrag={() => {
+                userScrolledRef.current = true;
+              }}
               onContentSizeChange={(_w, h) => {
                 contentHeightRef.current = h;
                 // После подгрузки старой истории компенсируем рост контента,

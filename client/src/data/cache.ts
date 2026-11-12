@@ -20,7 +20,7 @@ export const CACHE_VERSION = 1;
 /** Не храним больше ~300 чатов на пользователя. */
 export const MAX_CACHED_CHATS = 300;
 /** Лента чата: держим последние сообщения, а не первые. */
-export const MAX_CACHED_MESSAGES = 150;
+export const MAX_CACHED_MESSAGES = 80;
 /** Сколько лент предзагружаем в память при старте. */
 const MAX_PRELOADED_MESSAGES = 80;
 /** Максимальный размер одного аватара (data URI, символов ≈ байт base64). */
