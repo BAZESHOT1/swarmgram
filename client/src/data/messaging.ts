@@ -257,7 +257,7 @@ export async function sendMessage(
     // связь недоступна (нет интернета и модуля): держим шифротекст в очереди
     item.objectId = '';
     await enqueueOutbox(item);
-    return { ...draft, failed: true, pending: true, clientId };
+    return { ...draft, delivered: false, pending: true, failed: false, clientId };
   }
 }
 

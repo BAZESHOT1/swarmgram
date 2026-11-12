@@ -35,6 +35,7 @@ import { PinnedBanner } from '../../../src/components/chat/PinnedBanner';
 import { ReplyBar } from '../../../src/components/chat/ReplyBar';
 import { TypingIndicator } from '../../../src/components/chat/TypingIndicator';
 import { ScrollToBottom } from '../../../src/components/chat/ScrollToBottom';
+import { saveMessages } from '../../../src/data/cache';
 import { MessageActionSheet } from '../../../src/components/chat/MessageActionSheet';
 import { ReactionPicker } from '../../../src/components/chat/ReactionPicker';
 import { AttachmentsGallery } from '../../../src/components/chat/AttachmentsGallery';
@@ -135,6 +136,8 @@ export default function ChatScreen() {
   const [creatingSecret, setCreatingSecret] = useState(false);
   const [newCount, setNewCount] = useState(0);
   const [atBottom, setAtBottom] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadReady, setUnreadReady] = useState(false);
   const [flashIds, setFlashIds] = useState<Record<string, true>>({});
   const [typingVisible, setTypingVisible] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -147,6 +150,7 @@ export default function ChatScreen() {
   const [secretShield, setSecretShield] = useState(false);
   /** Клавиатура открыта: композер не должен добивать safe-area снизу. */
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   /* ---------------- оптимистичные сообщения и пагинация истории ---------------- */
   const [optimistic, setOptimistic] = useState<Record<string, ViewMessage>>({});
@@ -166,6 +170,11 @@ export default function ChatScreen() {
    * (первое открытие, отправка, новое входящее), а не на каждый layout.
    */
   const pendingScrollRef = useRef(false);
+  const firstUnreadIndexRef = useRef(0);
+  const unreadSeenRef = useRef<Set<string>>(new Set());
+  const messageIndexRef = useRef<Map<string, number>>(new Map());
+  const unreadCountRef = useRef(0);
+  unreadCountRef.current = unreadCount;
 
   const listRef = useRef<FlatList<Row> | null>(null);
   const inputRef = useRef<TextInput | null>(null);
@@ -262,6 +271,16 @@ export default function ChatScreen() {
     return [...out, ...pending];
   }, [older, data, optimistic]);
 
+  // Сохраняем ленту на диск: офлайн-открытие и live-сообщения.
+  useEffect(() => {
+    if (!chatId || !allMessages.length) return;
+    saveMessages(chatId, allMessages);
+  }, [chatId, allMessages]);
+
+  useEffect(() => {
+    messageIndexRef.current = new Map(allMessages.map((m, index) => [m.id, index]));
+  }, [allMessages]);
+
   // Сервер подтвердил сообщение (появился clientId) — убираем оптимистичную копию.
   useEffect(() => {
     const arrived = new Set<string>();
@@ -306,6 +325,10 @@ export default function ChatScreen() {
     atBottomRef.current = true;
     setAtBottom(true);
     setNewCount(0);
+    setUnreadCount(0);
+    setUnreadReady(false);
+    firstUnreadIndexRef.current = 0;
+    unreadSeenRef.current = new Set();
     headerCollapsedRef.current = false;
     headerCollapse.setValue(0);
     scrollY.setValue(0);
@@ -324,8 +347,14 @@ export default function ChatScreen() {
     if (Platform.OS === 'web') return undefined;
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, () => setKeyboardOpen(true));
-    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardOpen(false));
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      setKeyboardOpen(true);
+      setKeyboardHeight(Platform.OS === 'ios' ? Math.max(0, event.endCoordinates?.height ?? 0) : 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setKeyboardOpen(false);
+      setKeyboardHeight(0);
+    });
     return () => {
       showSub.remove();
       hideSub.remove();
@@ -355,14 +384,17 @@ export default function ChatScreen() {
   const qc = useQueryClient();
   const lastSeq = data.length ? data[data.length - 1]?.seq ?? 0 : 0;
   useEffect(() => {
-    if (!chat || !Number.isFinite(lastSeq) || lastSeq <= 0) return;
+    if (!chat || !unreadReady || !Number.isFinite(lastSeq) || lastSeq <= 0) return;
+    // В группах/каналах не отмечаем всё прочитанным сразу: ждём, пока
+    // пользователь доскроллит и счётчик непрочитанных обнулится.
+    if (chat.type !== 'direct' && unreadCount > 0) return;
     void api.api
       .markRead(chatId, lastSeq)
       .then(() => {
         void qc.invalidateQueries({ queryKey: ['chats'] });
       })
       .catch(() => undefined);
-  }, [chatId, lastSeq, chat, qc]);
+  }, [chat, unreadReady, unreadCount, chatId, lastSeq, qc]);
 
   useEffect(() => {
     let alive = true;
@@ -421,6 +453,26 @@ export default function ChatScreen() {
   /* --------------------------------------- просмотры постов канала */
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
   const onViewableItemsChanged = useRef((info: { viewableItems: Array<{ item: Row }> }) => {
+    // Непрочитанные: уменьшаем счётчик по мере появления сообщений на экране.
+    if (unreadCountRef.current > 0) {
+      let readNow = 0;
+      for (const viewable of info.viewableItems) {
+        const row = viewable.item;
+        if (!row) continue;
+        const messages = row.album ?? [row.m];
+        for (const m of messages) {
+          if (!m?.id || m.mine || m.pending) continue;
+          const index = messageIndexRef.current.get(m.id);
+          if (index == null || index < firstUnreadIndexRef.current) continue;
+          if (unreadSeenRef.current.has(m.id)) continue;
+          unreadSeenRef.current.add(m.id);
+          readNow += 1;
+        }
+      }
+      if (readNow > 0) {
+        setUnreadCount((current) => Math.max(0, current - readNow));
+      }
+    }
     if (!isChannelRef.current) return;
     for (const viewable of info.viewableItems) {
       const row = viewable.item;
@@ -711,18 +763,36 @@ export default function ChatScreen() {
   }, []);
 
   useEffect(() => {
-    if (initialScrollRef.current || data.length === 0) return;
+    if (!chat || initialScrollRef.current || allMessages.length === 0) return;
     initialScrollRef.current = true;
+    const totalUnread = Math.max(0, Number(chat.unread ?? 0));
+    const direct = chat.type === 'direct';
+    const firstUnread = Math.max(0, allMessages.length - totalUnread);
+    firstUnreadIndexRef.current = firstUnread;
+    unreadSeenRef.current = new Set();
+    setUnreadCount(direct ? 0 : totalUnread);
+    setUnreadReady(true);
+
+    if (!direct && totalUnread > 0) {
+      pendingScrollRef.current = false;
+      const t = setTimeout(() => {
+        listRef.current?.scrollToIndex({
+          index: Math.max(0, firstUnread - 1),
+          animated: false,
+          viewPosition: 0.65,
+        });
+      }, 220);
+      return () => clearTimeout(t);
+    }
+
     pendingScrollRef.current = true;
-    // Страховка на случай, если высота контента не изменилась: один скролл
-    // на открытие чата, без повторов на каждом рендере.
     const t = setTimeout(() => {
       if (!pendingScrollRef.current) return;
       pendingScrollRef.current = false;
       scrollToEnd(false);
     }, 180);
     return () => clearTimeout(t);
-  }, [data.length, scrollToEnd]);
+  }, [chat, allMessages.length, scrollToEnd]);
 
   function setHeaderCollapsed(next: boolean) {
     if (headerCollapsedRef.current === next) return;
@@ -756,7 +826,10 @@ export default function ChatScreen() {
     if (bottom !== atBottomRef.current) {
       atBottomRef.current = bottom;
       setAtBottom(bottom);
-      if (bottom) setNewCount(0);
+      if (bottom) {
+        setNewCount(0);
+        setUnreadCount(0);
+      }
     }
 
     // Список не inverted: верх = старые сообщения, догружаем историю заранее.
@@ -1291,12 +1364,15 @@ export default function ChatScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: theme.background }}
-      // iOS: поднимаем контент на высоту клавиатуры. Шапка чата внутри KAV,
-      // поэтому offset = 0 (внешней навигационной шапки нет).
-      // Android: окно уже ресайзится (windowSoftInputMode=adjustResize по умолчанию),
-      // поэтому 'height' не дублируем — иначе композер уедет вдвое выше.
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={{
+        flex: 1,
+        backgroundColor: theme.background,
+        // iOS: явно уменьшаем высоту экрана на высоту клавиатуры.
+        // KAV padding в связке с react-native-screens иногда не срабатывает,
+        // поэтому используем проверенный явный отступ.
+        paddingBottom: Platform.OS === 'ios' ? keyboardHeight : 0,
+      }}
+      behavior={undefined}
       keyboardVerticalOffset={0}
     >
       <View
@@ -1555,12 +1631,13 @@ export default function ChatScreen() {
           )}
 
           <ScrollToBottom
-            visible={!atBottom || newCount > 0}
-            count={newCount}
+            visible={!atBottom || unreadCount > 0 || newCount > 0}
+            count={Math.max(unreadCount, newCount)}
             onPress={() => {
               atBottomRef.current = true;
               setAtBottom(true);
               setNewCount(0);
+              setUnreadCount(0);
               scrollToEnd(true);
             }}
           />
