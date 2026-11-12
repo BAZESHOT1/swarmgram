@@ -21,7 +21,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { signToken, verifyToken, sha256, uuid } from '../crypto.js';
@@ -177,6 +177,9 @@ interface ModuleRecord {
   module_type: string;
   is_public: boolean;
   firmware: string;
+  name: string | null;
+  board: string | null;
+  firmware_config: unknown;
   battery: number;
   gateway: boolean;
   neighbors: number;
@@ -223,6 +226,9 @@ function moduleView(m: ModuleRecord, blockedHashes?: Set<string>) {
     online,
     status: blocked ? 'blocked' : online ? 'online' : 'offline',
     firmware: m.firmware,
+    name: m.name || '',
+    board: m.board || '',
+    hasFirmwareConfig: Boolean(m.firmware_config),
     battery: Number(m.battery ?? 0),
     rssi: Number(m.rssi ?? 0),
     uptime: Number(m.uptime ?? 0),
@@ -307,9 +313,23 @@ async function dismissShadowsFor(moduleId: string, ownerId: string): Promise<voi
 }
 
 const MODULE_COLUMNS = `m.id, m.owner_id, m.board_uuid, m.hardware_id, m.public_id, m.role, m.transport, m.kind,
-  m.module_type, m.is_public, m.firmware, m.battery, m.gateway, m.neighbors, m.status,
+  m.module_type, m.is_public, m.firmware, m.name, m.board, m.firmware_config, m.battery, m.gateway, m.neighbors, m.status,
   m.attached, m.attached_at, m.rssi, m.uptime, m.blocked, m.block_reason,
   m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at`;
+
+/** Имя модуля: username владельца + порядковый номер. */
+async function assignModuleName(ownerId: string, moduleId: string, force = false): Promise<void> {
+  const user = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [ownerId]);
+  if (!user?.username) return;
+  const current = await one<{ name: string | null }>('SELECT name FROM modules WHERE id = $1', [moduleId]);
+  if (current?.name && !force) return;
+  const count = await one<{ c: number }>(
+    'SELECT count(*)::int AS c FROM modules WHERE owner_id = $1 AND id <> $2',
+    [ownerId, moduleId],
+  );
+  const name = `${user.username} #${(count?.c ?? 0) + 1}`;
+  await query('UPDATE modules SET name = $2 WHERE id = $1', [moduleId, name]);
+}
 
 async function loadOwnedModule(id: string, ownerId: string): Promise<ModuleRecord> {
   const row = await one<ModuleRecord>(`SELECT ${MODULE_COLUMNS} FROM modules m WHERE m.id = $1`, [id]);
@@ -550,6 +570,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       kind?: string; // radio: wifi | lora
       firmware?: string;
       battery?: number;
+      board?: string;
+      firmwareConfig?: unknown;
     };
 
     // hardwareId — основной идентификатор, boardUuid — legacy-имя того же поля.
@@ -634,6 +656,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
         `UPDATE modules SET owner_id = $2, board_uuid = $3, hardware_id = $3, role = $4, transport = $5,
                 module_type = $6, is_public = $7, kind = $8, firmware = COALESCE(NULLIF($9,''), firmware),
                 battery = $10, attached = $11, status = 'online', last_seen_at = now(), last_ip = $12,
+                board = COALESCE($13, board),
+                firmware_config = COALESCE($14::jsonb, firmware_config),
                 detached_to_owner = CASE WHEN owner_id <> $2 THEN owner_id ELSE detached_to_owner END,
                 updated_at = now()
           WHERE id = $1`,
@@ -650,6 +674,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           Number(body.battery ?? 0),
           attached,
           ip,
+          typeof body.board === 'string' ? body.board.slice(0, 32) : null,
+          body.firmwareConfig && typeof body.firmwareConfig === 'object' ? JSON.stringify(body.firmwareConfig) : null,
         ],
       );
       // public_id: сохраняем существующий (даже солёный), иначе вычисляем.
@@ -670,8 +696,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           inserted = await one<{ id: string }>(
             `INSERT INTO modules
                (owner_id, board_uuid, hardware_id, public_id, role, transport, module_type, is_public,
-                kind, firmware, battery, attached, status, last_seen_at, last_ip)
-             VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'online',now(),$12) RETURNING id`,
+                kind, firmware, battery, attached, status, last_seen_at, last_ip, board, firmware_config)
+             VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'online',now(),$12,$13,$14::jsonb) RETURNING id`,
             [
               me,
               hardwareId,
@@ -685,6 +711,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
               Number(body.battery ?? 0),
               attached,
               ip,
+              typeof body.board === 'string' ? body.board.slice(0, 32) : null,
+              body.firmwareConfig && typeof body.firmwareConfig === 'object' ? JSON.stringify(body.firmwareConfig) : null,
             ],
           );
           publicId = candidate;
@@ -700,6 +728,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     if (reassignedFrom) {
       log('info', 'module_reassigned', { moduleId, from: reassignedFrom, to: me, hardwareId, publicId, role, transport });
     }
+    await assignModuleName(me, moduleId, Boolean(reassignedFrom)).catch(() => undefined);
 
     const moduleToken = signModuleToken(moduleId, publicId);
     log('info', 'module_paired', { moduleId, owner: me, hardwareId, publicId, role, transport, kind });
@@ -777,6 +806,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     // Повторный возврат модуля: старая shadow-запись у нового владельца
     // становится неактуальной.
     await dismissShadowsFor(row.id, me);
+    await assignModuleName(me, row.id, true).catch(() => undefined);
 
     const fresh = await one<ModuleRecord>(`SELECT ${MODULE_COLUMNS} FROM modules m WHERE m.id = $1`, [row.id]);
     const view = moduleView(fresh ?? row, await activeBlockedHashes());
@@ -896,6 +926,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       attached?: boolean;
       gateway?: boolean;
       neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];
+      claimToken?: string;
     };
 
     const hardwareId = str(body.hardwareId, 'hardwareId', { max: 64 }).toLowerCase();
@@ -912,6 +943,17 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       `SELECT id FROM users WHERE username = 'system_modules' LIMIT 1`,
     );
     if (!system) throw new ApiError(503, 'system_owner_missing', 'system_owner_missing');
+
+    // Прошивка, собранная пользователем, содержит одноразовый claim-токен:
+    // после перепрошивки модуль сам возвращается в его аккаунт.
+    let claimOwner: string | null = null;
+    if (typeof body.claimToken === 'string' && body.claimToken.length > 20) {
+      const claims = verifyToken(body.claimToken, config.jwtSecret);
+      if (claims?.type === 'claim' && typeof claims.sub === 'string') {
+        const owner = await one('SELECT 1 FROM users WHERE id = $1 AND status = $2', [claims.sub, 'active']);
+        if (owner) claimOwner = claims.sub;
+      }
+    }
 
     let existing = await one<{
       id: string;
@@ -935,25 +977,29 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     let moduleId: string;
     let publicId: string;
+    const adoptOwner = claimOwner && existing && existing.owner_id === system.id ? claimOwner : null;
     if (existing) {
       moduleId = existing.id;
       await query(
         `UPDATE modules SET board_uuid = $2, hardware_id = $2, role = $3, transport = $4, kind = $5,
                 firmware = COALESCE(NULLIF($6,''), firmware), battery = $7, attached = $8,
-                status = 'online', last_seen_at = now(), last_ip = $9, updated_at = now()
+                status = 'online', last_seen_at = now(), last_ip = $9, updated_at = now(),
+                owner_id = COALESCE($10, owner_id)
           WHERE id = $1`,
-        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip],
+        [moduleId, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip, adoptOwner],
       );
       publicId = existing.public_id || (await assignPublicId(moduleId, hardwareId));
     } else {
       const inserted = await one<{ id: string }>(
         `INSERT INTO modules (owner_id, board_uuid, hardware_id, public_id, role, transport, kind, firmware, battery, attached, status, last_seen_at, last_ip)
          VALUES ($1,$2,$2,'',$3,$4,$5,$6,$7,$8,'online',now(),$9) RETURNING id`,
-        [system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip],
+        [claimOwner ?? system.id, hardwareId, role, transport, kind, body.firmware ?? '', Number(body.battery ?? 0), attached, ip],
       );
       moduleId = inserted!.id;
       publicId = await assignPublicId(moduleId, hardwareId);
     }
+    const ownerForName = adoptOwner ?? claimOwner;
+    if (ownerForName) await assignModuleName(ownerForName, moduleId, Boolean(adoptOwner)).catch(() => undefined);
 
     // Gossip: шлюз сообщает, какие модули он видит в mesh. Это позволяет
     // считать ретрансляторы/носимые онлайн без их собственного интернета.
@@ -1384,6 +1430,18 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           WHERE id = $1`,
         [req.module!.moduleId, job.version ?? '', job.build_id],
       );
+      // Временная сборка больше не нужна: удаляем бинарники и запись.
+      setTimeout(() => {
+        void (async () => {
+          const build = await one<{ bin_path: string | null; app_path: string | null }>(
+            'SELECT bin_path, app_path FROM firmware_builds WHERE id = $1',
+            [job.build_id],
+          ).catch(() => null);
+          if (build?.bin_path) await unlink(build.bin_path).catch(() => undefined);
+          if (build?.app_path) await unlink(build.app_path).catch(() => undefined);
+          await query('DELETE FROM firmware_builds WHERE id = $1', [job.build_id]).catch(() => undefined);
+        })();
+      }, 5 * 60_000);
     }
     publish(req.module!.ownerId, {
       type: 'module_ota',
@@ -1395,6 +1453,19 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       version: job.version,
     });
     return reply.send({ ok: true });
+  });
+
+  /** Конфигурация прошивки, сохранённая при последней прошивке модуля. */
+  app.get('/modules/:id/firmware-config', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    if (!UUID_RE.test(id)) throw notFound('module');
+    const row = await one<{ firmware_config: unknown; board: string | null }>(
+      'SELECT firmware_config, board FROM modules WHERE id = $1 AND owner_id = $2',
+      [id, me],
+    );
+    if (!row) throw notFound('module');
+    return reply.send({ ok: true, config: row.firmware_config ?? null, board: row.board ?? '' });
   });
 
   /** Один модуль или «тень»: статус считается так же, как в списке. */

@@ -219,7 +219,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
 
     const rows = await query<MsgRow>(
       `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
-              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id
+              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id, m.client_id
          FROM messages m
          JOIN users u ON u.id = m.sender_user_id
          LEFT JOIN objects o ON o.id = m.object_id
@@ -296,6 +296,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           senderUserId: r.sender_user_id,
           senderUsername: r.sender_username,
           senderDeviceId: r.sender_device_id,
+          clientId: r.client_id,
         };
       }),
     );
@@ -310,7 +311,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     if (!membership) throw forbidden('not_a_member');
     const r = await one<MsgRow>(
       `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
-              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id
+              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id, m.client_id
          FROM messages m
          JOIN users u ON u.id = m.sender_user_id
          LEFT JOIN objects o ON o.id = m.object_id
@@ -338,6 +339,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       senderUserId: r.sender_user_id,
       senderUsername: r.sender_username,
       senderDeviceId: r.sender_device_id,
+      clientId: r.client_id,
     });
   });
 
@@ -609,6 +611,7 @@ interface MsgRow {
   sender_user_id: string;
   sender_username: string;
   sender_device_id: string;
+  client_id: string | null;
 }
 
 export default messageRoutes;

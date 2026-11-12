@@ -564,7 +564,9 @@ async function handleBuild(config) {
   // в уже собранные конфигурации. Старые app-only записи игнорируются.
   const templateHash = sha256(await readFile(join(TEMPLATE_DIR, 'swarm_module.ino'), 'utf8')).slice(0, 16);
   const key = sha256(`merged4:${templateHash}:${stableStringify(config)}`);
-  const version = `1.0.0-${key.slice(0, 8)}`;
+  // Версия отражает исходники, а не конфигурацию: у всех модулей одной платы,
+  // собранных из текущего шаблона, версия одинаковая — это нужно для OTA-бейджа.
+  const version = `1.0.0-${templateHash.slice(0, 8)}`;
 
   const cached = await readCache(key);
   if (cached) {

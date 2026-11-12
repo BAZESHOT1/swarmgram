@@ -1,10 +1,6 @@
 /**
- * Обновление прошивки уже привязанного модуля.
- *
- * - «По сети»: Hub ставит OTA-задание, модуль с Wi-Fi сам скачивает app-образ
- *   и перезагружается в новый раздел.
- * - «По USB»: открывает мастер прошивки (Web Serial на ПК); образ пишется
- *   через esptool с сохранением привязки модуля.
+ * Обновление модуля. Пользователь не видит файлов сборок: сервер собирает
+ * свежую прошивку из сохранённой конфигурации модуля, затем ставит OTA-задание.
  */
 import React from 'react';
 import { Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
@@ -12,191 +8,191 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Btn } from '../Btn';
 import { useTheme } from '../../theme/useTheme';
-import { api, type FirmwareBuild, type ModuleRow } from '../../data/api';
+import { api, type FirmwareConfig, type ModuleRow } from '../../data/api';
 import { humanError } from '../../data/queries';
 import { useStore } from '../../state/useStore';
+
+type Phase = 'idle' | 'building' | 'queued' | 'downloading' | 'installing' | 'installed' | 'failed';
+
+const PHASE_LABEL: Record<Phase, string> = {
+  idle: '',
+  building: 'Собираем свежую прошивку…',
+  queued: 'Ожидаем модуль…',
+  downloading: 'Модуль скачивает прошивку…',
+  installing: 'Устанавливаем…',
+  installed: 'Обновление установлено',
+  failed: 'Ошибка обновления',
+};
 
 export function ModuleOtaSheet({ module, onClose }: { module: ModuleRow | null; onClose: () => void }) {
   const theme = useTheme();
   const toast = useStore((s) => s.pushToast);
-  const [builds, setBuilds] = React.useState<FirmwareBuild[]>([]);
-  const [buildId, setBuildId] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [status, setStatus] = React.useState<{ status: string; progress: number; error?: string | null; version?: string } | null>(null);
+  const [phase, setPhase] = React.useState<Phase>('idle');
+  const [progress, setProgress] = React.useState(0);
   const [error, setError] = React.useState('');
+  const [hasConfig, setHasConfig] = React.useState<boolean | null>(null);
+  const buildIdRef = React.useRef<string | null>(null);
 
   const open = Boolean(module);
 
   React.useEffect(() => {
-    if (!open) return undefined;
+    if (!open || !module) return undefined;
     let alive = true;
-    setLoading(true);
+    setBusy(false);
+    setPhase('idle');
+    setProgress(0);
     setError('');
-    setStatus(null);
+    setHasConfig(null);
     void api
-      .firmwareBuilds()
-      .then((list) => {
-        if (!alive) return;
-        const ready = list.filter((b) => b.status === 'ready');
-        setBuilds(ready);
-        setBuildId(ready[0]?.id ?? null);
+      .moduleOtaStatus(module.id)
+      .then((res) => {
+        if (!alive || !res.job) return;
+        setPhase(res.job.status as Phase);
+        setProgress(res.job.progress);
+        setError(res.job.error ?? '');
       })
-      .catch((e) => alive && setError(humanError(e)))
-      .finally(() => alive && setLoading(false));
+      .catch(() => undefined);
+    void api
+      .moduleFirmwareConfig(module.id)
+      .then((res) => alive && setHasConfig(Boolean(res.config)))
+      .catch(() => alive && setHasConfig(false));
     return () => {
       alive = false;
     };
   }, [open, module?.id]);
 
-  // Пока задание активно — поллим прогресс.
+  // Прогресс активного задания.
   React.useEffect(() => {
-    if (!open || !module || !status) return undefined;
-    if (!['pending', 'downloading', 'installing'].includes(status.status)) return undefined;
-    let alive = true;
+    if (!open || !module) return undefined;
+    if (!['queued', 'downloading', 'installing'].includes(phase)) return undefined;
     const timer = setInterval(() => {
       void api
         .moduleOtaStatus(module.id)
         .then((res) => {
-          if (!alive || !res.job) return;
-          setStatus({ status: res.job.status, progress: res.job.progress, error: res.job.error, version: res.job.version });
+          if (!res.job) return;
+          setPhase(res.job.status as Phase);
+          setProgress(res.job.progress);
+          setError(res.job.error ?? '');
         })
         .catch(() => undefined);
     }, 3000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [open, module?.id, status?.status]);
+    return () => clearInterval(timer);
+  }, [open, module?.id, phase]);
 
-  const startOta = async () => {
+  const startUpdate = async () => {
     if (!module) return;
     setBusy(true);
     setError('');
+    setPhase('building');
     try {
-      const res = await api.moduleOta(module.id, buildId ?? undefined);
-      setStatus({ status: 'pending', progress: 0, version: res.version });
-      toast({ kind: 'info', message: 'OTA-задание создано. Модуль обновится при связи с сервером.' });
+      const cfg = await api.moduleFirmwareConfig(module.id);
+      if (!cfg.config) {
+        setHasConfig(false);
+        setPhase('idle');
+        setError('Нет сохранённой конфигурации. Один раз прошейте модуль по USB — дальше обновления пойдут по сети.');
+        return;
+      }
+      const config: FirmwareConfig = cfg.config;
+      const created = await api.buildFirmware(config);
+      buildIdRef.current = created.id;
+      // Ждём готовности сборки.
+      for (let i = 0; i < 80; i += 1) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const build = await api.firmwareBuild(created.id);
+        if (build.status === 'failed') throw new Error(build.log || 'Не удалось собрать прошивку');
+        if (build.status === 'ready') break;
+        if (i === 79) throw new Error('Сборка прошивки занимает слишком долго');
+      }
+      const ota = await api.moduleOta(module.id, created.id);
+      setPhase('queued');
+      setProgress(0);
+      toast({ kind: 'info', message: `Обновление ${ota.version} отправлено модулю` });
     } catch (e) {
+      setPhase('failed');
       setError(humanError(e));
     } finally {
       setBusy(false);
     }
   };
 
+  const finish = () => {
+    const buildId = buildIdRef.current;
+    buildIdRef.current = null;
+    // Сборка больше не нужна — освобождаем место на сервере.
+    if (buildId) void api.deleteFirmwareBuild(buildId).catch(() => undefined);
+    onClose();
+  };
+
   return (
-    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 16 }} onPress={onClose}>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={finish} statusBarTranslucent>
+      <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 16 }} onPress={finish}>
         <Pressable
           onPress={(event) => event.stopPropagation?.()}
-          style={{
-            backgroundColor: theme.surface,
-            borderRadius: 18,
-            borderWidth: 1,
-            borderColor: theme.glassBorder,
-            padding: 16,
-            maxHeight: '85%',
-          }}
+          style={{ backgroundColor: theme.surface, borderRadius: 20, borderWidth: 1, borderColor: theme.glassBorder, padding: 18 }}
         >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: theme.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
-              <Ionicons name="cloud-download-outline" size={20} color={theme.accent} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: theme.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="cloud-download-outline" size={22} color={theme.accent} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 16 }}>Обновление модуля</Text>
-              <Text numberOfLines={1} style={{ color: theme.textSecondary, fontSize: 12 }}>
-                {module?.publicId ? `ID ${module.publicId}` : module?.hardwareId} · сейчас {module?.firmware || '—'}
+              <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 17 }} numberOfLines={1}>
+                {module?.name || module?.publicId || 'Модуль'}
+              </Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 2 }}>
+                {module?.firmware || 'версия неизвестна'} · {module?.online ? 'онлайн' : 'офлайн'}
               </Text>
             </View>
-            <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Закрыть">
+            <Pressable onPress={finish} hitSlop={10} accessibilityRole="button" accessibilityLabel="Закрыть">
               <Ionicons name="close" size={20} color={theme.textDisabled} />
             </Pressable>
           </View>
 
-          <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 10 }}>
-            <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17 }}>
-              «По сети» работает, если модуль сам выходит в интернет (шлюз/репитер с Wi-Fi). Wearable обновляется по USB или BLE.
+          <ScrollView contentContainerStyle={{ gap: 12 }}>
+            <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>
+              Приложение соберёт свежую прошивку из сохранённых настроек модуля и передаст её по сети. Файлы сборок не хранятся.
             </Text>
 
-            <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>По сети</Text>
-            {loading ? (
-              <Text style={{ color: theme.textDisabled, fontSize: 12 }}>Загружаем сборки…</Text>
-            ) : builds.length === 0 ? (
-              <Text style={{ color: theme.textDisabled, fontSize: 12 }}>
-                Нет готовых сборок. Сначала соберите прошивку в разделе «Прошивка».
-              </Text>
-            ) : (
-              <>
-                {builds.slice(0, 8).map((build) => (
-                  <Pressable
-                    key={build.id}
-                    onPress={() => setBuildId(build.id)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: build.id === buildId }}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: 10,
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      borderColor: build.id === buildId ? theme.accent : theme.glassBorder,
-                      backgroundColor: build.id === buildId ? theme.accentSoft : 'transparent',
-                    }}
-                  >
-                    <Ionicons
-                      name={build.id === buildId ? 'radio-button-on' : 'radio-button-off'}
-                      size={16}
-                      color={build.id === buildId ? theme.accent : theme.textDisabled}
-                    />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '600' }} numberOfLines={1}>
-                        {build.version || build.id.slice(0, 8)}
-                      </Text>
-                      <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>
-                        {(build.sizeBytes / 1024 / 1024).toFixed(2)} МБ · {new Date(build.createdAt).toLocaleString()}
-                      </Text>
-                    </View>
-                  </Pressable>
-                ))}
-                <Btn title={busy ? 'Создаём задание…' : 'Обновить по сети'} loading={busy} onPress={() => void startOta()} />
-              </>
-            )}
-
-            {status ? (
-              <View style={{ padding: 10, borderRadius: 12, backgroundColor: theme.surfacePressed, gap: 4 }}>
-                <Text style={{ color: theme.textPrimary, fontSize: 12, fontWeight: '700' }}>
-                  {status.status === 'installed'
-                    ? 'Обновление установлено'
-                    : status.status === 'failed'
-                      ? 'Ошибка обновления'
-                      : `Обновление: ${status.progress}%`}
-                </Text>
-                {status.version ? (
-                  <Text style={{ color: theme.textSecondary, fontSize: 11 }}>версия {status.version}</Text>
+            {phase !== 'idle' ? (
+              <View style={{ padding: 12, borderRadius: 14, backgroundColor: theme.surfacePressed, gap: 6 }}>
+                <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }}>{PHASE_LABEL[phase]}</Text>
+                {['building', 'downloading', 'installing'].includes(phase) ? (
+                  <View style={{ height: 6, borderRadius: 3, backgroundColor: theme.glassBorder, overflow: 'hidden' }}>
+                    <View style={{ width: `${Math.max(4, progress)}%`, height: 6, backgroundColor: theme.accent }} />
+                  </View>
                 ) : null}
-                {status.error ? <Text style={{ color: theme.danger, fontSize: 11 }}>{status.error}</Text> : null}
+                {error ? <Text style={{ color: theme.danger, fontSize: 11.5 }}>{error}</Text> : null}
               </View>
             ) : null}
 
-            <View style={{ height: 1, backgroundColor: theme.glassBorder, marginVertical: 4 }} />
-            <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>По USB</Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17 }}>
-              {Platform.OS === 'web'
-                ? 'Подключите модуль к ПК и прошейте через Web Serial. Привязка к аккаунту сохранится.'
-                : 'USB-прошивка доступна с ПК в Chrome/Edge. На телефоне используйте OTA по сети.'}
-            </Text>
-            {Platform.OS === 'web' ? (
-              <Btn
-                title="Открыть прошивку по USB"
-                variant="ghost"
-                onPress={() => {
-                  onClose();
-                  router.push('/firmware' as never);
-                }}
-              />
+            {hasConfig === false ? (
+              <View style={{ padding: 12, borderRadius: 14, backgroundColor: theme.surfacePressed, gap: 6 }}>
+                <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>Нужна первичная USB-прошивка</Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17 }}>
+                  Один раз прошейте модуль по USB, чтобы сохранить его настройки. После этого обновления будут по сети.
+                </Text>
+                {Platform.OS === 'web' ? (
+                  <Btn
+                    title="Открыть USB-прошивку"
+                    size="s"
+                    onPress={() => {
+                      finish();
+                      router.push('/firmware' as never);
+                    }}
+                  />
+                ) : null}
+              </View>
             ) : null}
-            {error ? <Text style={{ color: theme.danger, fontSize: 11.5 }}>{error}</Text> : null}
+
+            <Btn
+              title={busy ? 'Подготовка…' : phase === 'installed' ? 'Готово' : 'Обновить по сети'}
+              loading={busy}
+              disabled={busy || hasConfig === false || phase === 'installed'}
+              onPress={() => (phase === 'installed' ? finish() : void startUpdate())}
+            />
+            {phase === 'failed' ? (
+              <Btn title="Повторить" variant="ghost" disabled={busy} onPress={() => void startUpdate()} />
+            ) : null}
           </ScrollView>
         </Pressable>
       </Pressable>

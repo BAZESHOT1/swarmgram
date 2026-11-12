@@ -73,7 +73,7 @@ export function safeEqual(a: string, b: string): boolean {
 export type Claims = {
   sub: string;
   did?: string;
-  type: 'access' | 'refresh' | 'node' | 'module';
+  type: 'access' | 'refresh' | 'node' | 'module' | 'claim';
   scope?: string;
   /** Публичный 8-значный ID модуля (для module-токенов). */
   pid?: string;

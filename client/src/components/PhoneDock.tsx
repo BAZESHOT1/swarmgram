@@ -151,6 +151,9 @@ export function PhoneDock() {
   // Док плавающий: отступаем от home-indicator, но не рисуем полосу фона.
   const dockBottom = 24 + Math.max(0, insets.bottom);
 
+  // В чате нижний док перекрывает поле ввода и перехватывает тапы — прячем.
+  if (pathname.startsWith('/chat/') || pathname === '/compose') return null;
+
   return (
     <Animated.View
       pointerEvents="box-none"

@@ -859,14 +859,19 @@ export default function ChatScreen() {
     const y = contentOffset.y;
     scrollY.setValue(y);
 
+    const bottom = contentSize.height - (y + layoutMeasurement.height) < 90;
+
     // Направление скролла: вниз — компактная шапка, вверх — полная (Telegram-style).
+    // У самого низа шапку не схлопываем: её анимация меняет высоту списка и
+    // вызывает «качели» при мелких колебаниях offset.
     const prevY = lastScrollYRef.current;
     lastScrollYRef.current = y;
-    if (y <= 4) setHeaderCollapsed(false);
+    if (bottom) {
+      if (headerCollapsedRef.current) setHeaderCollapsed(false);
+    } else if (y <= 4) setHeaderCollapsed(false);
     else if (y > prevY + 0.5 && y > 24) setHeaderCollapsed(true);
     else if (y < prevY - 0.5) setHeaderCollapsed(false);
 
-    const bottom = contentSize.height - (y + layoutMeasurement.height) < 90;
     if (bottom !== atBottomRef.current) {
       atBottomRef.current = bottom;
       setAtBottom(bottom);
@@ -970,6 +975,7 @@ export default function ChatScreen() {
         await mod.editMessage(chatId, editing.id, { text: body }, myUsername);
         setEditing(null);
         setText('');
+        inputRef.current?.clear();
         setInputHeight(42);
         await chatQuery.refetch();
         pushToast({ kind: 'success', message: 'Сообщение изменено' });
@@ -1005,6 +1011,7 @@ export default function ChatScreen() {
     };
     upsertOptimistic(optimisticMessage);
     setText('');
+    inputRef.current?.clear();
     setInputHeight(42);
     setReplyTo(null);
     atBottomRef.current = true;

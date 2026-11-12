@@ -2470,7 +2470,8 @@ static void hubRegister() {
                 "\",\"publicId\":\"" + gPublicId +
                 "\",\"role\":\"gateway\",\"battery\":" + String(gBattery) +
                 ",\"firmware\":\"" SG_FIRMWARE_VERSION
-                "\",\"gateway\":true,\"neighbors\":" + neighborsJson() + "}";
+                "\",\"gateway\":true,\"neighbors\":" + neighborsJson() +
+                ",\"claimToken\":\"" SG_CLAIM_TOKEN "\"}";
 
   String resp;
   int code = hubPostJson("/v1/modules/register", body, resp, false);

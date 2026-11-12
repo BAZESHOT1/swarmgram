@@ -340,6 +340,21 @@ export default function ModulesScreen() {
   const [blockReason, setBlockReason] = useState('');
   const [gatewayTarget, setGatewayTarget] = useState<ModuleRow | null>(null);
   const [otaTarget, setOtaTarget] = useState<ModuleRow | null>(null);
+  const [releases, setReleases] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .firmwareReleases()
+      .then((list) => {
+        if (!alive) return;
+        setReleases(Object.fromEntries(list.map((r) => [r.board, r.version])));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
   /** События WebSocket, которые кладёт общий RealtimeBridge (второй сокет не нужен). */
   const pushEvent = useStore((s) => s.pushEvent);
 
@@ -397,6 +412,10 @@ export default function ModulesScreen() {
   const shadows = list.filter(isShadow);
   const total = realModules.length;
   const online = realModules.filter((module) => module.online === true && !module.blocked).length;
+  const updateCount = realModules.filter((module) => {
+    const latest = releases[module.board || 'esp32'];
+    return Boolean(latest && module.firmware && latest !== module.firmware);
+  }).length;
   const gateways = realModules.filter((module) => (module.role ?? 'gateway') === 'gateway').length;
   const loading = modules.isLoading;
 
@@ -538,7 +557,7 @@ export default function ModulesScreen() {
   const subtitle = loading
     ? 'Загружаем модули…'
     : total > 0
-      ? `${total} модулей · ${online} онлайн · ${gateways} шлюзов`
+      ? `${total} модулей · ${online} онлайн · ${gateways} шлюзов${updateCount ? ` · ${updateCount} обновлений` : ''}`
       : 'Модули расширяют покрытие mesh-сети';
 
   const renderCard = (module: ModuleRow, index: number) => (
@@ -563,6 +582,7 @@ export default function ModulesScreen() {
       onUnbind={(value) => setUnbindTarget(value)}
       onGatewayWifi={(value) => setGatewayTarget(value)}
       onOta={(value) => setOtaTarget(value)}
+      latestVersion={releases[module.board || 'esp32'] ?? releases.esp32}
     />
   );
 

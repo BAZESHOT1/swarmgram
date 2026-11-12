@@ -715,6 +715,9 @@ export interface ModuleRow {
   online?: boolean;
   kind: string;
   firmware: string;
+  name?: string;
+  board?: string;
+  hasFirmwareConfig?: boolean;
   battery: number;
   gateway: boolean;
   neighbors: number;
@@ -1285,6 +1288,8 @@ export const api = {
     kind?: string;
     firmware?: string;
     battery?: number;
+    board?: string;
+    firmwareConfig?: unknown;
   }) =>
     req<ModuleRow & { moduleToken: string; checkinIntervalSec: number }>('/v1/modules/pair', {
       method: 'POST',
@@ -1338,6 +1343,10 @@ export const api = {
     req<{ job: null | { id: string; status: string; progress: number; error: string | null; version: string; sizeBytes: number; sha256: string; url: string; createdAt: string; updatedAt: string } }>(
       `/v1/modules/${encodeURIComponent(id)}/ota`,
     ),
+  moduleFirmwareConfig: (id: string) =>
+    req<{ ok: boolean; config: FirmwareConfig | null; board: string }>(
+      `/v1/modules/${encodeURIComponent(id)}/firmware-config`,
+    ),
 
   /* ---- серверная сборка прошивок ---- */
   buildFirmware: (config: FirmwareConfig) =>
@@ -1348,6 +1357,7 @@ export const api = {
   firmwareBuilds: () => req<FirmwareBuild[]>('/v1/firmware/builds'),
   firmwareBuild: (id: string) => req<FirmwareBuild>(`/v1/firmware/builds/${encodeURIComponent(id)}`),
   firmwareBuilderStatus: () => req<FirmwareBuilderStatus>('/v1/firmware/builder'),
+  firmwareReleases: () => req<{ board: string; version: string; updatedAt: string }[]>('/v1/firmware/releases'),
   /** Прямая ссылка на .bin (токен в query, чтобы работал <a download>). */
   downloadFirmware: (id: string) => {
     const token = session?.accessToken ? `?access_token=${encodeURIComponent(session.accessToken)}` : '';

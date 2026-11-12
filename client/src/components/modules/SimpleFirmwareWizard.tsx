@@ -378,6 +378,8 @@ export function SimpleFirmwareWizard({
         kind: link === 'wifi' ? 'wifi' : 'lora',
         firmware: build?.version ?? '',
         battery: undefined,
+        board: makeConfig().board,
+        firmwareConfig: makeConfig(),
       });
       moduleId = paired.id;
       publicId = paired.publicId;

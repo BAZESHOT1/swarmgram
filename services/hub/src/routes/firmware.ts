@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { one, query } from '../db.js';
+import { signToken } from '../crypto.js';
 import { badRequest, log, notFound, rateLimit, serviceUnavailable } from '../util.js';
 import { getMeshConfig } from './network.js';
 
@@ -123,6 +124,10 @@ function validateConfig(raw: unknown): FirmwareConfig {
     role: b.role as FirmwareRole,
     connectivity: b.connectivity as FirmwareConnectivity,
   };
+  // Все модули собираем с Wi-Fi и LoRa: иначе носимые не достучатся до шлюза
+  // по радио. Если LoRa-модуля нет — прошивка залогирует ошибку инициализации
+  // радио и продолжит работу по Wi-Fi/BLE.
+  if (out.connectivity === 'wifi') out.connectivity = 'wifi_lora';
 
   if (b.wifi !== undefined) {
     if (!b.wifi || typeof b.wifi !== 'object') throw badRequest('wifi_invalid');
@@ -157,7 +162,8 @@ function validateConfig(raw: unknown): FirmwareConfig {
 
   // Новый визард не спрашивает пины/частоту: используем глобальный профиль
   // LoRa и рекомендуемые пины платы. Клиентские значения не обязательны.
-  if (b.connectivity !== 'wifi') {
+  // LoRa-параметры добавляем всегда: connectivity после нормализации — wifi_lora/lora.
+  {
     const l = (b.lora && typeof b.lora === 'object' ? b.lora : {}) as Record<string, any>;
     const defaults = LORA_DEFAULT_PINS[out.board];
     if (l.chip !== undefined && !LORA_CHIPS.includes(l.chip)) throw badRequest('lora.chip_invalid');
@@ -424,8 +430,7 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
 
     await query(
       `UPDATE firmware_builds
-          SET status = 'ready', phase = 'ready', progress = 100,
-              version = $2, size_bytes = $3, sha256 = $4, log = $5,
+          SET status = 'ready', phase = 'ready', progress = 100,              version = $2, size_bytes = $3, sha256 = $4, log = $5,
               bin_path = $6, merged = $7,
               app_path = $8, app_sha256 = $9, app_size_bytes = $10,
               updated_at = now()
@@ -444,6 +449,13 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
       ],
     );
     log('info', 'firmware_build_ready', { id, size: bin.length, sha256: sha });
+    // Последняя версия для доски — для бейджа «Доступно обновление».
+    await query(
+      `INSERT INTO firmware_releases (board, version, updated_at)
+       VALUES ($1,$2,now())
+       ON CONFLICT (board) DO UPDATE SET version = EXCLUDED.version, updated_at = now()`,
+      [cfg.board, String(data.version ?? '')],
+    ).catch(() => undefined);
   } catch (e) {
     const err = e as Error & { buildLog?: string };
     const buildLog = err.buildLog ?? '';
@@ -465,6 +477,14 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
 /* ------------------------------------------------------------- routes ----- */
 
 const firmwareRoutes: FastifyPluginAsync = async (app) => {
+  /** Последние версии прошивок по платам (для бейджа обновления). */
+  app.get('/firmware/releases', { onRequest: [requireAuth()] }, async (_req, reply) => {
+    const rows = await query<{ board: string; version: string; updated_at: string }>(
+      'SELECT board, version, updated_at FROM firmware_releases ORDER BY board',
+    );
+    return reply.send(rows.map((r) => ({ board: r.board, version: r.version, updatedAt: r.updated_at })));
+  });
+
   /** Создать сборку. Возвращает сразу queued; сборка идёт в фоне. */
   app.post('/firmware/build', { onRequest: [requireAuth()] }, async (req, reply) => {
     const me = req.auth!.userId;
@@ -490,13 +510,19 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
       wifiHops: mesh.wifiHops,
       loraHops: mesh.loraHops,
     };
+    // Модуль сам вернётся в аккаунт после перепрошивки: claim-токен
+    // действует 10 лет и принимается только для system-owned модулей.
+    const nowSec = Math.floor(Date.now() / 1000);
+    cfg.claimToken = signToken(
+      { sub: me, type: 'claim', iat: nowSec, exp: nowSec + 10 * 365 * 24 * 3600 },
+      config.jwtSecret,
+    );
     // LoRa-параметры радио — тоже серверные (sync word 0x12 = 18).
     if (cfg.lora) {
       cfg.lora.frequencyMhz = mesh.loraFreqMhz;
       cfg.lora.spreadingFactor = mesh.loraSf;
       cfg.lora.bandwidthKhz = mesh.loraBwKhz as 125 | 250 | 500;
-      cfg.lora.syncWord = 0x12;
-    }
+      cfg.lora.syncWord = 0x12;    }
 
     // Честно сообщаем, что сборщик выключен/не готов, вместо «queued»,
     // который потом молча упадёт в фоне.

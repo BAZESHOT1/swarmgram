@@ -150,6 +150,7 @@ export function ModuleCard({
   onUnbind,
   onGatewayWifi,
   onOta,
+  latestVersion,
 }: {
   module: ModuleRow;
   index: number;
@@ -167,6 +168,7 @@ export function ModuleCard({
   onUnbind: (module: ModuleRow) => void;
   onGatewayWifi: (module: ModuleRow) => void;
   onOta?: (module: ModuleRow) => void;
+  latestVersion?: string;
 }) {
   const theme = useTheme();
   const [expanded, setExpanded] = React.useState(false);
@@ -188,6 +190,7 @@ export function ModuleCard({
   const canConfigureGateway =
     isGateway && localConnected && Boolean(localInfo && localInfo.hardwareId.toLowerCase() === hardwareId);
   const moduleError = errorTextOf(module);
+  const updateAvailable = Boolean(latestVersion && module.firmware && latestVersion !== module.firmware);
 
   const neighbors = useQuery({
     queryKey: ['module-neighbors', module.id],
@@ -253,8 +256,9 @@ export function ModuleCard({
             <View style={{ flex: 1, minWidth: 0 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Text style={{ color: theme.textPrimary, fontSize: 14.5, fontWeight: '700' }} numberOfLines={1}>
-                  {moduleRoleLabel(module.role)}
+                  {module.name || moduleRoleLabel(module.role)}
                 </Text>
+                {updateAvailable ? <StatusBadge text="обновление" tone="accent" /> : null}
                 {selected ? <StatusBadge text="выбрано" tone="accent" /> : null}
               </View>
               <Text
@@ -346,7 +350,12 @@ export function ModuleCard({
               />
             ) : null}
             {onOta ? (
-              <Btn title="Обновить" size="s" variant="ghost" onPress={() => onOta(module)} />
+              <Btn
+                title={updateAvailable ? 'Обновить прошивку' : 'Обновить'}
+                size="s"
+                variant={updateAvailable ? 'primary' : 'ghost'}
+                onPress={() => onOta(module)}
+              />
             ) : null}
             {isBlocked ? (
               <Btn

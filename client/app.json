@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kinto",
     "slug": "kinto",
-    "version": "1.4.12",
+    "version": "1.4.13",
     "orientation": "portrait",
     "scheme": "kinto",
     "userInterfaceStyle": "dark",
@@ -62,7 +62,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "10412",
+      "buildNumber": "10413",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
@@ -76,7 +76,7 @@
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 10412,
+      "versionCode": 10413,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
