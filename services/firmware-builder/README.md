@@ -22,6 +22,9 @@
   LoRa mesh с TTL/hops (14 Wi-Fi / 12 LoRa).
 - Wi-Fi и LoRa работают одновременно: узел с обеими средами пересылает
   пакеты между ними (bridge), дедуп по `packetId` общий.
+- Mesh v2 (`SG_MESH_V2=1` по умолчанию): cluster_id/border/neighbor_clusters
+  в ADVERT/PRESENCE, выбор border-нод, route table с TTL Wi-Fi↔LoRa и
+  handover-контролем поверх `MT_DATA` (`"kind":"handover"`).
 - LoRa-фрагментация: крупные конверты режутся на 150 Б × до 16 фрагментов
   (тип `MT_FRAG`), сборка по `packetId`, ACK на исходный пакет.
 - Смена Wi-Fi роутера шлюза из приложения кадром `SET_CONFIG` (USB/BLE),

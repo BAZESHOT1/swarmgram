@@ -750,6 +750,55 @@ export interface ModuleShadow {
   createdAt?: string;
 }
 
+/** Заявка на перенос модуля между пользователями. */
+export interface ModuleTransferRow {
+  id: string;
+  moduleId: string;
+  moduleName: string;
+  hardwareId: string;
+  publicId: string;
+  role: string;
+  status: 'pending' | 'accepted' | 'declined' | 'cancelled' | string;
+  direction: 'incoming' | 'outgoing';
+  requestedBy: string;
+  ownerUsername: string;
+  fromOwner: { id: string; username: string };
+  toOwner: { id: string; username: string };
+  createdAt: string;
+  resolvedAt: string | null;
+  expiresAt: string;
+}
+
+export interface ModuleTransfersResponse {
+  incoming: ModuleTransferRow[];
+  outgoing: ModuleTransferRow[];
+  recentIncoming: ModuleTransferRow[];
+  recentOutgoing: ModuleTransferRow[];
+}
+
+/** Ответ pair/claim/register, когда модуль принадлежит другому пользователю. */
+export interface ModulePendingTransfer {
+  ok: false;
+  pendingTransfer: true;
+  transferId: string;
+  ownerUsername: string;
+  moduleId: string;
+}
+
+export function isPendingTransfer(value: unknown): value is ModulePendingTransfer {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      (value as { pendingTransfer?: unknown }).pendingTransfer === true,
+  );
+}
+
+export type ModulePairResponse =
+  | (ModuleRow & { moduleToken: string; checkinIntervalSec: number })
+  | ModulePendingTransfer;
+
+export type ModuleClaimResponse = ModuleRow | ModulePendingTransfer;
+
 /** Глобальная mesh-сеть: параметры, которые сервер подставляет в прошивку. */
 export interface ModuleMesh {
   networkId?: string;
@@ -811,6 +860,8 @@ export interface FirmwareConfig {
     pins: FirmwareLoraPins;
   };
   battery?: { enabled: boolean; pin: number; ratio: number; intervalSec: number };
+  /** GPIO светодиода индикации mesh-связи. */
+  ledPin?: number;
   ota?: boolean;
 }
 
@@ -1291,7 +1342,7 @@ export const api = {
     board?: string;
     firmwareConfig?: unknown;
   }) =>
-    req<ModuleRow & { moduleToken: string; checkinIntervalSec: number }>('/v1/modules/pair', {
+    req<ModulePairResponse>('/v1/modules/pair', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
@@ -1302,10 +1353,38 @@ export const api = {
    * опрашивает повторно каждые 3 секунды до 60 секунд.
    */
   claimModule: (publicId: string) =>
-    req<ModuleRow>('/v1/modules/claim', {
+    req<ModuleClaimResponse>('/v1/modules/claim', {
       method: 'POST',
       body: JSON.stringify({ publicId }),
     }),
+  /* ---- заявки на перенос модулей ---- */
+  listModuleTransfers: () => req<ModuleTransfersResponse>('/v1/modules/transfers'),
+  requestModuleTransfer: (id: string, target: { username?: string; userId?: string }) =>
+    req<{
+      ok: true;
+      transferId: string;
+      moduleId: string;
+      status: string;
+      to: { id: string; username: string };
+    }>(`/v1/modules/${encodeURIComponent(id)}/transfer`, {
+      method: 'POST',
+      body: JSON.stringify(target),
+    }),
+  acceptModuleTransfer: (id: string) =>
+    req<{ ok: true; transferId: string; moduleId: string; status: string }>(
+      `/v1/modules/transfers/${encodeURIComponent(id)}/accept`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  declineModuleTransfer: (id: string) =>
+    req<{ ok: true; transferId: string; status: string }>(
+      `/v1/modules/transfers/${encodeURIComponent(id)}/decline`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  cancelModuleTransfer: (id: string) =>
+    req<{ ok: true; transferId: string; status: string }>(
+      `/v1/modules/transfers/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
   /** Параметры единой глобальной mesh-сети (только чтение из UI). */
   getModuleMesh: () => req<ModuleMesh>('/v1/modules/mesh'),
   /** Удалить shadow-запись «модуль привязан на другом устройстве». */

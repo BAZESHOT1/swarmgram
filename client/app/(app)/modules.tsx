@@ -15,13 +15,17 @@ import { AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useFocusEffect } from 'expo-router';
-import { api, type ModuleRow } from '../../src/data/api';
+import { api, type ModuleRow, type ModuleTransferRow } from '../../src/data/api';
 import {
   humanError,
+  useAcceptModuleTransfer,
   useAttachModule,
   useBlockModule,
+  useCancelModuleTransfer,
+  useDeclineModuleTransfer,
   useDetachModule,
   useDismissModuleShadow,
+  useModuleTransfers,
   useModules,
   useReportModuleShadow,
   useUnbindModule,
@@ -328,6 +332,10 @@ export default function ModulesScreen() {
   const unblock = useUnblockModule();
   const dismissShadow = useDismissModuleShadow();
   const reportShadow = useReportModuleShadow();
+  const transfers = useModuleTransfers();
+  const acceptTransfer = useAcceptModuleTransfer();
+  const declineTransfer = useDeclineModuleTransfer();
+  const cancelTransfer = useCancelModuleTransfer();
 
   const [connectOpen, setConnectOpen] = useState(false);
   const [flowMode, setFlowMode] = useState<FlowMode | undefined>(undefined);
@@ -493,6 +501,39 @@ export default function ModulesScreen() {
       useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
     }
   };
+
+  const acceptIncoming = async (transfer: ModuleTransferRow) => {
+    try {
+      await acceptTransfer.mutateAsync(transfer.id);
+      useStore.getState().pushToast({
+        kind: 'success',
+        message: `Модуль ${transfer.publicId || transfer.moduleName} передан вам`,
+      });
+    } catch (error) {
+      useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
+    }
+  };
+
+  const declineIncoming = async (transfer: ModuleTransferRow) => {
+    try {
+      await declineTransfer.mutateAsync(transfer.id);
+      useStore.getState().pushToast({ kind: 'success', message: 'Заявка на перенос отклонена' });
+    } catch (error) {
+      useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
+    }
+  };
+
+  const cancelOutgoing = async (transfer: ModuleTransferRow) => {
+    try {
+      await cancelTransfer.mutateAsync(transfer.id);
+      useStore.getState().pushToast({ kind: 'success', message: 'Заявка на перенос отменена' });
+    } catch (error) {
+      useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
+    }
+  };
+
+  const transferBusy =
+    acceptTransfer.isPending || declineTransfer.isPending || cancelTransfer.isPending;
 
   /** Подключение/отключение носимого: сначала локальное соединение, затем сервер. */
   const toggleAttach = async (module: ModuleRow) => {
@@ -732,6 +773,107 @@ export default function ModulesScreen() {
           </GlassCard>
         )}
       </SettingsSection>
+
+      {/* 1b. ЗАЯВКИ НА ПЕРЕНОС — входящие и исходящие. */}
+      {(transfers.data?.incoming.length ?? 0) + (transfers.data?.outgoing.length ?? 0) > 0 ? (
+        <SettingsSection
+          title="Заявки на перенос"
+          delay={motion.staggerStepMs}
+          right={
+            <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
+              {(transfers.data?.incoming.length ?? 0) + (transfers.data?.outgoing.length ?? 0)} шт.
+            </Text>
+          }
+        >
+          {(transfers.data?.incoming ?? []).map((transfer) => (
+            <GlassCard key={`in-${transfer.id}`} style={{ marginBottom: 8 }}>
+              <View style={{ padding: 12, gap: 9 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 9 }}>
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: theme.accentSoft,
+                    }}
+                  >
+                    <Ionicons name="arrow-down-circle-outline" size={18} color={theme.accent} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: theme.textPrimary, fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>
+                      {transfer.moduleName || `Модуль ${transfer.publicId}`}
+                    </Text>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
+                      От @{transfer.fromOwner.username}
+                      {transfer.publicId ? ` · ID ${transfer.publicId}` : ''}
+                    </Text>
+                  </View>
+                  <StatusBadge text="Входящая" tone="accent" />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                  <Btn
+                    title="Передать"
+                    size="s"
+                    loading={acceptTransfer.isPending}
+                    disabled={transferBusy}
+                    onPress={() => void acceptIncoming(transfer)}
+                  />
+                  <Btn
+                    title="Отменить"
+                    size="s"
+                    variant="ghost"
+                    loading={declineTransfer.isPending}
+                    disabled={transferBusy}
+                    onPress={() => void declineIncoming(transfer)}
+                  />
+                </View>
+              </View>
+            </GlassCard>
+          ))}
+          {(transfers.data?.outgoing ?? []).map((transfer) => (
+            <GlassCard key={`out-${transfer.id}`} style={{ marginBottom: 8 }}>
+              <View style={{ padding: 12, gap: 9 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 9 }}>
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: theme.surfacePressed,
+                    }}
+                  >
+                    <Ionicons name="arrow-up-circle-outline" size={18} color={theme.textSecondary} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ color: theme.textPrimary, fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>
+                      {transfer.moduleName || `Модуль ${transfer.publicId}`}
+                    </Text>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 2 }} numberOfLines={2}>
+                      Для @{transfer.toOwner.username}
+                      {transfer.publicId ? ` · ID ${transfer.publicId}` : ''}
+                    </Text>
+                  </View>
+                  <StatusBadge text="Исходящая" tone="neutral" />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                  <Btn
+                    title="Отменить заявку"
+                    size="s"
+                    variant="ghost"
+                    loading={cancelTransfer.isPending}
+                    disabled={transferBusy}
+                    onPress={() => void cancelOutgoing(transfer)}
+                  />
+                </View>
+              </View>
+            </GlassCard>
+          ))}
+        </SettingsSection>
+      ) : null}
 
       {/* 2. ТЕКУЩИЙ МОДУЛЬ — прямое USB/BLE-подключение. */}
       {!loading && total > 0 ? (

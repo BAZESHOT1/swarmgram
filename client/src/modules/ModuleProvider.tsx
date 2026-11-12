@@ -13,7 +13,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState, Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePathname } from 'expo-router';
-import { api } from '../data/api';
+import { api, isPendingTransfer } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
@@ -225,8 +225,14 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           firmware: nextInfo.firmware || undefined,
           battery: nextInfo.battery,
         });
-        moduleId = moduleIdOf(paired);
-        publicId = nextInfo.publicId ?? paired.publicId;
+        if (isPendingTransfer(paired)) {
+          const message = 'Модуль принадлежит другому пользователю. Заявка на перенос отправлена.';
+          if (mountedRef.current) setError(message);
+          useStore.getState().pushToast({ kind: 'error', message });
+        } else {
+          moduleId = moduleIdOf(paired);
+          publicId = nextInfo.publicId ?? paired.publicId;
+        }
       } catch (pairError) {
         // Связь есть, но сервер не принял привязку — показываем причину,
         // соединение не рвём: модуль может работать локально.

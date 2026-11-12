@@ -11,6 +11,56 @@ uint32_t kinto_fnv1a32(const char *data, unsigned len) {
   return hash;
 }
 
+void kinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]) {
+  if (!out) return;
+  out[0] = (uint8_t)((id >> 24) & 0xFF);
+  out[1] = (uint8_t)((id >> 16) & 0xFF);
+  out[2] = (uint8_t)((id >> 8) & 0xFF);
+  out[3] = (uint8_t)(id & 0xFF);
+  /* Суффикс отделяет адрес от простого 32-битного id и заполняет 8 байт. */
+  char tmp[11];
+  tmp[0] = (char)((id >> 24) & 0xFF);
+  tmp[1] = (char)((id >> 16) & 0xFF);
+  tmp[2] = (char)((id >> 8) & 0xFF);
+  tmp[3] = (char)(id & 0xFF);
+  tmp[4] = '|';
+  tmp[5] = 'm';
+  tmp[6] = 'e';
+  tmp[7] = 's';
+  tmp[8] = 'h';
+  tmp[9] = '2';
+  tmp[10] = 0;
+  uint32_t h = kinto_fnv1a32(tmp, 10);
+  out[4] = (uint8_t)((h >> 24) & 0xFF);
+  out[5] = (uint8_t)((h >> 16) & 0xFF);
+  out[6] = (uint8_t)((h >> 8) & 0xFF);
+  out[7] = (uint8_t)(h & 0xFF);
+}
+
+void kinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]) {
+  if (!out) return;
+  if (!text || !*text) {
+    for (unsigned i = 0; i < KINTO_MESH_ADDR_LEN; i++) out[i] = 0;
+    return;
+  }
+  uint32_t a = kinto_fnv1a32(text, (unsigned)strlen(text));
+  char tmp[256];
+  unsigned n = 0;
+  while (text[n] && n < sizeof(tmp) - 6) {
+    tmp[n] = text[n];
+    n++;
+  }
+  tmp[n++] = '|';
+  tmp[n++] = 'a';
+  tmp[n++] = 'd';
+  tmp[n++] = 'd';
+  tmp[n++] = 'r';
+  tmp[n] = 0;
+  uint32_t b = kinto_fnv1a32(tmp, n);
+  for (unsigned i = 0; i < 4; i++) out[i] = (uint8_t)((a >> (24 - i * 8)) & 0xFF);
+  for (unsigned i = 0; i < 4; i++) out[4 + i] = (uint8_t)((b >> (24 - i * 8)) & 0xFF);
+}
+
 /* Простая сортировка вставками: якорей мало (14–16). */
 static void sort_anchors(const char **anchors, unsigned count) {
   for (unsigned i = 1; i < count; i++) {

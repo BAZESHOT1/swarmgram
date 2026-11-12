@@ -21,10 +21,12 @@ import {
   boardPreset,
   recommendedBatteryPin,
   recommendedPins,
+  type LoraChip,
+  type LoraPins,
 } from '../firmware/types';
 import { FlashStep } from '../firmware/FlashStep';
 import { ChoiceCard, ErrorText, Note, StepCard } from '../firmware/FirmwareUI';
-import { api, type FirmwareBoard, type FirmwareConfig, type FirmwareBuild, type FirmwareRole } from '../../data/api';
+import { api, isPendingTransfer, type FirmwareBoard, type FirmwareConfig, type FirmwareBuild, type FirmwareRole } from '../../data/api';
 import { kv } from '../../crypto/storage';
 import { useModuleConnection } from '../../modules/ModuleProvider';
 import { writeLastModule } from '../../modules/types';
@@ -151,6 +153,16 @@ export function SimpleFirmwareWizard({
   const [link, setLink] = React.useState<LinkChoice>('wifi');
   const [battery, setBattery] = React.useState(true);
   const [batteryPin, setBatteryPin] = React.useState<number>(recommendedBatteryPin('esp32c3'));
+  const [batteryRatio, setBatteryRatio] = React.useState(2);
+  const [loraChip, setLoraChip] = React.useState<LoraChip>('sx1262');
+  const [loraPins, setLoraPins] = React.useState<LoraPins>(() => recommendedPins('esp32c3'));
+  const [ledPin, setLedPin] = React.useState<number | undefined>(undefined);
+
+  React.useEffect(() => {
+    setLoraPins(recommendedPins(board));
+    setBatteryPin(recommendedBatteryPin(board));
+    setLoraChip(board === 'esp32' ? 'sx1278' : 'sx1262');
+  }, [board]);
   const [ssid, setSsid] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [stepError, setStepError] = React.useState('');
@@ -305,20 +317,21 @@ export function SimpleFirmwareWizard({
     lora:
       link === 'wifi_lora'
         ? {
-            chip: board === 'esp32' ? 'sx1278' : 'sx1262',
+            chip: loraChip,
             frequencyMhz: 868,
             spreadingFactor: 9,
             bandwidthKhz: 125,
             syncWord: 0x12,
-            pins: recommendedPins(board),
+            pins: loraPins,
           }
         : undefined,
     battery: {
       enabled: battery,
       pin: batteryPin,
-      ratio: 2,
+      ratio: batteryRatio,
       intervalSec: 900,
     },
+    ledPin,
     ota: true,
   });
 
@@ -381,6 +394,10 @@ export function SimpleFirmwareWizard({
         board: makeConfig().board,
         firmwareConfig: makeConfig(),
       });
+      if (isPendingTransfer(paired)) {
+        setBuildError('Модуль принадлежит другому пользователю. Заявка на перенос отправлена.');
+        return;
+      }
       moduleId = paired.id;
       publicId = paired.publicId;
       if (role === 'wearable' && paired.id) {
@@ -575,9 +592,93 @@ export function SimpleFirmwareWizard({
                   <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: -4 }}>
                     Рекомендуемый для платы: GPIO {recommendedBatteryPin(board)}. Делитель 1:1 (коэффициент 2.0).
                   </Text>
+                  <SettingsInput
+                    label="Коэффициент делителя"
+                    value={String(batteryRatio)}
+                    onChangeText={(text) => {
+                      const parsed = Number(text.replace(',', '.').trim());
+                      if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 10) setBatteryRatio(parsed);
+                    }}
+                    keyboardType="numeric"
+                    placeholder="2.0"
+                    accessibilityLabel="Коэффициент делителя батареи"
+                    maxLength={4}
+                  />
                 </View>
               ) : null}
             </StepCard>
+            <View style={{ height: 10 }} />
+            <StepCard>
+              <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
+                Светодиод индикации
+              </Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 8 }}>
+                Горит — связь с модулями есть. Мигает — связи нет. Пусто — LED не подключён.
+              </Text>
+              <SettingsInput
+                label="GPIO светодиода"
+                value={ledPin === undefined ? '' : String(ledPin)}
+                onChangeText={(text) => {
+                  const trimmed = text.trim();
+                  if (!trimmed) {
+                    setLedPin(undefined);
+                    return;
+                  }
+                  const parsed = Number(trimmed);
+                  if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) setLedPin(parsed);
+                }}
+                keyboardType="numeric"
+                placeholder="например, 2"
+                accessibilityLabel="GPIO светодиода"
+                maxLength={2}
+              />
+            </StepCard>
+            {link === 'wifi_lora' ? (
+              <>
+                <View style={{ height: 10 }} />
+                <StepCard>
+                  <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
+                    Модуль LoRa
+                  </Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 8 }}>
+                    Тип чипа и пины подключения. Частота и модуляция задаются сервером.
+                  </Text>
+                  <SettingsInput
+                    label="Тип чипа (sx1278 / sx1276 / sx1262)"
+                    value={loraChip}
+                    onChangeText={(text) => {
+                      const value = text.trim().toLowerCase();
+                      if (value === 'sx1278' || value === 'sx1276' || value === 'sx1262') setLoraChip(value);
+                    }}
+                    autoCapitalize="none"
+                    accessibilityLabel="Тип чипа LoRa"
+                    maxLength={8}
+                  />
+                  {(Object.keys(loraPins) as Array<keyof LoraPins>).map((key) => (
+                    <SettingsInput
+                      key={key}
+                      label={`${key.toUpperCase()}${key === 'busy' ? ' (SX1262)' : ''}`}
+                      value={loraPins[key] === undefined ? '' : String(loraPins[key])}
+                      onChangeText={(text) => {
+                        const trimmed = text.trim();
+                        if (!trimmed) {
+                          setLoraPins((prev) => ({ ...prev, [key]: undefined }));
+                          return;
+                        }
+                        const parsed = Number(trimmed);
+                        if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) {
+                          setLoraPins((prev) => ({ ...prev, [key]: parsed }));
+                        }
+                      }}
+                      keyboardType="numeric"
+                      placeholder={`GPIO (реком. ${recommendedPins(board)[key] ?? '—'})`}
+                      accessibilityLabel={`Пин LoRa ${key}`}
+                      maxLength={2}
+                    />
+                  ))}
+                </StepCard>
+              </>
+            ) : null}
             <View style={{ height: 10 }} />
             <Note icon="information-circle-outline" tone="neutral">
               Параметры LoRa (869.525 МГц, SF9, BW125) и канал mesh (11) задаёт сервер.
@@ -654,6 +755,11 @@ export function SimpleFirmwareWizard({
                 />
                 {build.version ? <StatusBadge text={`v${build.version}`} tone="neutral" /> : null}
               </View>
+            ) : null}
+            {build?.createdAt ? (
+              <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginBottom: 10 }}>
+                Версия {build.version || '—'} · собрана {new Date(build.createdAt).toLocaleString()}
+              </Text>
             ) : null}
             {build && (build.status === 'queued' || build.status === 'building') ? (
               <View style={{ marginBottom: 12 }}>

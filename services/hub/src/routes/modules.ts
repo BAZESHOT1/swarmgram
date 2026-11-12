@@ -29,10 +29,12 @@ import { one, query, tx } from '../db.js';
 import { ensurePublicId, isPublicId, publicIdFromHardware } from '../meshId.js';
 import { deriveMeshRelayKey } from '../secrets.js';
 import { publish, publishMany } from '../realtime.js';
+import { enqueueNotification } from '../push.js';
 import {
   ApiError,
   badRequest,
   clientIp,
+  conflict,
   forbidden,
   log,
   notFound,
@@ -194,6 +196,7 @@ interface ModuleRecord {
   last_seen_at: string | null;
   last_claim_at: string | null;
   created_at: string;
+  token_version: number;
 }
 
 /** Реальный online: свежесть check-in + для wearable факт подключения к клиенту. */
@@ -312,10 +315,178 @@ async function dismissShadowsFor(moduleId: string, ownerId: string): Promise<voi
   );
 }
 
+/* --------------------------------------------------- перенос модулей ---- */
+
+interface TransferModuleRef {
+  id: string;
+  owner_id: string;
+  public_id?: string | null;
+  hardware_id?: string | null;
+  board_uuid?: string | null;
+  role?: string | null;
+}
+
+interface EnsureTransferInput {
+  moduleId: string;
+  fromOwnerId: string;
+  toOwnerId: string;
+  requestedBy: string;
+  hardwareId: string;
+  publicId: string;
+}
+
+/**
+ * Возвращает существующую pending-заявку или создаёт новую.
+ * Partial unique index не даёт создать вторую активную заявку на модуль.
+ */
+async function ensurePendingTransfer(
+  input: EnsureTransferInput,
+): Promise<{ id: string; created: boolean }> {
+  const existing = await one<{ id: string }>(
+    `SELECT id FROM module_transfers WHERE module_id = $1 AND status = 'pending' LIMIT 1`,
+    [input.moduleId],
+  );
+  if (existing) return { id: existing.id, created: false };
+
+  try {
+    const row = await one<{ id: string }>(
+      `INSERT INTO module_transfers
+         (module_id, from_owner_id, to_owner_id, hardware_id, public_id, status, requested_by)
+       VALUES ($1,$2,$3,$4,$5,'pending',$6)
+       RETURNING id`,
+      [
+        input.moduleId,
+        input.fromOwnerId,
+        input.toOwnerId,
+        input.hardwareId,
+        input.publicId,
+        input.requestedBy,
+      ],
+    );
+    return { id: row!.id, created: true };
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      const again = await one<{ id: string }>(
+        `SELECT id FROM module_transfers WHERE module_id = $1 AND status = 'pending' LIMIT 1`,
+        [input.moduleId],
+      );
+      if (again) return { id: again.id, created: false };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Если модуль принадлежит другому реальному пользователю (не system),
+ * создаёт заявку на перенос и уведомляет владельца. Возвращает данные
+ * для ответа pendingTransfer либо null, если перепривязка допустима.
+ */
+async function requestTransferIfForeign(
+  module: TransferModuleRef,
+  me: string,
+): Promise<{ transferId: string; ownerUsername: string; moduleId: string } | null> {
+  if (!module.owner_id || module.owner_id === me) return null;
+  const systemId = await systemOwnerId();
+  if (!systemId || module.owner_id === systemId) return null;
+
+  const owner = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [
+    module.owner_id,
+  ]);
+  if (!owner?.username) return null;
+
+  const hardwareId = (module.hardware_id || module.board_uuid || '').toLowerCase();
+  const publicId = module.public_id || '';
+  const transfer = await ensurePendingTransfer({
+    moduleId: module.id,
+    fromOwnerId: module.owner_id,
+    toOwnerId: me,
+    requestedBy: me,
+    hardwareId,
+    publicId,
+  });
+
+  if (transfer.created) {
+    const requester = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [me]);
+    const label = publicId ? `модуля ${publicId}` : 'модуля';
+    await enqueueNotification(module.owner_id, {
+      kind: 'system',
+      title: 'Запрос на перенос модуля',
+      body: `@${requester?.username ?? 'Пользователь'} запрашивает перенос ${label}.`,
+      data: {
+        type: 'module_transfer',
+        transferId: transfer.id,
+        moduleId: module.id,
+        direction: 'incoming',
+      },
+    }).catch(() => undefined);
+    publish(module.owner_id, {
+      type: 'module_transfer',
+      transferId: transfer.id,
+      moduleId: module.id,
+      status: 'pending',
+      direction: 'incoming',
+    });
+    log('info', 'module_transfer_requested', {
+      transferId: transfer.id,
+      moduleId: module.id,
+      from: module.owner_id,
+      to: me,
+    });
+  }
+
+  return { transferId: transfer.id, ownerUsername: owner.username, moduleId: module.id };
+}
+
+interface TransferQueryRow {
+  id: string;
+  module_id: string;
+  from_owner_id: string;
+  to_owner_id: string;
+  hardware_id: string;
+  public_id: string;
+  status: string;
+  requested_by: string;
+  created_at: string;
+  resolved_at: string | null;
+  expires_at: string;
+  module_name: string | null;
+  module_role: string | null;
+  from_username: string;
+  to_username: string;
+}
+
+const TRANSFER_COLUMNS = `t.id, t.module_id, t.from_owner_id, t.to_owner_id, t.hardware_id, t.public_id,
+  t.status, t.requested_by, t.created_at, t.resolved_at, t.expires_at,
+  m.name AS module_name, m.role AS module_role,
+  fu.username AS from_username, tu.username AS to_username`;
+
+/** Единый вид заявки для клиента. */
+function transferView(t: TransferQueryRow, me: string) {
+  const direction = t.to_owner_id === me ? 'incoming' : 'outgoing';
+  const ownerUsername = direction === 'incoming' ? t.from_username : t.to_username;
+  return {
+    id: t.id,
+    moduleId: t.module_id,
+    moduleName: t.module_name || (t.public_id ? `Модуль ${t.public_id}` : 'Модуль'),
+    hardwareId: (t.hardware_id || '').toLowerCase(),
+    publicId: t.public_id || '',
+    role: t.module_role || '',
+    status: t.status,
+    direction,
+    requestedBy: t.requested_by,
+    ownerUsername,
+    fromOwner: { id: t.from_owner_id, username: t.from_username },
+    toOwner: { id: t.to_owner_id, username: t.to_username },
+    createdAt: t.created_at,
+    resolvedAt: t.resolved_at,
+    expiresAt: t.expires_at,
+  };
+}
+
 const MODULE_COLUMNS = `m.id, m.owner_id, m.board_uuid, m.hardware_id, m.public_id, m.role, m.transport, m.kind,
   m.module_type, m.is_public, m.firmware, m.name, m.board, m.firmware_config, m.battery, m.gateway, m.neighbors, m.status,
   m.attached, m.attached_at, m.rssi, m.uptime, m.blocked, m.block_reason,
-  m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at`;
+  m.last_ip, m.last_seen_at, m.last_claim_at, m.created_at, m.token_version`;
 
 /** Имя модуля: username владельца + порядковый номер. */
 async function assignModuleName(ownerId: string, moduleId: string, force = false): Promise<void> {
@@ -354,10 +525,17 @@ function hardwareIdOrThrow(value: string, field = 'hardwareId'): string {
   throw badRequest(`${field}_invalid`);
 }
 
-function signModuleToken(moduleId: string, publicId: string): string {
+function signModuleToken(moduleId: string, publicId: string, tokenVersion = 0): string {
   const now = Math.floor(Date.now() / 1000);
   return signToken(
-    { sub: moduleId, pid: publicId, type: 'module', iat: now, exp: now + 365 * 24 * 3600 },
+    {
+      sub: moduleId,
+      pid: publicId,
+      tv: Number(tokenVersion) || 0,
+      type: 'module',
+      iat: now,
+      exp: now + 365 * 24 * 3600,
+    },
     config.jwtSecret,
   );
 }
@@ -380,12 +558,17 @@ export function requireModule() {
       transport: string;
       attached: boolean;
       blocked: boolean;
+      token_version: number;
     }>(
-      `SELECT owner_id, module_type, is_public, hardware_id, board_uuid, public_id, role, transport, attached, blocked
+      `SELECT owner_id, module_type, is_public, hardware_id, board_uuid, public_id, role, transport, attached, blocked, token_version
          FROM modules WHERE id = $1`,
       [claims.sub],
     );
     if (!row) throw unauthorized('module_not_found');
+    const tokenVersion = Number((claims as { tv?: unknown }).tv ?? 0) || 0;
+    if (tokenVersion !== Number(row.token_version ?? 0)) {
+      throw unauthorized('module_token_stale');
+    }
     const hardwareId = (row.hardware_id || row.board_uuid || '').toLowerCase();
     if (row.blocked || (await isHardwareBlocked(hardwareId))) {
       throw new ApiError(403, 'module_blocked', 'module_blocked');
@@ -612,8 +795,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       public_id: string;
       role: string;
       transport: string;
+      token_version: number;
     }>(
-      `SELECT id, owner_id, blocked, public_id, role, transport FROM modules
+      `SELECT id, owner_id, blocked, public_id, role, transport, token_version FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
         ORDER BY (lower(hardware_id) = $1) DESC LIMIT 1`,
       [hardwareId],
@@ -626,6 +810,23 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       providedPublicId !== (existing?.public_id ?? '')
     ) {
       throw badRequest('public_id_mismatch');
+    }
+
+    // Чужой реальный модуль не перепривязываем сразу: создаём заявку.
+    if (existing) {
+      const pending = await requestTransferIfForeign(
+        { ...existing, hardware_id: hardwareId, board_uuid: hardwareId },
+        me,
+      );
+      if (pending) {
+        return reply.code(202).send({
+          ok: false,
+          pendingTransfer: true,
+          transferId: pending.transferId,
+          ownerUsername: pending.ownerUsername,
+          moduleId: pending.moduleId,
+        });
+      }
     }
 
     const role = asRole(body.role, asRole(existing?.role, 'wearable'));
@@ -746,7 +947,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     }
     await assignModuleName(me, moduleId, Boolean(reassignedFrom)).catch(() => undefined);
 
-    const moduleToken = signModuleToken(moduleId, publicId);
+    const moduleToken = signModuleToken(moduleId, publicId, existing?.token_version ?? 0);
     log('info', 'module_paired', { moduleId, owner: me, hardwareId, publicId, role, transport, kind });
 
     return reply.send({
@@ -793,6 +994,18 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       throw new ApiError(403, 'module_blocked', 'module_blocked');
     }
 
+    // Модуль принадлежит другому пользователю — не отбираем, а просим перенос.
+    const pending = await requestTransferIfForeign(row, me);
+    if (pending) {
+      return reply.send({
+        ok: false,
+        pendingTransfer: true,
+        transferId: pending.transferId,
+        ownerUsername: pending.ownerUsername,
+        moduleId: pending.moduleId,
+      });
+    }
+
     const ip = clientIp(req);
     const systemId = await systemOwnerId();
     const reassignedFrom = row.owner_id !== me && row.owner_id !== systemId ? row.owner_id : null;
@@ -831,9 +1044,316 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       ok: true,
       ...view,
-      moduleToken: signModuleToken(row.id, publicId),
+      moduleToken: signModuleToken(row.id, publicId, row.token_version),
       reassigned: Boolean(reassignedFrom),
     });
+  });
+
+  /* ------------------------------------------- заявки на перенос модуля ---- */
+
+  /** Входящие/исходящие заявки на перенос + недавние закрытые. */
+  app.get('/modules/transfers', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const rows = await query<TransferQueryRow>(
+      `SELECT ${TRANSFER_COLUMNS}
+         FROM module_transfers t
+         JOIN modules m ON m.id = t.module_id
+         JOIN users fu ON fu.id = t.from_owner_id
+         JOIN users tu ON tu.id = t.to_owner_id
+        WHERE t.from_owner_id = $1 OR t.to_owner_id = $1
+        ORDER BY t.created_at DESC
+        LIMIT 100`,
+      [me],
+    );
+    const views = rows.map((row) => transferView(row, me));
+    const recent = (direction: 'incoming' | 'outgoing') =>
+      views.filter((v) => v.direction === direction && v.status !== 'pending').slice(0, 20);
+    return reply.send({
+      incoming: views.filter((v) => v.direction === 'incoming' && v.status === 'pending'),
+      outgoing: views.filter((v) => v.direction === 'outgoing' && v.status === 'pending'),
+      recentIncoming: recent('incoming'),
+      recentOutgoing: recent('outgoing'),
+    });
+  });
+
+  /** Владелец просит перенести свой модуль другому пользователю. */
+  app.post('/modules/:id/transfer', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    rateLimit(`mod-transfer:${me}`, 30, 60 * 60 * 1000);
+    const { id } = req.params as { id: string };
+    if (!UUID_RE.test(id)) throw notFound('module');
+
+    const body = (req.body ?? {}) as { username?: string; userId?: string };
+    const module = await one<TransferModuleRef>(
+      'SELECT id, owner_id, public_id, hardware_id, board_uuid, role FROM modules WHERE id = $1',
+      [id],
+    );
+    if (!module) throw notFound('module');
+    if (module.owner_id !== me) throw forbidden('not_owner');
+
+    const userId = typeof body.userId === 'string' && UUID_RE.test(body.userId) ? body.userId : '';
+    const username =
+      typeof body.username === 'string' ? body.username.trim().replace(/^@/, '') : '';
+    if (!userId && !username) throw badRequest('target_required');
+
+    const target = userId
+      ? await one<{ id: string; username: string }>(
+          `SELECT id, username FROM users WHERE id = $1 AND status = 'active'`,
+          [userId],
+        )
+      : await one<{ id: string; username: string }>(
+          `SELECT id, username FROM users WHERE lower(username) = lower($1) AND status = 'active' LIMIT 1`,
+          [username],
+        );
+    if (!target) throw notFound('user');
+    if (target.id === me) throw badRequest('cannot_transfer_to_self');
+    const requester = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [me]);
+
+    const hardwareId = (module.hardware_id || module.board_uuid || '').toLowerCase();
+    const transfer = await ensurePendingTransfer({
+      moduleId: module.id,
+      fromOwnerId: me,
+      toOwnerId: target.id,
+      requestedBy: me,
+      hardwareId,
+      publicId: module.public_id || '',
+    });
+
+    if (transfer.created) {
+      await enqueueNotification(target.id, {
+        kind: 'system',
+        title: 'Запрос на перенос модуля',
+        body: `@${requester?.username ?? 'Пользователь'} хочет передать вам модуль${module.public_id ? ` ${module.public_id}` : ''}.`,
+        data: {
+          type: 'module_transfer',
+          transferId: transfer.id,
+          moduleId: module.id,
+          direction: 'incoming',
+        },
+      }).catch(() => undefined);
+      publish(target.id, {
+        type: 'module_transfer',
+        transferId: transfer.id,
+        moduleId: module.id,
+        status: 'pending',
+        direction: 'incoming',
+      });
+      log('info', 'module_transfer_requested', {
+        transferId: transfer.id,
+        moduleId: module.id,
+        from: me,
+        to: target.id,
+      });
+    }
+
+    return reply.code(transfer.created ? 201 : 200).send({
+      ok: true,
+      transferId: transfer.id,
+      moduleId: module.id,
+      status: 'pending',
+      to: { id: target.id, username: target.username },
+    });
+  });
+
+  /** Принять заявку: только целевой пользователь, атомарно меняем владельца. */
+  app.post('/modules/transfers/:id/accept', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const { id } = req.params as { id: string };
+    if (!UUID_RE.test(id)) throw notFound('transfer');
+
+    const pre = await one<TransferQueryRow>(
+      `SELECT ${TRANSFER_COLUMNS}
+         FROM module_transfers t
+         JOIN modules m ON m.id = t.module_id
+         JOIN users fu ON fu.id = t.from_owner_id
+         JOIN users tu ON tu.id = t.to_owner_id
+        WHERE t.id = $1`,
+      [id],
+    );
+    if (!pre) throw notFound('transfer');
+    if (pre.to_owner_id !== me) throw forbidden('not_target_owner');
+    if (pre.status !== 'pending') throw conflict('transfer_not_pending');
+    if (new Date(pre.expires_at).getTime() <= Date.now()) {
+      await query(
+        `UPDATE module_transfers SET status = 'cancelled', resolved_at = now()
+          WHERE id = $1 AND status = 'pending'`,
+        [id],
+      );
+      throw conflict('transfer_expired');
+    }
+
+    const locked = await tx(async ({ query: q }) => {
+      const rows = await q<{
+        id: string;
+        module_id: string;
+        from_owner_id: string;
+        to_owner_id: string;
+        status: string;
+      }>(
+        `SELECT id, module_id, from_owner_id, to_owner_id, status
+           FROM module_transfers WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      const transfer = rows[0];
+      if (!transfer || transfer.status !== 'pending') throw conflict('transfer_not_pending');
+      if (transfer.to_owner_id !== me) throw forbidden('not_target_owner');
+
+      const mods = await q<{ owner_id: string }>(
+        'SELECT owner_id FROM modules WHERE id = $1 FOR UPDATE',
+        [transfer.module_id],
+      );
+      const mod = mods[0];
+      if (!mod || mod.owner_id !== transfer.from_owner_id) throw conflict('transfer_stale');
+
+      const user = await q<{ username: string }>('SELECT username FROM users WHERE id = $1', [me]);
+      const count = await q<{ c: number }>(
+        'SELECT count(*)::int AS c FROM modules WHERE owner_id = $1 AND id <> $2',
+        [me, transfer.module_id],
+      );
+      const name = user[0]?.username
+        ? `${user[0].username} #${Number(count[0]?.c ?? 0) + 1}`
+        : null;
+
+      await q(
+        `UPDATE modules
+            SET owner_id = $2, token_version = token_version + 1,
+                name = COALESCE($3, name), updated_at = now()
+          WHERE id = $1`,
+        [transfer.module_id, me, name],
+      );
+      // Прежние «тени» этого модуля больше не актуальны.
+      await q('UPDATE module_shadows SET dismissed = true WHERE module_id = $1 AND dismissed = false', [
+        transfer.module_id,
+      ]);
+      await q(
+        `UPDATE module_transfers SET status = 'accepted', resolved_at = now() WHERE id = $1`,
+        [id],
+      );
+      return transfer;
+    });
+
+    const hardwareId = (pre.hardware_id || '').toLowerCase();
+    publish(locked.from_owner_id, {
+      type: 'module_unbound',
+      moduleId: locked.module_id,
+      hardwareId,
+      publicId: pre.public_id,
+      reason: 'transferred',
+    });
+    publish(me, {
+      type: 'module_transferred',
+      moduleId: locked.module_id,
+      hardwareId,
+      publicId: pre.public_id,
+      fromOwnerId: locked.from_owner_id,
+    });
+    await enqueueNotification(locked.from_owner_id, {
+      kind: 'system',
+      title: 'Перенос модуля подтверждён',
+      body: `@${pre.to_username || me} принял${pre.public_id ? ` модуль ${pre.public_id}` : ' модуль'}.`,
+      data: {
+        type: 'module_transfer',
+        transferId: id,
+        moduleId: locked.module_id,
+        status: 'accepted',
+        direction: 'outgoing',
+      },
+    }).catch(() => undefined);
+    log('info', 'module_transfer_accepted', {
+      transferId: id,
+      moduleId: locked.module_id,
+      from: locked.from_owner_id,
+      to: me,
+    });
+
+    return reply.send({ ok: true, transferId: id, moduleId: locked.module_id, status: 'accepted' });
+  });
+
+  /** Отклонить заявку: только целевой пользователь. */
+  app.post('/modules/transfers/:id/decline', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const { id } = req.params as { id: string };
+    if (!UUID_RE.test(id)) throw notFound('transfer');
+
+    const row = await one<{
+      id: string;
+      module_id: string;
+      from_owner_id: string;
+      to_owner_id: string;
+      status: string;
+    }>(
+      `SELECT id, module_id, from_owner_id, to_owner_id, status
+         FROM module_transfers WHERE id = $1`,
+      [id],
+    );
+    if (!row) throw notFound('transfer');
+    if (row.to_owner_id !== me) throw forbidden('not_target_owner');
+    if (row.status !== 'pending') throw conflict('transfer_not_pending');
+
+    const meUser = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [me]);
+    await query(
+      `UPDATE module_transfers SET status = 'declined', resolved_at = now()
+        WHERE id = $1 AND status = 'pending'`,
+      [id],
+    );
+    publish(row.from_owner_id, {
+      type: 'module_transfer',
+      transferId: id,
+      moduleId: row.module_id,
+      status: 'declined',
+      direction: 'outgoing',
+    });
+    await enqueueNotification(row.from_owner_id, {
+      kind: 'system',
+      title: 'Заявка на перенос отклонена',
+      body: `@${meUser?.username ?? 'Пользователь'} отклонил заявку на перенос модуля.`,
+      data: {
+        type: 'module_transfer',
+        transferId: id,
+        moduleId: row.module_id,
+        status: 'declined',
+        direction: 'outgoing',
+      },
+    }).catch(() => undefined);
+    log('info', 'module_transfer_declined', { transferId: id, moduleId: row.module_id, by: me });
+    return reply.send({ ok: true, transferId: id, status: 'declined' });
+  });
+
+  /** Отменить заявку: только прежний владелец модуля. */
+  app.post('/modules/transfers/:id/cancel', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const { id } = req.params as { id: string };
+    if (!UUID_RE.test(id)) throw notFound('transfer');
+
+    const row = await one<{
+      id: string;
+      module_id: string;
+      from_owner_id: string;
+      to_owner_id: string;
+      status: string;
+    }>(
+      `SELECT id, module_id, from_owner_id, to_owner_id, status
+         FROM module_transfers WHERE id = $1`,
+      [id],
+    );
+    if (!row) throw notFound('transfer');
+    if (row.from_owner_id !== me) throw forbidden('not_owner');
+    if (row.status !== 'pending') throw conflict('transfer_not_pending');
+
+    await query(
+      `UPDATE module_transfers SET status = 'cancelled', resolved_at = now()
+        WHERE id = $1 AND status = 'pending'`,
+      [id],
+    );
+    publish(row.to_owner_id, {
+      type: 'module_transfer',
+      transferId: id,
+      moduleId: row.module_id,
+      status: 'cancelled',
+      direction: 'incoming',
+    });
+    log('info', 'module_transfer_cancelled', { transferId: id, moduleId: row.module_id, by: me });
+    return reply.send({ ok: true, transferId: id, status: 'cancelled' });
   });
 
   /**
@@ -980,13 +1500,32 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       public_id: string;
       role: string;
       transport: string;
+      token_version: number;
     }>(
-      `SELECT id, owner_id, blocked, public_id, role, transport FROM modules
+      `SELECT id, owner_id, blocked, public_id, role, transport, token_version FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
         ORDER BY (lower(hardware_id) = $1) DESC LIMIT 1`,
       [hardwareId],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
+
+    // Claim/adopt-путь: если модуль принадлежит другому реальному пользователю,
+    // не перепривязываем его автоматически, а создаём заявку на перенос.
+    if (existing && claimOwner) {
+      const pending = await requestTransferIfForeign(
+        { ...existing, hardware_id: hardwareId, board_uuid: hardwareId },
+        claimOwner,
+      );
+      if (pending) {
+        return reply.code(202).send({
+          ok: false,
+          pendingTransfer: true,
+          transferId: pending.transferId,
+          ownerUsername: pending.ownerUsername,
+          moduleId: pending.moduleId,
+        });
+      }
+    }
 
     const role = asRole(body.role, asRole(existing?.role, 'gateway'));
     const kind = body.kind === 'lora' ? 'lora' : 'wifi';
@@ -995,12 +1534,14 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     let moduleId: string;
     let publicId: string;
+    let tokenVersion = 0;
     const neighbors = (body.neighbors ?? []).slice(0, 100);
     const rssi = Math.trunc(Number(body.rssi ?? 0)) | 0;
     const uptime = Math.max(0, Math.trunc(Number(body.uptime ?? 0)));
     const adoptOwner = claimOwner && existing && existing.owner_id === system.id ? claimOwner : null;
     if (existing) {
       moduleId = existing.id;
+      tokenVersion = Number(existing.token_version ?? 0);
       await query(
         `UPDATE modules SET board_uuid = $2, hardware_id = $2, role = $3, transport = $4, kind = $5,
                 firmware = COALESCE(NULLIF($6,''), firmware), battery = $7, attached = $8,
@@ -1039,7 +1580,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const cfg = await getMeshConfig();
-    const token = signModuleToken(moduleId, publicId);
+    const token = signModuleToken(moduleId, publicId, tokenVersion);
     log('info', 'module_registered', { moduleId, hardwareId, publicId, role, ip });
     publish(adoptOwner ?? claimOwner ?? existing?.owner_id ?? system.id, {
       type: 'module_status',

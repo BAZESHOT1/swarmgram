@@ -28,6 +28,12 @@ typedef struct {
 
 uint32_t kinto_fnv1a32(const char *data, unsigned len);
 
+/* 8-байтовый mesh-адрес из 32-битного nodeId (big-endian + hash-суффикс). */
+void kinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]);
+
+/* 8-байтовый mesh-адрес из hardwareId/publicId строки. */
+void kinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]);
+
 /* Cluster ID = FNV1a32(sorted(anchor ids), '|' separator). */
 uint32_t kinto_compute_cluster_id(const char *const *anchors, unsigned count);
 

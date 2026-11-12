@@ -491,13 +491,19 @@ export function FirmwareWizard() {
             onDownload={() => void download(build)}
             onDone={() => goTo(9)}
             onFlashed={async (hardwareId) => {
-              // Мягкая привязка: модуль сразу становится модулем аккаунта,
-              // а если был привязан к другому — сервер перепривяжет его.
-              await pairModule({
+              // Мягкая привязка: чужой модуль не отбираем, а создаём заявку.
+              const paired = await pairModule({
                 boardUuid: hardwareId,
                 kind: config.connectivity === 'wifi_lora' ? 'lora' : 'wifi',
                 firmware: build?.version ?? '',
               });
+              if (paired?.pendingTransfer) {
+                useStore.getState().pushToast({
+                  kind: 'error',
+                  message: 'Модуль принадлежит другому пользователю. Заявка на перенос отправлена.',
+                });
+                return;
+              }
               // Носимый модуль после USB-прошивки физически подключён к клиенту.
               if (config.role === 'wearable') {
                 const moduleId = (await api.listModules()).find(

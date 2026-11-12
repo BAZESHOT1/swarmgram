@@ -191,13 +191,23 @@
 
 /* --- Mesh v2 core: кластеры, гибридный роутинг, классификатор трафика --- */
 #ifndef SG_MESH_V2
-#define SG_MESH_V2 0
+#define SG_MESH_V2 1
 #endif
 #if SG_MESH_V2
 #include "beacon_format.h"
 #include "cluster_manager.h"
 #include "hybrid_router.h"
 #include "traffic_classifier.h"
+#else
+// Минимальные типы, чтобы скетч собирался и с SG_MESH_V2=0.
+enum kinto_iface_t { KINTO_IFACE_NONE = 0, KINTO_IFACE_WIFI = 1, KINTO_IFACE_LORA = 2 };
+enum kinto_traffic_t {
+  KINTO_TRAFFIC_TEXT = 0,
+  KINTO_TRAFFIC_MEDIA,
+  KINTO_TRAFFIC_OTA,
+  KINTO_TRAFFIC_TELEMETRY,
+  KINTO_TRAFFIC_SEARCH,
+};
 #endif
 
 #if SG_USE_LORA
@@ -314,8 +324,20 @@ struct NeighborInfo {
   uint8_t  batt;
   bool     gateway;
   bool     used;
+  bool     fromLora;      // последний пакет пришёл по LoRa
+  uint32_t clusterId;     // cluster_id из ADVERT/PRESENCE (0 = неизвестен)
+  bool     border;        // сосед объявил себя border-нодой
   uint32_t lastMs;
   char     role[10];
+};
+
+// Handover state machine поверх MT_DATA JSON-канала ("kind":"handover").
+// op: request|accept|complete|retry (соответствует KINTO_HANDOVER_* 16..19).
+enum HandoverState {
+  HO_IDLE = 0,
+  HO_REQUESTED,
+  HO_ACCEPTED,
+  HO_RETRY,
 };
 
 struct RouteEntry {
@@ -604,6 +626,35 @@ static uint32_t jsonGetU32(const String &src, const char *key) {
   return (uint32_t)strtoul(v.c_str(), NULL, 10);
 }
 
+// Mesh v2 адреса: 8 байт из nodeId (или строкового hardware/public id).
+static void nodeMeshAddr(uint32_t id, uint8_t out[8]) {
+#if SG_MESH_V2
+  kinto_mesh_addr_from_u32(id, out);
+#else
+  out[0] = (uint8_t)(id >> 24);
+  out[1] = (uint8_t)(id >> 16);
+  out[2] = (uint8_t)(id >> 8);
+  out[3] = (uint8_t)id;
+  const uint32_t h = fnv1a32(publicIdForNode(id).c_str());
+  out[4] = (uint8_t)(h >> 24);
+  out[5] = (uint8_t)(h >> 16);
+  out[6] = (uint8_t)(h >> 8);
+  out[7] = (uint8_t)h;
+#endif
+}
+
+static String meshAddrHex(const uint8_t addr[8]) {
+  char buf[17];
+  for (uint8_t i = 0; i < 8; i++) {
+    const uint8_t hi = (uint8_t)(addr[i] >> 4);
+    const uint8_t lo = (uint8_t)(addr[i] & 0x0F);
+    buf[i * 2] = (char)(hi < 10 ? ('0' + hi) : ('a' + (hi - 10)));
+    buf[i * 2 + 1] = (char)(lo < 10 ? ('0' + lo) : ('a' + (lo - 10)));
+  }
+  buf[16] = 0;
+  return String(buf);
+}
+
 static String payloadToString(const uint8_t *data, uint16_t len) {
   String s;
   s.reserve(len + 1);
@@ -859,9 +910,48 @@ static bool seenBefore(uint32_t id) {
   return false;
 }
 
+// Дубли: mesh v2 использует (src, packetId) ring на 256 записей/60 c.
+static bool meshSeenDuplicate(uint32_t src, uint32_t packetId) {
+#if SG_MESH_V2
+  uint8_t addr[8];
+  nodeMeshAddr(src, addr);
+  return kinto_is_duplicate(addr, packetId, millis());
+#else
+  (void)src;
+  return seenBefore(packetId);
+#endif
+}
+
+static void meshMarkOwn(uint32_t packetId) {
+#if SG_MESH_V2
+  uint8_t addr[8];
+  nodeMeshAddr(gNodeId, addr);
+  kinto_is_duplicate(addr, packetId, millis());   // запись в ring без срабатывания
+#else
+  seenBefore(packetId);
+#endif
+}
+
 static NeighborInfo gNeighbors[8];
 
-static void neighborTouch(uint32_t id, int16_t rssi) {
+// Mesh v2: кластер/border/handover (глобалы объявлены до функций).
+static uint32_t gSelfClusterId = 0;
+static uint32_t gPrevClusterId = 0;
+static bool     gBorderNode = false;
+static uint32_t gBeaconNeighborClusters[2] = {0, 0};
+static uint8_t  gBeaconNeighborClusterCount = 0;
+static uint32_t gLastClusterMs = 0;
+static uint32_t gLastClusterLogMs = 0;
+static uint32_t gAnchorNodeId = 0;   // gateway-якорь текущего кластера
+
+static uint8_t  gHandoverState = HO_IDLE;
+static uint32_t gHandoverPeer = 0;
+static uint32_t gHandoverTargetCluster = 0;
+static uint32_t gHandoverSinceMs = 0;
+static uint8_t  gHandoverAttempts = 0;
+static uint32_t gHandoverCooldownUntilMs = 0;
+
+static void neighborTouch(uint32_t id, int16_t rssi, bool fromLora) {
   if (!id || id == gNodeId) return;
   int slot = -1;
   for (int i = 0; i < 8; i++) {
@@ -876,16 +966,20 @@ static void neighborTouch(uint32_t id, int16_t rssi) {
     snprintf(gNeighbors[slot].role, sizeof(gNeighbors[slot].role), "%s", "node");
   }
   gNeighbors[slot].rssi = rssi;
+  gNeighbors[slot].fromLora = fromLora;
   gNeighbors[slot].lastMs = millis();
 }
 
-static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json) {
-  neighborTouch(id, rssi);
+static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
+                                 bool fromLora) {
+  neighborTouch(id, rssi, fromLora);
   for (int i = 0; i < 8; i++) {
     if (gNeighbors[i].used && gNeighbors[i].id == id) {
       gNeighbors[i].load = (uint8_t)jsonGetInt(json, "q");
       gNeighbors[i].batt = (uint8_t)jsonGetInt(json, "batt");
       gNeighbors[i].gateway = jsonGetInt(json, "gw") != 0;
+      gNeighbors[i].clusterId = jsonGetU32(json, "cluster_id");
+      gNeighbors[i].border = jsonGetInt(json, "border") != 0;
       String r = jsonGetString(json, "role");
       if (r.length()) snprintf(gNeighbors[i].role, sizeof(gNeighbors[i].role), "%s", r.c_str());
       break;
@@ -937,6 +1031,453 @@ static uint32_t routeLookup(uint32_t dst) {
     }
   }
   return 0;
+}
+
+/* ------------------------------------------------- mesh v2 / кластеры ---- */
+
+// Ранние объявления: clusterTick/handoverSend определены ниже, но используют
+// routed-отправку и запуск handover.
+static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payload,
+                               uint16_t len, uint8_t ttl, kinto_traffic_t traffic);
+static void handoverStart(uint32_t newCluster);
+
+static void neighborUpdatePresence(uint32_t id, int16_t rssi, const String &json,
+                                   bool fromLora) {
+  neighborTouch(id, rssi, fromLora);
+  for (int i = 0; i < 8; i++) {
+    if (!gNeighbors[i].used || gNeighbors[i].id != id) continue;
+    const uint32_t cid = jsonGetU32(json, "cluster_id");
+    if (cid) gNeighbors[i].clusterId = cid;
+    if (json.indexOf("\"border\"") >= 0) gNeighbors[i].border = jsonGetInt(json, "border") != 0;
+    break;
+  }
+}
+
+#if SG_MESH_V2
+static uint16_t rssiToEwma(int16_t rssi) {
+  if (rssi >= -50) return 40;
+  if (rssi >= -65) return 80;
+  if (rssi >= -75) return 140;
+  if (rssi >= -85) return 240;
+  return 380;
+}
+
+// HYBRID: сосед -> запись route table (metric/iface/queue/expiry).
+static void meshV2RouteUpdate(uint32_t id, int16_t rssi, bool fromLora, uint8_t queueDepth) {
+  if (!id || id == gNodeId) return;
+  kinto_route_t r;
+  memset(&r, 0, sizeof(r));
+  nodeMeshAddr(id, r.dst);
+  nodeMeshAddr(id, r.next_hop);   // сосед = прямой next hop
+  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_WIFI;
+  r.ewma_ms = rssiToEwma(rssi);
+  r.hops = 1;
+  r.queue_depth = queueDepth;
+  r.expiry_ms = millis() + KINTO_ROUTE_EXPIRY_MS;
+  r.valid = true;
+  kinto_route_upsert(&r);
+}
+
+// MT_ROUTE_REP: маршрут до не-соседа через ответивший узел.
+static void meshV2RouteLearned(uint32_t dst, uint32_t nextHop, bool fromLora) {
+  if (!dst || !nextHop || dst == gNodeId) return;
+  kinto_route_t r;
+  memset(&r, 0, sizeof(r));
+  nodeMeshAddr(dst, r.dst);
+  nodeMeshAddr(nextHop, r.next_hop);
+  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_WIFI;
+  r.ewma_ms = 220;
+  r.hops = 2;
+  r.queue_depth = 0;
+  r.expiry_ms = millis() + KINTO_ROUTE_EXPIRY_MS;
+  r.valid = true;
+  kinto_route_upsert(&r);
+  sgLog("[route] learned dst=%s next=%s via=%s", publicIdForNode(dst).c_str(),
+        publicIdForNode(nextHop).c_str(), fromLora ? "lora" : "wifi");
+}
+
+static kinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, uint16_t len) {
+  if (type == MT_ADVERT || type == MT_PRESENCE || type == MT_ROUTE_REQ ||
+      type == MT_ROUTE_REP) {
+    return KINTO_TRAFFIC_TELEMETRY;
+  }
+  if (type == MT_DATA && payload && len) {
+    const uint16_t cap = len > 160 ? 160 : len;
+    String s = payloadToString(payload, cap);
+    kinto_traffic_class_t cls = kinto_classify("text", len);
+    if (s.indexOf("\"kind\":\"media\"") >= 0 || s.indexOf("\"kind\":\"image\"") >= 0 ||
+        s.indexOf("\"kind\":\"file\"") >= 0) {
+      cls = KINTO_CLASS_MEDIA;
+    } else if (s.indexOf("\"kind\":\"ota\"") >= 0) {
+      cls = KINTO_CLASS_OTA;
+    } else if (s.indexOf("\"kind\":\"telemetry\"") >= 0) {
+      cls = KINTO_CLASS_TELEMETRY;
+    } else if (s.indexOf("\"kind\":\"search\"") >= 0) {
+      cls = KINTO_CLASS_SEARCH;
+    }
+    switch (cls) {
+      case KINTO_CLASS_MEDIA: return KINTO_TRAFFIC_MEDIA;
+      case KINTO_CLASS_OTA: return KINTO_TRAFFIC_OTA;
+      case KINTO_CLASS_TELEMETRY:
+      case KINTO_CLASS_TELEMETRY_REQ: return KINTO_TRAFFIC_TELEMETRY;
+      case KINTO_CLASS_SEARCH: return KINTO_TRAFFIC_SEARCH;
+      default: return KINTO_TRAFFIC_TEXT;
+    }
+  }
+  return KINTO_TRAFFIC_TEXT;
+}
+
+// Возвращает true, если route table дала конкретный интерфейс.
+static bool meshV2SelectIface(uint32_t dst, kinto_traffic_t traffic,
+                              kinto_iface_t *iface, uint8_t *hops) {
+  if (iface) *iface = KINTO_IFACE_NONE;
+  if (!dst || dst == MESH_BROADCAST) return false;
+  uint8_t addr[8];
+  nodeMeshAddr(dst, addr);
+  kinto_route_t r = kinto_select_route(addr, traffic, millis());
+  if (!r.valid || r.iface == KINTO_IFACE_NONE) return false;
+  if (iface) *iface = r.iface;
+  if (hops) *hops = r.hops;
+  return true;
+}
+
+static int meshAddrCmp(const uint8_t a[8], const uint8_t b[8]) {
+  for (uint8_t i = 0; i < 8; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+// Cluster ID = FNV1a32(publicId ближайшего gateway-якоря); gateway — свой id.
+// Все узлы вокруг одного шлюза получают одинаковый cluster_id.
+static uint32_t clusterComputeSelfId() {
+  // Шлюз всегда якорь собственного кластера.
+  if (isGateway()) {
+    gAnchorNodeId = 0;
+    const char *selfAnchor[1] = {gPublicId.c_str()};
+    return kinto_compute_cluster_id(selfAnchor, 1);
+  }
+
+  int best = -1;
+  int bestRssi = -10000;
+  const uint32_t now = millis();
+
+  for (int i = 0; i < 8; i++) {
+    if (!gNeighbors[i].used || !gNeighbors[i].gateway) continue;
+    if (now - gNeighbors[i].lastMs > 12000UL) continue;
+    if (gNeighbors[i].id == gAnchorNodeId) {
+      // Гистерезис: не прыгаем между шлюзами из-за пары дБ.
+      if (gNeighbors[i].rssi >= bestRssi - 10) {
+        best = i;
+        bestRssi = gNeighbors[i].rssi;
+      }
+      continue;
+    }
+    if (gNeighbors[i].rssi > bestRssi) {
+      best = i;
+      bestRssi = gNeighbors[i].rssi;
+    }
+  }
+
+  if (best >= 0) {
+    if (gAnchorNodeId != gNeighbors[best].id) {
+      gAnchorNodeId = gNeighbors[best].id;
+      sgLog("[cluster] anchor -> %s rssi=%d", publicIdForNode(gAnchorNodeId).c_str(),
+            (int)gNeighbors[best].rssi);
+    }
+    String anchor = publicIdForNode(gNeighbors[best].id);
+    const char *anchors[1] = {anchor.c_str()};
+    return kinto_compute_cluster_id(anchors, 1);
+  }
+
+  gAnchorNodeId = 0;
+  const char *anchors[1] = {gPublicId.c_str()};
+  return kinto_compute_cluster_id(anchors, 1);
+}
+
+static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
+                                    unsigned *count) {
+  unsigned n = 0;
+  const uint32_t now = millis();
+  if (!out || !count || max == 0) return;
+
+  // Себя добавляем первым: elect-функция сможет выбрать и этот узел.
+  memset(&out[n], 0, sizeof(out[n]));
+  nodeMeshAddr(gNodeId, out[n].mesh_addr);
+  out[n].cluster_id = gSelfClusterId;
+  out[n].rssi = -40;
+  out[n].queue_depth = (uint8_t)min((uint16_t)queueLoadValue(), (uint16_t)255);
+  out[n].last_seen_ms = now ? now : 1;
+  n++;
+
+  for (int i = 0; i < 8 && n < max; i++) {
+    if (!gNeighbors[i].used || !gNeighbors[i].clusterId) continue;
+    if (now - gNeighbors[i].lastMs > 12000UL) continue;
+    memset(&out[n], 0, sizeof(out[n]));
+    nodeMeshAddr(gNeighbors[i].id, out[n].mesh_addr);
+    out[n].cluster_id = gNeighbors[i].clusterId;
+    out[n].rssi = gNeighbors[i].rssi;
+    out[n].queue_depth = gNeighbors[i].load;
+    out[n].last_seen_ms = now;   // сосед виден в текущем окне
+    n++;
+  }
+
+  // Стабильный порядок: адрес не зависит от порядка соседей.
+  for (unsigned i = 1; i < n; i++) {
+    kinto_cluster_neighbor_t v = out[i];
+    int j = (int)i - 1;
+    while (j >= 0 && meshAddrCmp(out[j].mesh_addr, v.mesh_addr) > 0) {
+      out[j + 1] = out[j];
+      j--;
+    }
+    out[j + 1] = v;
+  }
+  *count = n;
+}
+
+static void clusterTick() {
+  const uint32_t now = millis();
+  if (now - gLastClusterMs < KINTO_BEACON_INTERVAL_MS) return;
+  gLastClusterMs = now;
+
+  gPrevClusterId = gSelfClusterId;
+  const uint32_t prevAnchor = gAnchorNodeId;
+  gSelfClusterId = clusterComputeSelfId();
+
+  kinto_cluster_neighbor_t list[9];
+  unsigned count = 0;
+  clusterCollectNeighbors(list, 9, &count);
+
+  const bool selfSeesTwo = kinto_is_border_candidate(list, count);
+  kinto_border_candidate_t elected[KINTO_BORDER_MAX];
+  const unsigned electedCount =
+      kinto_elect_border_nodes(list, count, now ? now : 1, elected);
+
+  // Детерминированный выбор: border-нода — до KINTO_BORDER_MAX узлов
+  // с наименьшим mesh-адресом среди тех, кто видит чужой кластер.
+  uint8_t selfAddr[8];
+  nodeMeshAddr(gNodeId, selfAddr);
+  unsigned betterAddrs = 0;
+  for (unsigned i = 0; i < count; i++) {
+    if (list[i].cluster_id == gSelfClusterId) continue;
+    if (memcmp(list[i].mesh_addr, selfAddr, 8) == 0) continue;
+    if (meshAddrCmp(list[i].mesh_addr, selfAddr) < 0) betterAddrs++;
+  }
+  const bool border = selfSeesTwo && betterAddrs < KINTO_BORDER_MAX;
+
+  if (border != gBorderNode) {
+    gBorderNode = border;
+    sgLog("[border] %s self=%s cid=%lu peers=%u elected=%u",
+          border ? "elected" : "demoted", meshAddrHex(selfAddr).c_str(),
+          (unsigned long)gSelfClusterId, (unsigned)electedCount,
+          (unsigned)electedCount);
+  }
+
+  // neighbor_clusters для beacon: уникальные чужие cluster_id (до 2).
+  uint32_t clusters[2] = {0, 0};
+  uint8_t ccount = 0;
+  for (int i = 0; i < 8 && ccount < 2; i++) {
+    if (!gNeighbors[i].used || !gNeighbors[i].clusterId) continue;
+    if (now - gNeighbors[i].lastMs > 12000UL) continue;
+    if (gNeighbors[i].clusterId == gSelfClusterId) continue;
+    bool dup = false;
+    for (uint8_t k = 0; k < ccount; k++) {
+      if (clusters[k] == gNeighbors[i].clusterId) dup = true;
+    }
+    if (!dup) clusters[ccount++] = gNeighbors[i].clusterId;
+  }
+  gBeaconNeighborClusters[0] = clusters[0];
+  gBeaconNeighborClusters[1] = clusters[1];
+  gBeaconNeighborClusterCount = ccount;
+
+  if (now - gLastClusterLogMs > 30000UL) {
+    gLastClusterLogMs = now;
+    sgLog("[cluster] cid=%lu border=%d peers=%u nc=%u anchor=%s",
+          (unsigned long)gSelfClusterId, gBorderNode ? 1 : 0,
+          (unsigned)gBeaconNeighborClusterCount, (unsigned)count,
+          gAnchorNodeId ? publicIdForNode(gAnchorNodeId).c_str() : "self");
+  }
+
+  if (prevAnchor && gAnchorNodeId && gPrevClusterId && gSelfClusterId &&
+      gPrevClusterId != gSelfClusterId) {
+    sgLog("[cluster] moved %lu -> %lu", (unsigned long)gPrevClusterId,
+          (unsigned long)gSelfClusterId);
+    if (isWearable() && gHandoverState == HO_IDLE) {
+      handoverStart(gSelfClusterId);
+    }
+  }
+}
+#else
+static void meshV2RouteUpdate(uint32_t, int16_t, bool, uint8_t) {}
+static void meshV2RouteLearned(uint32_t, uint32_t, bool) {}
+static kinto_traffic_t meshV2TrafficFor(uint8_t, const uint8_t *, uint16_t) {
+  return KINTO_TRAFFIC_TEXT;
+}
+static bool meshV2SelectIface(uint32_t, kinto_traffic_t, kinto_iface_t *, uint8_t *) {
+  return false;
+}
+static void clusterTick() {}
+#endif
+
+/* ------------------------------------------------------- handover FSM ----- */
+
+static bool handoverInProgress() {
+  return gHandoverState == HO_REQUESTED || gHandoverState == HO_ACCEPTED ||
+         gHandoverState == HO_RETRY;
+}
+
+static bool handoverTransitional() {
+  // После завершения ещё 10 c дублируем cluster-agnostic очередь.
+  return handoverInProgress() ||
+         (gHandoverCooldownUntilMs && millis() < gHandoverCooldownUntilMs);
+}
+
+static uint32_t handoverBestPeer(uint32_t preferCluster) {
+  int bestMatch = -1;
+  int bestGw = -1, bestBorder = -1, bestAny = -1;
+  int rssiMatch = -10000;
+  int rssiGw = -10000, rssiBorder = -10000, rssiAny = -10000;
+  const uint32_t now = millis();
+  for (int i = 0; i < 8; i++) {
+    if (!gNeighbors[i].used) continue;
+    if (now - gNeighbors[i].lastMs > 30000UL) continue;
+    const int rssi = gNeighbors[i].rssi;
+    if (preferCluster && gNeighbors[i].clusterId == preferCluster && rssi > rssiMatch) {
+      rssiMatch = rssi;
+      bestMatch = i;
+    }
+    if (rssi > rssiAny) { rssiAny = rssi; bestAny = i; }
+    if (gNeighbors[i].border && rssi > rssiBorder) {
+      rssiBorder = rssi;
+      bestBorder = i;
+    }
+    if (gNeighbors[i].gateway && rssi > rssiGw) {
+      rssiGw = rssi;
+      bestGw = i;
+    }
+  }
+  if (bestMatch >= 0) return gNeighbors[bestMatch].id;
+  if (bestGw >= 0) return gNeighbors[bestGw].id;
+  if (bestBorder >= 0) return gNeighbors[bestBorder].id;
+  return bestAny >= 0 ? gNeighbors[bestAny].id : 0;
+}
+
+static void handoverSend(const char *op, uint32_t dst, uint32_t cluster) {
+  if (!dst) return;
+  String p = String("{\"kind\":\"handover\",\"op\":\"") + op +
+             "\",\"from\":" + String((unsigned long)gNodeId) +
+             ",\"to\":" + String((unsigned long)dst) +
+             ",\"cluster\":" + String((unsigned long)cluster) +
+             ",\"role\":\"" + SG_ROLE + "\"}";
+  meshTransmitRouted(MT_DATA, dst, (const uint8_t *)p.c_str(),
+                     (uint16_t)p.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
+}
+
+static void handoverStart(uint32_t newCluster) {
+  if (gHandoverState != HO_IDLE) return;
+  const uint32_t peer = handoverBestPeer(newCluster);
+  if (!peer) {
+    sgLog("[handover] no peer for cluster %lu", (unsigned long)newCluster);
+    return;
+  }
+  gHandoverState = HO_REQUESTED;
+  gHandoverPeer = peer;
+  gHandoverTargetCluster = newCluster;
+  gHandoverSinceMs = millis();
+  gHandoverAttempts = 1;
+  sgLog("[handover] request peer=%s cluster=%lu", publicIdForNode(peer).c_str(),
+        (unsigned long)newCluster);
+  handoverSend("request", peer, newCluster);
+}
+
+static void handoverHandle(const String &raw, const MeshHeader &h) {
+  const String op = jsonGetString(raw, "op");
+  if (!op.length()) return;
+  const uint32_t cluster = jsonGetU32(raw, "cluster");
+  if (op == "request") {
+    sgLog("[handover] request from %s cluster=%lu", publicIdForNode(h.src).c_str(),
+          (unsigned long)cluster);
+    if (isWearable() || isGateway() || gBorderNode) {
+      handoverSend("accept", h.src, cluster);
+      // Принимающая сторона не ведёт FSM: она только подтверждает переход.
+      if (isWearable()) {
+        gHandoverPeer = h.src;
+        gHandoverTargetCluster = cluster;
+        gHandoverState = HO_ACCEPTED;
+        gHandoverSinceMs = millis();
+        gHandoverCooldownUntilMs = millis() + 10000UL;
+      }
+    }
+  } else if (op == "accept") {
+    if (gHandoverState != HO_REQUESTED && gHandoverState != HO_RETRY &&
+        gHandoverState != HO_ACCEPTED) return;
+    if (gHandoverPeer && h.src != gHandoverPeer) return;
+    gHandoverPeer = h.src;
+    gHandoverState = HO_ACCEPTED;
+    gHandoverTargetCluster = cluster;
+    gHandoverSinceMs = millis();
+    sgLog("[handover] accepted by %s cluster=%lu", publicIdForNode(h.src).c_str(),
+          (unsigned long)cluster);
+    handoverSend("complete", h.src, cluster);
+    // Инициатор завершает переход локально: COMPLETE — финальное подтверждение.
+    if (cluster) {
+      gSelfClusterId = cluster;
+      gPrevClusterId = cluster;
+    }
+    gHandoverState = HO_IDLE;
+    gHandoverPeer = 0;
+    gHandoverTargetCluster = 0;
+    gHandoverCooldownUntilMs = millis() + 10000UL;
+    sgLog("[handover] complete cluster=%lu", (unsigned long)cluster);
+  } else if (op == "complete") {
+    if (gHandoverState == HO_IDLE) return;
+    if (gHandoverPeer && h.src != gHandoverPeer) return;
+    if (cluster) {
+      gSelfClusterId = cluster;
+      gPrevClusterId = cluster;
+    }
+    gHandoverState = HO_IDLE;
+    gHandoverPeer = 0;
+    gHandoverTargetCluster = 0;
+    gHandoverCooldownUntilMs = millis() + 10000UL;
+    sgLog("[handover] complete cluster=%lu", (unsigned long)cluster);
+  } else if (op == "retry") {
+    if (gHandoverState == HO_IDLE) return;
+    if (gHandoverPeer && h.src != gHandoverPeer) return;
+    gHandoverState = HO_RETRY;
+    gHandoverSinceMs = millis();
+    if (cluster) gHandoverTargetCluster = cluster;
+    sgLog("[handover] retry from %s", publicIdForNode(h.src).c_str());
+    if (gHandoverTargetCluster) {
+      handoverSend("request", h.src, gHandoverTargetCluster);
+    }
+  }
+}
+
+static void handoverTick() {
+  if (!handoverInProgress()) return;
+  const uint32_t now = millis();
+  if (now - gHandoverSinceMs < 5000UL) return;
+  gHandoverSinceMs = now;
+  if (gHandoverAttempts >= 3) {
+    sgLog("[handover] timeout cluster=%lu -> idle",
+          (unsigned long)gHandoverTargetCluster);
+    gHandoverState = HO_IDLE;
+    gHandoverPeer = 0;
+    gHandoverCooldownUntilMs = millis() + 10000UL;
+    return;
+  }
+  gHandoverAttempts++;
+  const uint32_t peer = gHandoverPeer ? gHandoverPeer
+                                      : handoverBestPeer(gHandoverTargetCluster);
+  if (!peer) return;
+  gHandoverPeer = peer;
+  gHandoverState = HO_RETRY;
+  sgLog("[handover] retry #%u peer=%s", (unsigned)gHandoverAttempts,
+        publicIdForNode(peer).c_str());
+  handoverSend("retry", peer, gHandoverTargetCluster);
+  handoverSend("request", peer, gHandoverTargetCluster);
 }
 
 /* ----------------------------------------------------------- mesh сборка - */
@@ -1239,6 +1780,78 @@ static bool transmitPacket(const uint8_t *buf, size_t len) {
   return ok;
 }
 
+// Отправка только через выбранный route-таблицей интерфейс.
+static bool transmitViaIface(const uint8_t *buf, size_t len, kinto_iface_t iface) {
+  if (iface == KINTO_IFACE_WIFI) {
+    if (wifiTransportEnabled() && gWifiReady) return wifiSendRaw(buf, len);
+    return false;
+  }
+#if SG_USE_LORA
+  if (iface == KINTO_IFACE_LORA) {
+    if (!loraTransportEnabled() || !gLoraReady) return false;
+    if (len <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
+      return loraSendRaw(buf, len);
+    }
+    return loraSendFragments(buf, len);
+  }
+#endif
+  return false;
+}
+
+// HYBRID: unicast по route table, иначе обычный flood по всем транспортам.
+static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
+                           kinto_traffic_t traffic) {
+#if SG_MESH_V2
+  if (dst != MESH_BROADCAST) {
+    kinto_iface_t iface = KINTO_IFACE_NONE;
+    uint8_t hops = 0;
+    if (meshV2SelectIface(dst, traffic, &iface, &hops)) {
+      if (transmitViaIface(buf, len, iface)) {
+        gTxCount++;
+        static uint32_t lastRouteLogMs = 0;
+        if (millis() - lastRouteLogMs > 2000UL) {
+          lastRouteLogMs = millis();
+          sgLog("[route] tx dst=%s via=%s hops=%u %uB",
+                publicIdForNode(dst).c_str(),
+                iface == KINTO_IFACE_LORA ? "lora" : "wifi",
+                (unsigned)hops, (unsigned)len);
+        }
+        return true;
+      }
+      sgLog("[route] selected iface unavailable dst=%s -> flood",
+            publicIdForNode(dst).c_str());
+    }
+  }
+#else
+  (void)dst;
+  (void)traffic;
+#endif
+  return transmitPacket(buf, len);
+}
+
+// meshTransmit с выбором маршрута/транспорта и TTL-нормализацией.
+static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payload,
+                               uint16_t len, uint8_t ttl, kinto_traffic_t traffic) {
+  if (len > SG_MAX_PAYLOAD) return false;
+  uint8_t effectiveTtl = ttl;
+#if SG_MESH_V2
+  if (dst != MESH_BROADCAST) {
+    kinto_iface_t iface = KINTO_IFACE_NONE;
+    if (meshV2SelectIface(dst, traffic, &iface, NULL) && iface == KINTO_IFACE_LORA) {
+      effectiveTtl = kinto_ttl_for_iface(KINTO_IFACE_LORA, ttl);
+    }
+  }
+#endif
+  if (!effectiveTtl) effectiveTtl = 1;
+  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  const uint32_t id = nextPacketId();
+  const size_t n = meshBuild(buf, sizeof(buf), type, dst, id, effectiveTtl, 0,
+                             payload, len);
+  if (!n) return false;
+  meshMarkOwn(id);
+  return transmitRouted(buf, n, dst, traffic);
+}
+
 static bool meshTransmit(uint8_t type, uint32_t dst, const uint8_t *payload,
                          uint16_t len, uint8_t ttl) {
   if (len > SG_MAX_PAYLOAD) return false;
@@ -1246,7 +1859,7 @@ static bool meshTransmit(uint8_t type, uint32_t dst, const uint8_t *payload,
   uint32_t id = nextPacketId();
   size_t n = meshBuild(buf, sizeof(buf), type, dst, id, ttl, 0, payload, len);
   if (!n) return false;
-  seenBefore(id);   // собственный пакет не должен обрабатываться повторно
+  meshMarkOwn(id);   // собственный пакет не должен обрабатываться повторно
   return transmitPacket(buf, n);
 }
 
@@ -1259,7 +1872,27 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len);
 static void sendAckTo(uint32_t dst, uint32_t originalId) {
   uint8_t pl[4];
   writeLe32(pl, originalId);
+  // ACK отправляем flood-ом: подтверждение должно дойти даже при устаревшем
+  // маршруте; route table используется для handover/route-control.
   meshTransmit(MT_ACK, dst, pl, 4, SG_LORA_MAX_HOPS);
+}
+
+// Поля beacon v2: cluster_id / border / neighbor_clusters (+ mesh addr).
+static void appendBeaconFields(String &p) {
+  uint8_t addr[8];
+  nodeMeshAddr(gNodeId, addr);
+  p += ",\"addr\":\"";
+  p += meshAddrHex(addr);
+  p += "\",\"cluster_id\":";
+  p += String((unsigned long)gSelfClusterId);
+  p += ",\"border\":";
+  p += gBorderNode ? "1" : "0";
+  p += ",\"neighbor_clusters\":[";
+  for (uint8_t i = 0; i < gBeaconNeighborClusterCount; i++) {
+    if (i) p += ",";
+    p += String((unsigned long)gBeaconNeighborClusters[i]);
+  }
+  p += "]";
 }
 
 static String advertPayload() {
@@ -1268,7 +1901,9 @@ static String advertPayload() {
              ",\"gw\":" + (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? 1 : 0) +
              ",\"batt\":" + String(gBattery) +
              ",\"q\":" + String((unsigned)queueLoadValue()) +
-             ",\"n\":" + String((unsigned)neighborCount()) + "}";
+             ",\"n\":" + String((unsigned)neighborCount());
+  appendBeaconFields(p);
+  p += "}";
   return p;
 }
 
@@ -1282,7 +1917,9 @@ static void sendPresence() {
   // Congestion: при load > 120 presence/typing не отправляем.
   if (queueLoadValue() > 120) return;
   String p = String("{\"id\":") + String((unsigned long)gNodeId) +
-             ",\"batt\":" + String(gBattery) + "}";
+             ",\"batt\":" + String(gBattery);
+  appendBeaconFields(p);
+  p += "}";
   meshTransmit(MT_PRESENCE, MESH_BROADCAST, (const uint8_t *)p.c_str(),
                (uint16_t)p.length(), 2);
 }
@@ -1324,20 +1961,29 @@ static void handleHttpRelay(const String &raw, uint32_t src) {
 
   String out = String("{\"chatId\":\"__http__\",\"envelope\":{\"kind\":\"http_resp\",\"id\":\"") +
                jsonEsc(String(reqId)) + "\",\"blob\":\"" + rblob + "\"}}";
-  meshTransmit(MT_DATA, src, (const uint8_t *)out.c_str(), (uint16_t)out.length(), SG_LORA_MAX_HOPS);
+  meshTransmitRouted(MT_DATA, src, (const uint8_t *)out.c_str(),
+                     (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
   sgLog("[http] relay ok %u bytes", (unsigned)out.length());
 }
 
-static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t rssi) {
+static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t rssi,
+                            bool fromLora) {
   switch (h.type) {
     case MT_DATA: {
-      // Специальный канал: зашифрованный API-запрос через шлюз.
+      bool control = false;
+      // Специальные JSON-каналы поверх MT_DATA; неизвестный JSON игнорируется.
       if (h.payloadLen > 8) {
         String raw = payloadToString(payload, h.payloadLen);
-        if (raw.indexOf("\"__http__\"") >= 0 && raw.indexOf("\"kind\":\"http\"") >= 0) {
+        if (raw.indexOf("\"kind\":\"handover\"") >= 0 ||
+            raw.indexOf("\"kind\": \"handover\"") >= 0) {
+          control = true;
+          handoverHandle(raw, h);
+        } else if (raw.indexOf("\"__http__\"") >= 0 &&
+                   raw.indexOf("\"kind\":\"http\"") >= 0) {
           handleHttpRelay(raw, h.src);
         }
       }
+      if (control) break;
       if (isWearable()) {
         deliverToClients(FT_DATA_DOWN, payload, h.payloadLen);
       }
@@ -1360,11 +2006,12 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
     }
     case MT_ADVERT: {
       String j = payloadToString(payload, h.payloadLen);
-      neighborUpdateAdvert(h.src, rssi, j);
+      neighborUpdateAdvert(h.src, rssi, j, fromLora);
       break;
     }
     case MT_PRESENCE: {
-      neighborTouch(h.src, rssi);
+      String j = payloadToString(payload, h.payloadLen);
+      neighborUpdatePresence(h.src, rssi, j, fromLora);
       break;
     }
     case MT_ROUTE_REQ: {
@@ -1373,7 +2020,8 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
         if (target == gNodeId || routeLookup(target)) {
           uint8_t rep[4];
           writeLe32(rep, target);
-          meshTransmit(MT_ROUTE_REP, h.src, rep, 4, SG_LORA_MAX_HOPS);
+          meshTransmitRouted(MT_ROUTE_REP, h.src, rep, 4, SG_LORA_MAX_HOPS,
+                             KINTO_TRAFFIC_TEXT);
         }
       }
       break;
@@ -1382,6 +2030,7 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
       if (h.payloadLen >= 4) {
         uint32_t target = readLe32(payload);
         routeLearn(target, h.src);
+        meshV2RouteLearned(target, h.src, fromLora);
       }
       break;
     }
@@ -1397,10 +2046,20 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
     sgLog("[mesh] bad packet %uB via %s", (unsigned)n, fromLora ? "lora" : "wifi");
     return;
   }
-  if (seenBefore(h.packetId)) return;
+  if (meshSeenDuplicate(h.src, h.packetId)) return;
 
-  neighborTouch(h.src, rssi);
+  neighborTouch(h.src, rssi, fromLora);
   routeLearn(h.src, MESH_BROADCAST);   // src достижим через flood
+  uint8_t srcQueue = 0;
+  for (int i = 0; i < 8; i++) {
+    if (gNeighbors[i].used && gNeighbors[i].id == h.src) {
+      srcQueue = gNeighbors[i].load;
+      break;
+    }
+  }
+  meshV2RouteUpdate(h.src, rssi, fromLora, srcQueue);
+
+  const kinto_traffic_t traffic = meshV2TrafficFor(h.type, payload, h.payloadLen);
 
   // Первый хоп от соседа: по этим строкам видно, работает ли транспорт.
   if (h.hop == 0 && h.type != MT_PRESENCE) {
@@ -1416,28 +2075,44 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
   }
 
   const bool forMe = (h.dst == gNodeId) || (h.dst == MESH_BROADCAST);
-  if (forMe && h.type != MT_FRAG) handleMeshLocal(h, payload, rssi);
+  if (forMe && h.type != MT_FRAG) handleMeshLocal(h, payload, rssi, fromLora);
 
   // Ретранслируем broadcast и чужие unicast-пакеты, пока жив TTL.
-  // transmitPacket дублирует пакет в WiFi и LoRa — это и есть мост сред.
+  // Wi-Fi <-> LoRa: TTL нормализуется для выбранного интерфейса.
   if (h.ttl > 0 && (h.dst == MESH_BROADCAST || h.dst != gNodeId)) {
     if (h.dst != MESH_BROADCAST && !routeLookup(h.dst) && h.hop == 0) {
       sendRouteReq(h.dst);
     }
+    uint8_t nextTtl = (uint8_t)(h.ttl - 1);
+    bool hasRoute = false;
+    kinto_iface_t routeIface = KINTO_IFACE_NONE;
+#if SG_MESH_V2
+    if (h.dst != MESH_BROADCAST) {
+      hasRoute = meshV2SelectIface(h.dst, traffic, &routeIface, NULL);
+    }
+    if (hasRoute) {
+      nextTtl = kinto_ttl_for_iface(routeIface, nextTtl);
+    }
+#else
+    (void)routeIface;
+#endif
+    if (!nextTtl) return;
+
     uint8_t fwd[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
     size_t fn = meshBuild(fwd, sizeof(fwd), h.type, h.dst, h.packetId,
-                          (uint8_t)(h.ttl - 1), (uint8_t)(h.hop + 1),
+                          nextTtl, (uint8_t)(h.hop + 1),
                           payload, h.payloadLen);
     if (fn) {
       gFwdCount++;
       if (millis() - gLastFwdLogMs > 2000UL) {
         gLastFwdLogMs = millis();
-        sgLog("[mesh] fwd %s->all type=%u hop=%u ttl=%u (n=%lu)",
-              fromLora ? "lora" : "wifi", (unsigned)h.type,
-              (unsigned)(h.hop + 1), (unsigned)(h.ttl - 1),
+        sgLog("[mesh] fwd %s->%s type=%u hop=%u ttl=%u (n=%lu)",
+              fromLora ? "lora" : "wifi",
+              hasRoute ? (routeIface == KINTO_IFACE_LORA ? "lora" : "wifi") : "all",
+              (unsigned)h.type, (unsigned)(h.hop + 1), (unsigned)nextTtl,
               (unsigned long)gFwdCount);
       }
-      transmitPacket(fwd, fn);
+      transmitRouted(fwd, fn, h.dst, traffic);
     }
   }
 }
@@ -1486,8 +2161,14 @@ static void sendQueuedEntry(QueueEntry &e) {
   size_t n = meshBuild(buf, sizeof(buf), MT_DATA, MESH_BROADCAST, e.id,
                        SG_LORA_MAX_HOPS, 0, e.data, e.len);
   if (!n) return;
-  seenBefore(e.id);   // не обрабатывать собственный пакет при эхе
+  meshMarkOwn(e.id);   // не обрабатывать собственный пакет при эхе
   const bool ok = transmitPacket(buf, n);
+  // Пока handover не завершён, дублируем cluster-agnostic записи, чтобы
+  // не потерять сообщение на границе старого/нового кластера.
+  if (handoverTransitional()) {
+    transmitPacket(buf, n);
+    sgLog("[handover] double-send id=%08lx", (unsigned long)e.id);
+  }
   if (e.tries == 0 || e.tries == 3 || e.tries % 10 == 0) {
     sgLog("[mesh] queue tx id=%08lx kind=%u len=%u try=%u dst=bcast %s",
           (unsigned long)e.id, (unsigned)e.kind, (unsigned)e.len,
@@ -1840,6 +2521,9 @@ static String buildInfoJson() {
              "\",\"battery\":" + String(gBattery) +
              ",\"attached\":" + String(attached() ? 1 : 0) +
              ",\"gateway\":" + String(gw ? 1 : 0) +
+             ",\"cluster_id\":" + String((unsigned long)gSelfClusterId) +
+             ",\"border\":" + String(gBorderNode ? 1 : 0) +
+             ",\"handover\":" + String((unsigned)gHandoverState) +
              ",\"queue\":" + String((unsigned)queueLoadValue()) +
              ",\"rssi\":" + String(wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + "}";
   return j;
@@ -2535,6 +3219,8 @@ static void hubRegister() {
                 "\",\"role\":\"gateway\",\"battery\":" + String(gBattery) +
                 ",\"firmware\":\"" SG_FIRMWARE_VERSION
                 "\",\"gateway\":true,\"neighbors\":" + neighborsJson() +
+                ",\"cluster_id\":" + String((unsigned long)gSelfClusterId) +
+                ",\"border\":" + String(gBorderNode ? 1 : 0) +
                 ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
                 ",\"uptime\":" + String((unsigned long)(millis() / 1000UL)) +
                 ",\"claimToken\":\"" SG_CLAIM_TOKEN "\"}";
@@ -2812,6 +3498,15 @@ void setup() {
         wifiTransportEnabled() ? 1 : 0, loraTransportEnabled() ? 1 : 0);
   setupOta();
 
+#if SG_MESH_V2
+  kinto_router_init();
+  gSelfClusterId = clusterComputeSelfId();
+  gBorderNode = false;
+  sgLog("[cluster] init cid=%lu mesh_v2=1", (unsigned long)gSelfClusterId);
+#else
+  sgLog("[cluster] mesh_v2=0");
+#endif
+
   // Первый ADVERT/presence и INFO клиенту.
   sendAdvert();
   gLastAdvertMs = millis();
@@ -2840,6 +3535,8 @@ void loop() {
     wifiPoll();
   }
   loraPoll();
+  clusterTick();
+  handoverTick();
   diagPoll();
   ledPoll();
 

@@ -77,6 +77,8 @@ export type Claims = {
   scope?: string;
   /** Публичный 8-значный ID модуля (для module-токенов). */
   pid?: string;
+  /** Версия module-токена: при переносе модуля старые токены отзываются. */
+  tv?: number;
   iat: number;
   exp: number;
   jti?: string;

@@ -121,6 +121,10 @@ export function HubStep({
         kind: config.connectivity === 'wifi_lora' ? 'lora' : 'wifi',
         firmware: firmwareVersion || undefined,
       });
+      if (result?.pendingTransfer) {
+        setPairError('Модуль принадлежит другому пользователю. Заявка на перенос отправлена.');
+        return;
+      }
       if (!result?.moduleToken) {
         throw new Error('Hub не вернул токен модуля. Привязка не завершена.');
       }

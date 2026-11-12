@@ -407,14 +407,25 @@ export function rotateModuleNetwork(options: { rotateSsid?: boolean } = {}): Pro
 
 /** Привязка модуля: поиск идёт в существующем api.pairModule. */
 export function pairModule(input: { boardUuid: string; kind?: string; firmware?: string }): Promise<{
-  moduleToken: string;
+  moduleToken?: string;
   board_uuid?: string;
+  pendingTransfer?: boolean;
+  transferId?: string;
+  ownerUsername?: string;
+  moduleId?: string;
 }> {
   const target = api as unknown as Record<string, unknown>;
   if (typeof target.pairModule !== 'function') {
     return Promise.reject(new Error('Hub не поддерживает привязку модулей.'));
   }
-  return (target.pairModule as (value: typeof input) => Promise<{ moduleToken: string; board_uuid?: string }>)(input);
+  return (target.pairModule as (value: typeof input) => Promise<{
+    moduleToken?: string;
+    board_uuid?: string;
+    pendingTransfer?: boolean;
+    transferId?: string;
+    ownerUsername?: string;
+    moduleId?: string;
+  }>)(input);
 }
 
 /** Абсолютный URL скачивания: относительный путь склеиваем с apiBase. */

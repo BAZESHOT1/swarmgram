@@ -26,6 +26,7 @@ export const CHATS_KEY = 'chats';
 export const CHANNELS_KEY = 'channels';
 export const NODES_KEY = 'nodes';
 export const MODULES_KEY = 'modules';
+export const MODULE_TRANSFERS_KEY = 'module-transfers';
 export const STATS_KEY = 'stats';
 export const BLOCKED_KEY = 'blocked';
 
@@ -406,6 +407,64 @@ export function useReportModuleShadow() {
   return useMutation({
     mutationFn: (shadowId: string) => api.api.reportModuleShadow(shadowId),
     onSuccess: () => void qc.invalidateQueries({ queryKey: [MODULES_KEY] }),
+  });
+}
+
+/** Входящие/исходящие заявки на перенос модулей. */
+export function useModuleTransfers() {
+  const me = useStore((s) => s.me);
+  return useQuery({
+    queryKey: [MODULE_TRANSFERS_KEY, me?.username],
+    queryFn: () => api.api.listModuleTransfers(),
+    enabled: Boolean(me),
+    staleTime: STALE.directory,
+    gcTime: 10 * 60_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+function invalidateTransfers(qc: ReturnType<typeof useQueryClient>) {
+  void qc.invalidateQueries({ queryKey: [MODULE_TRANSFERS_KEY] });
+  void qc.invalidateQueries({ queryKey: [MODULES_KEY] });
+}
+
+/** Попросить другого пользователя принять модуль. */
+export function useRequestModuleTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; username?: string; userId?: string }) =>
+      api.api.requestModuleTransfer(input.id, {
+        username: input.username,
+        userId: input.userId,
+      }),
+    onSuccess: () => invalidateTransfers(qc),
+  });
+}
+
+/** Принять входящую заявку на перенос. */
+export function useAcceptModuleTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.api.acceptModuleTransfer(id),
+    onSuccess: () => invalidateTransfers(qc),
+  });
+}
+
+/** Отклонить входящую заявку на перенос. */
+export function useDeclineModuleTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.api.declineModuleTransfer(id),
+    onSuccess: () => invalidateTransfers(qc),
+  });
+}
+
+/** Отменить исходящую заявку на перенос. */
+export function useCancelModuleTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.api.cancelModuleTransfer(id),
+    onSuccess: () => invalidateTransfers(qc),
   });
 }
 

@@ -20,7 +20,7 @@ import { useTheme } from '../../theme/useTheme';
 import { GlassCard } from '../settings/SettingsUI';
 import { SettingsInput, StatusBadge } from '../settings/SettingsWidgets';
 import { ChoiceCard, Note } from '../firmware/FirmwareUI';
-import { api, ApiError, type ModuleRole } from '../../data/api';
+import { api, ApiError, isPendingTransfer, type ModuleRole } from '../../data/api';
 import { humanError } from '../../data/queries';
 import { useModuleConnection } from '../../modules/ModuleProvider';
 import { MESH_ALWAYS, moduleRoleLabel } from './moduleUi';
@@ -181,6 +181,13 @@ export function ConnectModuleFlow({
       try {
         const row = await api.claimModule(value);
         if (stopped.current) return;
+        if (isPendingTransfer(row)) {
+          stopped.current = true;
+          setClaiming(false);
+          setSearching(false);
+          setClaimError('Модуль принадлежит другому пользователю. Заявка на перенос отправлена.');
+          return;
+        }
         stopped.current = true;
         setClaiming(false);
         setSearching(false);
