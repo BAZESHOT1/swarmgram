@@ -2796,9 +2796,11 @@ void setup() {
   gLastBattMs = millis();
   setupLed();
 
-  // На wearable сначала BLE (им нужен телефон), Wi-Fi вообще не поднимаем.
+  // На wearable сначала BLE (им нужен телефон), затем Wi-Fi, если выбран,
+  // и LoRa. Wi-Fi-only wearable должен уметь подключаться к шлюзу по Wi-Fi.
   if (isWearable()) {
     setupBle();
+    if (wifiTransportEnabled()) setupWifi();
     setupLora();
   } else {
     setupWifi();

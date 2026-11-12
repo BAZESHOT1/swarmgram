@@ -126,10 +126,7 @@ function validateConfig(raw: unknown): FirmwareConfig {
     role: b.role as FirmwareRole,
     connectivity: b.connectivity as FirmwareConnectivity,
   };
-  // Wearable не поднимает STA/Wi-Fi (только BLE до телефона + LoRa до шлюза),
-  // иначе он зависает в "sta is connecting" и не запускает mesh.
-  if (out.role === 'wearable') out.connectivity = 'lora';
-  else if (out.connectivity === 'wifi') out.connectivity = 'wifi_lora';
+  // Уважаем выбор пользователя: wifi / wifi_lora / lora.
 
   if (b.wifi !== undefined) {
     if (!b.wifi || typeof b.wifi !== 'object') throw badRequest('wifi_invalid');

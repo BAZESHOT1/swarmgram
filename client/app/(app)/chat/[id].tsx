@@ -1935,8 +1935,10 @@ export default function ChatScreen() {
             setReactionTarget(null);
           }}
           onMore={() => {
-            setSheetMessage(reactionTarget);
+            const target = reactionTarget;
             setReactionTarget(null);
+            // Даём модалке реакций закрыться, иначе iOS не показывает вторую.
+            setTimeout(() => setSheetMessage(target), 260);
           }}
         />
 
