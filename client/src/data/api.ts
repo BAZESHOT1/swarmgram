@@ -10,9 +10,11 @@ import { beginRequest, endRequest } from './loading';
 export type { Session } from '../crypto/core';
 
 const NATIVE_API_CANDIDATES = [
+  // Рабочий узел с валидным сертификатом — первым, чтобы native не ждал
+  // таймауты на несуществующих доменах.
+  'https://150-251-143-212.nip.io:3443/api',
   'https://api.kinto.is-a.dev/api',
   'https://api.kinto.io/api',
-  'https://150-251-143-212.nip.io:3443/api',
 ];
 const DEFAULT_NATIVE_API = NATIVE_API_CANDIDATES[0];
 const BASE = (process.env.EXPO_PUBLIC_API_URL ?? (Platform.OS === 'web' ? '/api' : DEFAULT_NATIVE_API)).replace(/\/+$/, '');
@@ -1025,17 +1027,45 @@ export const api = {
     // RN (Hermes) принимает ArrayBuffer, web — и Uint8Array
     const body: BodyInit = Platform.OS === 'web' ? (bytes as unknown as BodyInit) : (bytes.slice().buffer as unknown as BodyInit);
     beginRequest();
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 25_000) : null;
     try {
       const res = await fetch(nodeUrl(url), {
         method: 'PUT',
         headers: { 'content-type': 'application/octet-stream', 'x-sg-ticket': ticket },
         body,
+        ...(controller ? { signal: controller.signal } : {}),
       });
       if (!res.ok) return null;
       const data = (await res.json().catch(() => ({}))) as { size?: number; sha256?: string };
       return { size: data.size ?? bytes.length, sha256: data.sha256 ?? '' };
     } catch {
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      endRequest();
+    }
+  },
+
+  async uploadObjectRelay(bytes: Uint8Array): Promise<UploadedObject> {
+    // Резервный путь: Hub сам раскладывает объект на узлы. Нужен на native,
+    // где прямое HTTP-подключение к узлам блокируется ATS/cleartext-политикой.
+    const body: BodyInit = Platform.OS === 'web' ? (bytes as unknown as BodyInit) : (bytes.slice().buffer as unknown as BodyInit);
+    beginRequest();
+    try {
+      const res = await fetch(`${apiBase}/v1/objects`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session?.accessToken ?? ''}`,
+          'content-type': 'application/octet-stream',
+        },
+        body,
+      });
+      const data = (await res.json().catch(() => null)) as (UploadedObject & { error?: string; message?: string }) | null;
+      if (!res.ok || !data?.id) {
+        throw new ApiError(res.status, data?.error ?? 'upload_failed', data?.message ?? 'Не удалось загрузить объект на сервер.');
+      }
+      return data;
     } finally {
       endRequest();
     }
@@ -1294,6 +1324,15 @@ export const api = {
   unblockModule: (id: string) =>
     req<{ ok: boolean; blocked: boolean }>(`/v1/modules/${id}/unblock`, { method: 'POST' }),
   moduleNeighbors: (id: string) => req<MeshNeighbor[]>(`/v1/modules/${id}/neighbors`),
+  moduleOta: (id: string, buildId?: string) =>
+    req<{ ok: boolean; jobId: string; version: string }>(`/v1/modules/${encodeURIComponent(id)}/ota`, {
+      method: 'POST',
+      body: JSON.stringify(buildId ? { buildId } : {}),
+    }),
+  moduleOtaStatus: (id: string) =>
+    req<{ job: null | { id: string; status: string; progress: number; error: string | null; version: string; sizeBytes: number; sha256: string; url: string; createdAt: string; updatedAt: string } }>(
+      `/v1/modules/${encodeURIComponent(id)}/ota`,
+    ),
 
   /* ---- серверная сборка прошивок ---- */
   buildFirmware: (config: FirmwareConfig) =>

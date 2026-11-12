@@ -2,6 +2,7 @@
  * Kinto client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
  * РїРµСЂСЃРёСЃС‚ С‚РµРјС‹ Рё СЃРµСЃСЃРёРё.
  */
+import 'react-native-get-random-values';
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';

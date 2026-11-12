@@ -105,7 +105,7 @@
 // Жёсткие параметры сети (config.h может их переопределить).
 #define SG_DEFAULT_MESH_SSID "SG-MESH"
 #define SG_DEFAULT_MESH_PASS "sgmesh-2026-11-11-a7f3c9d2e6b14580"
-#define SG_DEFAULT_HUB_URL "http://api.kinto.is-a.dev"
+#define SG_DEFAULT_HUB_URL "http://150.251.143.212:8080"
 
 #ifndef SG_MESH_CHANNEL
 #define SG_MESH_CHANNEL 11
@@ -182,6 +182,8 @@
 
 #if SG_OTA
 #include <ArduinoOTA.h>
+#include <Update.h>
+#include <mbedtls/sha256.h>
 #endif
 
 #if SG_USE_LORA
@@ -373,6 +375,7 @@ static String gHubBase;
 static bool gHubAuthRejected = false;
 static bool gTimeSyncStarted = false;
 static uint32_t gLastRegisterMs = 0;
+static uint32_t gRegisterRetryMs = 60000UL;
 static uint32_t gLastRelayMs = 0;
 static uint32_t gLastPendingMs = 0;
 static uint32_t gPendingSince = 0;
@@ -472,6 +475,12 @@ static const char *meshIdText() {
 }
 static const char *hubBase() {
   return strlen(SG_HUB_URL) ? SG_HUB_URL : SG_DEFAULT_HUB_URL;
+}
+static String normalizedHubBase() {
+  String base = String(hubBase());
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  if (!base.length()) base = SG_DEFAULT_HUB_URL;
+  return base;
 }
 
 static bool gatewayUp() {
@@ -2301,6 +2310,135 @@ static int hubGetJson(const String &path, String &resp, bool auth) {
   return code;
 }
 
+/* ------------------------------------------------------------- OTA (Wi-Fi) */
+
+static String gOtaDoneJob;
+static uint32_t gLastOtaPollMs = 0;
+
+#if SG_OTA
+static void hubOtaReport(const String &jobId, const char *status, int progress, const String &err) {
+  if (!jobId.length() || !gModuleToken.length()) return;
+  String body = String("{\"jobId\":\"") + jobId + "\",\"status\":\"" + status +
+                "\",\"progress\":" + String(progress);
+  if (err.length()) body += ",\"error\":\"" + err + "\"";
+  body += "}";
+  String resp;
+  hubPostJson("/v1/modules/ota/status", body, resp, true);
+}
+
+/** Скачивает app-only образ и пишет его в OTA-раздел. */
+static bool hubOtaApply(const String &jobId, const String &url, long size, const String &sha) {
+  if (!url.length() || size <= 0) return false;
+  sgLog("[ota] begin %ldB %s", size, jobId.c_str());
+  hubOtaReport(jobId, "downloading", 1, "");
+
+  HTTPClient http;
+  String full = url.startsWith("http") ? url : (gHubBase + url);
+  if (!http.begin(full)) return false;
+  http.setTimeout(20000);
+  if (gModuleToken.length()) {
+    http.addHeader("Authorization", String("Bearer ") + gModuleToken);
+    http.addHeader("x-module-token", gModuleToken);
+  }
+  int code = http.GET();
+  if (code != 200) {
+    sgLog("[ota] http %d", code);
+    http.end();
+    hubOtaReport(jobId, "failed", 0, String("http_") + code);
+    return false;
+  }
+
+  const int total = http.getSize() > 0 ? http.getSize() : (int)size;
+  if (!Update.begin((size_t)total, U_FLASH)) {
+    sgLog("[ota] begin failed: %s", Update.errorString());
+    http.end();
+    hubOtaReport(jobId, "failed", 0, Update.errorString());
+    return false;
+  }
+
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+
+  WiFiClient *stream = http.getStreamPtr();
+  uint8_t buf[1024];
+  int written = 0;
+  int lastPct = -1;
+  while (written < total) {
+    size_t avail = stream ? stream->available() : 0;
+    if (!avail) {
+      if (!http.connected()) break;
+      delay(2);
+      continue;
+    }
+    int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
+    if (n <= 0) break;
+    if (Update.write(buf, n) != (size_t)n) {
+      sgLog("[ota] write failed: %s", Update.errorString());
+      Update.abort();
+      http.end();
+      hubOtaReport(jobId, "failed", 0, Update.errorString());
+      return false;
+    }
+    mbedtls_sha256_update(&ctx, buf, n);
+    written += n;
+    int pct = total > 0 ? (written * 100) / total : 0;
+    if (pct >= lastPct + 10) {
+      lastPct = pct;
+      sgLog("[ota] %d%%", pct);
+      hubOtaReport(jobId, "installing", pct, "");
+    }
+  }
+  http.end();
+
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&ctx, digest);
+  mbedtls_sha256_free(&ctx);
+  char hex[65];
+  for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", digest[i]);
+  hex[64] = 0;
+
+  if (written != total || (sha.length() && sha != String(hex))) {
+    sgLog("[ota] verify failed %d/%d", written, total);
+    Update.abort();
+    hubOtaReport(jobId, "failed", 0, "sha_mismatch");
+    return false;
+  }
+  if (!Update.end(true)) {
+    sgLog("[ota] end failed: %s", Update.errorString());
+    hubOtaReport(jobId, "failed", 0, Update.errorString());
+    return false;
+  }
+  sgLog("[ota] installed");
+  hubOtaReport(jobId, "installed", 100, "");
+  delay(500);
+  ESP.restart();
+  return true;
+}
+#else
+static void hubOtaReport(const String &, const char *, int, const String &) {}
+static bool hubOtaApply(const String &, const String &, long, const String &) { return false; }
+#endif
+
+static void hubOtaTick() {
+#if SG_OTA
+  if (!isGateway() || WiFi.status() != WL_CONNECTED || !gModuleToken.length()) return;
+  const uint32_t now = millis();
+  if (now - gLastOtaPollMs < 60000UL) return;
+  gLastOtaPollMs = now;
+  String resp;
+  int code = hubGetJson("/v1/modules/ota/job", resp, true);
+  if (code < 200 || code >= 300) return;
+  String jobId = jsonGetString(resp, "id");
+  String url = jsonGetString(resp, "url");
+  String sha = jsonGetString(resp, "sha256");
+  long size = jsonGetInt(resp, "sizeBytes");
+  if (!jobId.length() || !url.length() || jobId == gOtaDoneJob) return;
+  gOtaDoneJob = jobId;
+  hubOtaApply(jobId, url, size, sha);
+#endif
+}
+
 static void hubSaveToken(const String &token) {
   if (!token.length() || token == gModuleToken) return;
   gModuleToken = token;
@@ -2336,6 +2474,13 @@ static void hubRegister() {
 
   String resp;
   int code = hubPostJson("/v1/modules/register", body, resp, false);
+  // Старые сборки могли быть скомпилированы с нерабочим доменом: один раз
+  // переключаемся на прямой адрес Hub и повторяем.
+  if ((code <= 0 || code == 301 || code == 302 || code == 404) && gHubBase != String(SG_DEFAULT_HUB_URL)) {
+    gHubBase = String(SG_DEFAULT_HUB_URL);
+    sgLog("[hub] fallback -> %s", gHubBase.c_str());
+    code = hubPostJson("/v1/modules/register", body, resp, false);
+  }
   if (code == 404) {
     // Совместимость с существующим Hub.
     code = hubPostJson("/v1/modules/checkin", body, resp, gModuleToken.length() > 0);
@@ -2350,9 +2495,12 @@ static void hubRegister() {
     if (!token.length()) token = jsonGetString(resp, "token");
     if (!token.length()) token = jsonGetString(resp, "accessToken");
     hubSaveToken(token);
+    gRegisterRetryMs = 60000UL;
     sgLog("[hub] register ok %d", code);
   } else {
-    sgLog("[hub] register failed %d", code);
+    // 3xx/4xx/5xx и таймауты: плавный backoff, чтобы не спамить Hub.
+    if (gRegisterRetryMs < 900000UL) gRegisterRetryMs = min(gRegisterRetryMs * 2UL, 900000UL);
+    sgLog("[hub] register failed %d (retry %lus)", code, (unsigned long)(gRegisterRetryMs / 1000UL));
   }
 }
 
@@ -2461,17 +2609,17 @@ static void hubPollDownlink() {
 static void hubLoop() {
   if (!isGateway()) return;
   const uint32_t now = millis();
-  if (now - gLastRegisterMs >= 60000UL) {
+  if (now - gLastRegisterMs >= gRegisterRetryMs) {
     gLastRegisterMs = now;
     hubRegister();
   }
+  hubOtaTick();
   if (now - gLastRelayMs >= 5000UL) {
     gLastRelayMs = now;
     hubRelayQueue();
   }
   if (now - gLastPendingMs >= 10000UL) {
-    gLastPendingMs = now;
-    hubPollDownlink();
+    gLastPendingMs = now;    hubPollDownlink();
   }
 }
 
@@ -2566,7 +2714,7 @@ void setup() {
   gRouterPass = gPrefs.getString("wifi_pass", SG_WIFI_PASS);
   gPrefs.end();
   if (!gModuleToken.length() && strlen(SG_MODULE_TOKEN)) gModuleToken = SG_MODULE_TOKEN;
-  gHubBase = String(hubBase());
+  gHubBase = normalizedHubBase();
 
   // LittleFS: очередь переживает перезагрузку. Форматируем только при сбое.
   gFsReady = LittleFS.begin(true);

@@ -196,7 +196,7 @@ function generateConfigHeader(config, version) {
     `#define SG_MESH_CHANNEL ${num(mesh.channel, 11) | 0}`,
     `#define SG_WIFI_MAX_HOPS ${num(mesh.wifiHops, 14) | 0}`,
     `#define SG_LORA_MAX_HOPS ${num(mesh.loraHops, 12) | 0}`,
-    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://api.kinto.is-a.dev')}`,
+    `#define SG_HUB_URL ${cString(config.hubUrl || 'http://150.251.143.212:8080')}`,
     `#define SG_MODULE_TOKEN ${cString(config.moduleToken ?? '')}`,
     '',
     `#define SG_USE_LORA ${useLora ? 1 : 0}`,
@@ -488,10 +488,17 @@ async function compileFirmware(config, version) {
     const bin = merged.bin;
     if (!bin.length) throw new Error('binary_empty');
 
+    // OTA-образ: только приложение (без bootloader/partitions). Именно его
+    // принимает Update.h на модуле.
+    const appBin = binPath ? await readFile(binPath) : Buffer.alloc(0);
+
     return {
       bin,
       size: bin.length,
       sha256: sha256(bin),
+      app: appBin,
+      appSize: appBin.length,
+      appSha256: appBin.length ? sha256(appBin) : '',
       log: output.slice(0, 64 * 1024),
     };
   } finally {
@@ -556,7 +563,7 @@ async function handleBuild(config) {
   // v3: кэш учитывает версию шаблона, иначе изменения прошивки не попадают
   // в уже собранные конфигурации. Старые app-only записи игнорируются.
   const templateHash = sha256(await readFile(join(TEMPLATE_DIR, 'swarm_module.ino'), 'utf8')).slice(0, 16);
-  const key = sha256(`merged3:${templateHash}:${stableStringify(config)}`);
+  const key = sha256(`merged4:${templateHash}:${stableStringify(config)}`);
   const version = `1.0.0-${key.slice(0, 8)}`;
 
   const cached = await readCache(key);
@@ -569,6 +576,9 @@ async function handleBuild(config) {
       sha256: cached.sha256,
       version: cached.version,
       merged: cached.merged === true,
+      appBase64: cached.appBase64,
+      appSize: cached.appSize,
+      appSha256: cached.appSha256,
       log: `${cached.log ? `${cached.log}\n` : ''}[builder] взято из кэша`,
       cached: true,
     };
@@ -581,6 +591,9 @@ async function handleBuild(config) {
     sha256: result.sha256,
     version,
     merged: true,
+    appBase64: result.app.toString('base64'),
+    appSize: result.appSize,
+    appSha256: result.appSha256,
     log: result.log,
   };
   await writeCache(key, payload);

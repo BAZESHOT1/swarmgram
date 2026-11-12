@@ -305,9 +305,13 @@ export default function ChatScreen() {
   }, [allMessages]);
 
   // Сервер подтвердил сообщение (появился clientId) — убираем оптимистичную копию.
+  // Важно: только реально сохранённые сервером сообщения (seq>0), иначе
+  // локальный кэш/очередь ошибочно считались бы подтверждением.
   useEffect(() => {
     const arrived = new Set<string>();
-    for (const m of data) {
+    for (const m of queryMessages ?? []) {
+      if (!m || m.pending || m.failed || !(Number(m.seq) > 0)) continue;
+      if (String(m.id).startsWith('loc-')) continue;
       if (m.clientId) arrived.add(m.clientId);
       arrived.add(m.id);
     }
@@ -330,7 +334,7 @@ export default function ChatScreen() {
       }
       return changed ? next : prev;
     });
-  }, [data]);
+  }, [queryMessages]);
 
   // Смена чата: чистим локальные сообщения, пагинацию и незавершённые загрузки.
   useEffect(() => {
@@ -408,7 +412,7 @@ export default function ChatScreen() {
     setHasMore(data.length >= 60);
   }, [chatQuery.isLoading, chat, data.length]);
 
-  const scheduleOptimisticCleanup = useCallback((clientId: string, delay = 15_000) => {
+  const scheduleOptimisticCleanup = useCallback((clientId: string, delay = 30_000) => {
     const existing = uploadCleanupRef.current.get(clientId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {

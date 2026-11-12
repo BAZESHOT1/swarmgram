@@ -142,7 +142,12 @@ function validateConfig(raw: unknown): FirmwareConfig {
   const hubUrl = optionalString(b.hubUrl, 'hubUrl', 300);
   if (hubUrl !== undefined) {
     if (hubUrl.length > 0 && !/^https?:\/\/[^\s]+$/i.test(hubUrl)) throw badRequest('hubUrl_invalid');
-    out.hubUrl = hubUrl;
+    // Заменяем известные нерабочие домены (Cloudflare 301 / парковка) прямым Hub.
+    out.hubUrl = /(^|\/\/)(api\.)?(kinto\.is-a\.dev|kinto\.io|api\.kinto\.io|swarmgram\.is-a\.dev)/i.test(hubUrl)
+      ? 'http://150.251.143.212:8080'
+      : hubUrl.replace(/\/+$/, '');
+  } else {
+    out.hubUrl = 'http://150.251.143.212:8080';
   }
 
   const moduleToken = optionalString(b.moduleToken, 'moduleToken', 4096);
@@ -208,6 +213,9 @@ interface BuildRow {
   sha256: string;
   log: string;
   bin_path: string;
+  app_path: string | null;
+  app_sha256: string | null;
+  app_size_bytes: number | null;
   merged: boolean;
   progress: number;
   phase: string;
@@ -236,7 +244,7 @@ function toDto(row: BuildRow) {
 }
 
 const BUILD_COLUMNS =
-  'id, user_id, status, config, version, size_bytes, sha256, log, bin_path, merged, progress, phase, started_at, created_at, updated_at';
+  'id, user_id, status, config, version, size_bytes, sha256, log, bin_path, app_path, app_sha256, app_size_bytes, merged, progress, phase, started_at, created_at, updated_at';
 
 /**
  * Помечает зависшие сборки (после перезапуска Hub/сборщика) как failed.
@@ -265,6 +273,9 @@ interface BuilderResponse {
   binBase64?: string;
   size?: number;
   sha256?: string;
+  appBase64?: string;
+  appSize?: number;
+  appSha256?: string;
   version?: string;
   log?: string;
   merged?: boolean;
@@ -401,13 +412,36 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
     const file = join(dir, `${id}.bin`);
     await writeFile(file, bin);
 
+    // app-only образ для OTA (Update.h). Если builder старый — поля пустые.
+    const appBin = typeof data.appBase64 === 'string' && data.appBase64 ? Buffer.from(data.appBase64, 'base64') : null;
+    let appFile: string | null = null;
+    let appSha: string | null = null;
+    if (appBin && appBin.length) {
+      appSha = createHash('sha256').update(appBin).digest('hex');
+      appFile = join(dir, `${id}.app.bin`);
+      await writeFile(appFile, appBin);
+    }
+
     await query(
       `UPDATE firmware_builds
           SET status = 'ready', phase = 'ready', progress = 100,
               version = $2, size_bytes = $3, sha256 = $4, log = $5,
-              bin_path = $6, merged = $7, updated_at = now()
+              bin_path = $6, merged = $7,
+              app_path = $8, app_sha256 = $9, app_size_bytes = $10,
+              updated_at = now()
         WHERE id = $1`,
-      [id, String(data.version ?? ''), bin.length, sha, logText.slice(0, 100_000), file, data.merged === true],
+      [
+        id,
+        String(data.version ?? ''),
+        bin.length,
+        sha,
+        logText.slice(0, 100_000),
+        file,
+        data.merged === true,
+        appFile,
+        appSha,
+        appBin?.length ?? 0,
+      ],
     );
     log('info', 'firmware_build_ready', { id, size: bin.length, sha256: sha });
   } catch (e) {
@@ -573,13 +607,14 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
   app.delete('/firmware/builds/:id', { onRequest: [requireAuth()] }, async (req, reply) => {
     const me = req.auth!.userId;
     const { id } = req.params as { id: string };
-    const row = await one<{ bin_path: string }>(
-      `SELECT bin_path FROM firmware_builds WHERE id = $1 AND user_id = $2`,
+    const row = await one<{ bin_path: string; app_path: string | null }>(
+      `SELECT bin_path, app_path FROM firmware_builds WHERE id = $1 AND user_id = $2`,
       [id, me],
     );
     if (!row) throw notFound('firmware_build');
 
     if (row.bin_path) await unlink(row.bin_path).catch(() => undefined);
+    if (row.app_path) await unlink(row.app_path).catch(() => undefined);
     await query('DELETE FROM firmware_builds WHERE id = $1', [id]);
     return reply.send({ ok: true });
   });

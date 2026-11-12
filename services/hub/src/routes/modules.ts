@@ -20,6 +20,8 @@
  */
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { signToken, verifyToken, sha256, uuid } from '../crypto.js';
@@ -366,7 +368,56 @@ export function requireModule() {
   };
 }
 
-/* -------------------------------------------------------- mesh relay ----- */
+/* ------------------------------------------------------------ OTA jobs ---- */
+
+function otaJobDto(row: {
+  id: string;
+  status: string;
+  progress: number;
+  error: string | null;
+  version: string | null;
+  app_size_bytes: number | null;
+  app_sha256: string | null;
+  created_at: string;
+  updated_at: string;
+}) {
+  return {
+    id: row.id,
+    status: row.status,
+    progress: Number(row.progress ?? 0),
+    error: row.error,
+    version: row.version ?? '',
+    sizeBytes: Number(row.app_size_bytes ?? 0),
+    sha256: row.app_sha256 ?? '',
+    url: `/v1/modules/ota/firmware/${row.id}`,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Актуальное OTA-задание модуля (для check-in и отдельного поллинга). */
+async function activeOtaJob(moduleId: string) {
+  const row = await one<{
+    id: string;
+    status: string;
+    progress: number;
+    error: string | null;
+    version: string | null;
+    app_size_bytes: number | null;
+    app_sha256: string | null;
+    created_at: string;
+    updated_at: string;
+  }>(
+    `SELECT j.id, j.status, j.progress, j.error, b.version,
+            b.app_size_bytes, b.app_sha256, j.created_at, j.updated_at
+       FROM module_ota_jobs j
+       JOIN firmware_builds b ON b.id = j.build_id
+      WHERE j.module_id = $1 AND j.status IN ('pending','downloading','installing')
+      ORDER BY j.created_at DESC LIMIT 1`,
+    [moduleId],
+  );
+  return row ? otaJobDto(row) : null;
+}
 
 interface RelayEnvelopeItem {
   chatId?: string;
@@ -1205,6 +1256,147 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, updated: rows.length });
   });
 
+  /* ---------------------------------------------------- OTA: владелец ---- */
+
+  /** Поставить модулю задание OTA. buildId необязателен — берём последнюю сборку. */
+  app.post('/modules/:id/ota', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    if (!UUID_RE.test(id)) throw notFound('module');
+    const mod = await one<{ id: string; hardware_id: string | null; board_uuid: string | null }>(
+      'SELECT id, hardware_id, board_uuid FROM modules WHERE id = $1 AND owner_id = $2',
+      [id, me],
+    );
+    if (!mod) throw notFound('module');
+
+    const body = (req.body ?? {}) as { buildId?: string };
+    const build = body.buildId
+      ? await one<{ id: string; version: string; app_path: string | null }>(
+          `SELECT id, version, app_path FROM firmware_builds
+            WHERE id = $1 AND user_id = $2 AND status = 'ready'`,
+          [body.buildId, me],
+        )
+      : await one<{ id: string; version: string; app_path: string | null }>(
+          `SELECT id, version, app_path FROM firmware_builds
+            WHERE user_id = $1 AND status = 'ready' AND app_path IS NOT NULL
+            ORDER BY created_at DESC LIMIT 1`,
+          [me],
+        );
+    if (!build) throw notFound('firmware_build');
+    if (!build.app_path) {
+      throw new ApiError(409, 'ota_image_missing', 'У сборки нет OTA-образа. Пересоберите прошивку.');
+    }
+
+    await query(
+      `UPDATE module_ota_jobs SET status = 'superseded', updated_at = now()
+        WHERE module_id = $1 AND status IN ('pending','downloading','installing')`,
+      [id],
+    );
+    const job = await one<{ id: string }>(
+      `INSERT INTO module_ota_jobs (module_id, build_id, requested_by, version)
+       VALUES ($1,$2,$3,$4) RETURNING id`,
+      [id, build.id, me, build.version],
+    );
+    log('info', 'module_ota_queued', { moduleId: id, buildId: build.id, jobId: job?.id });
+    return reply.code(201).send({ ok: true, jobId: job?.id, version: build.version });
+  });
+
+  /** Статус последнего OTA-задания (для UI). */
+  app.get('/modules/:id/ota', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    if (!UUID_RE.test(id)) throw notFound('module');
+    const mod = await one('SELECT 1 FROM modules WHERE id = $1 AND owner_id = $2', [id, me]);
+    if (!mod) throw notFound('module');
+    const row = await one<{
+      id: string; status: string; progress: number; error: string | null; version: string | null;
+      app_size_bytes: number | null; app_sha256: string | null; created_at: string; updated_at: string;
+    }>(
+      `SELECT j.id, j.status, j.progress, j.error, b.version, b.app_size_bytes, b.app_sha256,
+              j.created_at, j.updated_at
+         FROM module_ota_jobs j JOIN firmware_builds b ON b.id = j.build_id
+        WHERE j.module_id = $1 ORDER BY j.created_at DESC LIMIT 1`,
+      [id],
+    );
+    return reply.send({ job: row ? otaJobDto(row) : null });
+  });
+
+  /* ------------------------------------------------------- OTA: модуль ---- */
+
+  /** Модуль с Wi-Fi сам забирает активное задание. */
+  app.get('/modules/ota/job', { onRequest: [requireModule()] }, async (req, reply) => {
+    return reply.send({ ok: true, job: await activeOtaJob(req.module!.moduleId) });
+  });
+
+  /** Скачивание app-only образа по module-token. */
+  app.get('/modules/ota/firmware/:jobId', { onRequest: [requireModule()] }, async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    if (!UUID_RE.test(jobId)) throw notFound('ota_job');
+    const row = await one<{ app_path: string | null; version: string | null }>(
+      `SELECT b.app_path, b.version FROM module_ota_jobs j
+         JOIN firmware_builds b ON b.id = j.build_id
+        WHERE j.id = $1 AND j.module_id = $2`,
+      [jobId, req.module!.moduleId],
+    );
+    if (!row?.app_path) throw notFound('ota_image');
+    try {
+      await stat(row.app_path);
+    } catch {
+      throw notFound('ota_image');
+    }
+    await query(`UPDATE module_ota_jobs SET status = 'downloading', updated_at = now() WHERE id = $1`, [jobId]);
+    reply
+      .header('content-type', 'application/octet-stream')
+      .header('content-disposition', `attachment; filename="kinto-ota-${row.version || jobId}.bin"`);
+    return reply.send(createReadStream(row.app_path));
+  });
+
+  /** Прогресс/результат OTA от модуля. */
+  app.post('/modules/ota/status', { onRequest: [requireModule()] }, async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      jobId?: string;
+      status?: string;
+      progress?: number;
+      error?: string;
+    };
+    const jobId = String(body.jobId ?? '');
+    if (!UUID_RE.test(jobId)) throw badRequest('invalid_job');
+    const job = await one<{ id: string; build_id: string; version: string | null }>(
+      'SELECT id, build_id, version FROM module_ota_jobs WHERE id = $1 AND module_id = $2',
+      [jobId, req.module!.moduleId],
+    );
+    if (!job) throw notFound('ota_job');
+    const status = ['pending', 'downloading', 'installing', 'installed', 'failed'].includes(String(body.status))
+      ? String(body.status)
+      : 'downloading';
+    const progress = Math.max(0, Math.min(100, Number(body.progress ?? 0) | 0));
+    const error = typeof body.error === 'string' ? body.error.slice(0, 500) : null;
+    await query(
+      `UPDATE module_ota_jobs
+          SET status = $2, progress = $3, error = $4, updated_at = now(),
+              completed_at = CASE WHEN $2 IN ('installed','failed') THEN now() ELSE completed_at END
+        WHERE id = $1`,
+      [jobId, status, progress, error],
+    );
+    if (status === 'installed') {
+      await query(
+        `UPDATE modules SET firmware = $2, firmware_build_id = $3, firmware_updated_at = now(), updated_at = now()
+          WHERE id = $1`,
+        [req.module!.moduleId, job.version ?? '', job.build_id],
+      );
+    }
+    publish(req.module!.ownerId, {
+      type: 'module_ota',
+      moduleId: req.module!.moduleId,
+      jobId,
+      status,
+      progress,
+      error,
+      version: job.version,
+    });
+    return reply.send({ ok: true });
+  });
+
   /** Один модуль или «тень»: статус считается так же, как в списке. */
   app.get('/modules/:id', { onRequest: [requireAuth()] }, async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -1434,6 +1626,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       },
       publicId,
       blocked: false,
+      // Активное OTA-задание: модуль с Wi-Fi забирает образ сам.
+      ota: await activeOtaJob(mod.moduleId),
     });
   });
 

@@ -149,6 +149,7 @@ export function ModuleCard({
   onUnblock,
   onUnbind,
   onGatewayWifi,
+  onOta,
 }: {
   module: ModuleRow;
   index: number;
@@ -165,6 +166,7 @@ export function ModuleCard({
   onUnblock: (module: ModuleRow) => void;
   onUnbind: (module: ModuleRow) => void;
   onGatewayWifi: (module: ModuleRow) => void;
+  onOta?: (module: ModuleRow) => void;
 }) {
   const theme = useTheme();
   const [expanded, setExpanded] = React.useState(false);
@@ -342,6 +344,9 @@ export function ModuleCard({
                 disabled={!canConfigureGateway}
                 onPress={() => onGatewayWifi(module)}
               />
+            ) : null}
+            {onOta ? (
+              <Btn title="Обновить" size="s" variant="ghost" onPress={() => onOta(module)} />
             ) : null}
             {isBlocked ? (
               <Btn

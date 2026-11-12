@@ -232,7 +232,7 @@ export async function sendMessage(
     });
     item.objectId = uploaded.objectId;
     if (opts.signal?.aborted) throw abortError();
-    await api.api.sendMessage(chatId, {
+    const saved = await api.api.sendMessage(chatId, {
       objectId: uploaded.objectId,
       nonce,
       header: headerObj,
@@ -242,8 +242,20 @@ export async function sendMessage(
       // Поле контракта data-слоя: публикация от имени канала.
       ...(opts.asChannel ? { asChannel: true } : {}),
     } as never);
+    // Hub обязан вернуть сохранённое сообщение с id/seq. Иначе это не доставка.
+    if (!saved || typeof (saved as { id?: unknown }).id !== 'string' || !Number.isFinite(Number((saved as { seq?: unknown }).seq))) {
+      throw new Error('message_not_registered');
+    }
     await removeOutbox(clientId);
-    return { ...draft, delivered: true, pending: false, clientId };
+    return {
+      ...draft,
+      id: (saved as { id: string }).id,
+      seq: Number((saved as { seq: number }).seq),
+      createdAt: (saved as { createdAt?: string }).createdAt ?? createdAt,
+      delivered: true,
+      pending: false,
+      clientId,
+    };
   } catch (e) {
     // отмена пользователем не должна попадать в офлайн-очередь
     if (opts.signal?.aborted) throw abortError();

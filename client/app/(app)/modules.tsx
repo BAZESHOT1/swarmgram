@@ -46,6 +46,7 @@ import {
 import { ConnectModuleFlow } from '../../src/components/modules/ConnectModuleFlow';
 import { GatewayWifiModal } from '../../src/components/modules/GatewayWifiModal';
 import { ModuleCard } from '../../src/components/modules/ModuleCard';
+import { ModuleOtaSheet } from '../../src/components/modules/ModuleOtaSheet';
 import { ModulesNetworkMap } from '../../src/components/modules/ModulesNetworkMap';
 import { SerialMonitor } from '../../src/components/modules/SerialMonitor';
 import {
@@ -170,6 +171,7 @@ function ConnectedModuleCard({
   onDisconnect,
   onBlock,
   onUnbind,
+  onOta,
 }: {
   module: ModuleRow;
   kind: 'usb' | 'ble' | null;
@@ -179,6 +181,7 @@ function ConnectedModuleCard({
   onDisconnect: () => void;
   onBlock: () => void;
   onUnbind: () => void;
+  onOta: () => void;
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -303,6 +306,7 @@ function ConnectedModuleCard({
 
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
             <Btn title="Отключить" size="s" variant="ghost" onPress={onDisconnect} />
+            <Btn title="Обновить" size="s" variant="ghost" onPress={onOta} />
             <Btn title="Заблокировать" size="s" variant="danger" onPress={onBlock} />
             <Btn title="Отвязать" size="s" variant="danger" onPress={onUnbind} />
           </View>
@@ -335,6 +339,7 @@ export default function ModulesScreen() {
   const [blockTarget, setBlockTarget] = useState<ModuleRow | null>(null);
   const [blockReason, setBlockReason] = useState('');
   const [gatewayTarget, setGatewayTarget] = useState<ModuleRow | null>(null);
+  const [otaTarget, setOtaTarget] = useState<ModuleRow | null>(null);
   /** События WebSocket, которые кладёт общий RealtimeBridge (второй сокет не нужен). */
   const pushEvent = useStore((s) => s.pushEvent);
 
@@ -557,6 +562,7 @@ export default function ModulesScreen() {
       onUnblock={(value) => void runUnblock(value)}
       onUnbind={(value) => setUnbindTarget(value)}
       onGatewayWifi={(value) => setGatewayTarget(value)}
+      onOta={(value) => setOtaTarget(value)}
     />
   );
 
@@ -727,6 +733,7 @@ export default function ModulesScreen() {
                 setBlockTarget(directModule);
               }}
               onUnbind={() => setUnbindTarget(directModule)}
+              onOta={() => setOtaTarget(directModule)}
             />
           ) : (
             <GlassCard>
@@ -998,6 +1005,9 @@ export default function ModulesScreen() {
           void modules.refetch();
         }}
       />
+
+      {/* OTA: сеть (Wi-Fi) или USB-прошивка. */}
+      <ModuleOtaSheet module={otaTarget} onClose={() => setOtaTarget(null)} />
 
       {/* Wi-Fi шлюза через активное USB/BLE-соединение. */}
       <GatewayWifiModal

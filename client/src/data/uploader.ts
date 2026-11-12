@@ -13,6 +13,10 @@ import { fromB64, sha256Of, toB64 } from '../crypto/core';
 
 export type UploadStage = 'compress' | 'encrypt' | 'upload' | 'register';
 
+function replicaIsHttps(url: string | undefined): boolean {
+  return typeof url === 'string' && url.toLowerCase().startsWith('https://');
+}
+
 export interface CompressResult {
   bytes: Uint8Array;
   mime: string;
@@ -371,6 +375,12 @@ export async function uploadBytesWithProgress(
   const count = Math.max(1, replicas.length);
 
   for (let i = 0; i < replicas.length; i += 1) {
+    // iOS ATS / Android cleartext блокируют http://IP:909x — сразу идём через Hub,
+    // не теряя десятки секунд на таймауты.
+    if (Platform.OS !== 'web' && !replicaIsHttps(replicas[i]?.url)) {
+      report(0.25 + 0.65 * ((i + 1) / count));
+      continue;
+    }
     assertNotAborted(signal);
     const replica = replicas[i];
     const res = await putFragmentWithProgress(
@@ -387,7 +397,19 @@ export async function uploadBytesWithProgress(
   }
 
   if (!acks.length) {
-    throw new ApiError(502, 'upload_failed', 'Узлы хранения недоступны. Повторите позже или подключите свой узел.');
+    // Native (iOS ATS / Android cleartext) не может PUT-ить на http://IP:9090.
+    // Hub умеет принять объект и разложить его на узлы сам.
+    assertNotAborted(signal);
+    report(0.7);
+    const relayed = await api.api.uploadObjectRelay(bytes);
+    assertNotAborted(signal);
+    onStage?.('register');
+    report(1);
+    return {
+      objectId: relayed.id,
+      size: relayed.sizeBytes,
+      replicas: relayed.replicas,
+    };
   }
 
   assertNotAborted(signal);
