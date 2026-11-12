@@ -12,6 +12,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
+import { usePathname } from 'expo-router';
 import { api } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
@@ -79,6 +80,9 @@ function moduleIdOf(row: { id?: string } | null | undefined): string | undefined
 }
 
 export function ModuleProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const moduleScreenActive =
+    pathname.startsWith('/modules') || pathname.startsWith('/firmware') || pathname.startsWith('/nodes');
   const qc = useQueryClient();
   const session = useStore((s) => s.session);
   const setMeshPeer = useStore((s) => s.setMeshPeer);
@@ -532,10 +536,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
   // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
   useEffect(() => {
-    if (!session) return undefined;
-    // Большая задержка после входа: iOS-диалог BLE-разрешения не должен
-    // пересекаться с монтированием чатов и первым рендером главного экрана.
-    const timer = setTimeout(() => void restore(), 4500);
+    if (!session || !moduleScreenActive) return undefined;
+    // BLE запускаем только когда открыт раздел модулей: на главном экране
+    // iOS-скан после выдачи разрешения приводил к зависанию.
+    const timer = setTimeout(() => void restore(), 1200);
     let activeTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
@@ -547,19 +551,19 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       if (activeTimer) clearTimeout(activeTimer);
       sub.remove();
     };
-  }, [session?.userId, restore, session]);
+  }, [session?.userId, restore, session, moduleScreenActive]);
 
   // Пока приложение открыто на смартфоне — периодически ищем носимый модуль
   // и подключаемся к ранее привязанному. В фоне не сканируем (экономия батареи).
   useEffect(() => {
-    if (!session || Platform.OS === 'web') return undefined;
+    if (!session || Platform.OS === 'web' || !moduleScreenActive) return undefined;
     const timer = setInterval(() => {
       if (AppState.currentState !== 'active') return;
       if (connectionRef.current || inFlightRef.current) return;
       void restore();
     }, 35_000);
     return () => clearInterval(timer);
-  }, [session, restore]);
+  }, [session, restore, moduleScreenActive]);
 
   // Периодически обновляем нагрузку mesh для политики трафика.
   useEffect(() => {

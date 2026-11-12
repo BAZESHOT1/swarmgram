@@ -841,12 +841,14 @@ export default function ChatScreen() {
     }
 
     pendingScrollRef.current = true;
-    const t = setTimeout(() => {
-      if (!pendingScrollRef.current) return;
-      pendingScrollRef.current = false;
-      scrollToEnd(false);
-    }, 180);
-    return () => clearTimeout(t);
+    const timers = [200, 600, 1100].map((delay) =>
+      setTimeout(() => {
+        if (userScrolledRef.current) return;
+        pendingScrollRef.current = false;
+        scrollToEnd(false);
+      }, delay),
+    );
+    return () => timers.forEach(clearTimeout);
   }, [chat, allMessages.length, scrollToEnd]);
 
   // Когда с сервера пришла полная лента, ещё раз встаём на последнее
@@ -855,7 +857,12 @@ export default function ChatScreen() {
     if (!chat || !chatQuery.isFetchedAfterMount || serverAdjustedRef.current || userScrolledRef.current) return undefined;
     serverAdjustedRef.current = true;
     const unread = Math.max(0, Math.min(Number(chat.unread ?? 0), allMessages.length));
-    if (unread <= 0) return undefined;
+    if (unread <= 0) {
+      const t = setTimeout(() => {
+        if (!userScrolledRef.current) scrollToEnd(false);
+      }, 350);
+      return () => clearTimeout(t);
+    }
     const index = Math.max(0, allMessages.length - unread - 1);
     const t = setTimeout(() => {
       if (userScrolledRef.current) return;

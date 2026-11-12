@@ -1,6 +1,5 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
-import { usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/useTheme';
 import { useBodyBackground } from '../theme/useBodyBackground';
@@ -20,20 +19,7 @@ import { AppNavbar, SIDEBAR_WIDTH } from './AppNavbar';
 export function AppShell({ children }: { children: React.ReactNode }) {
   const inset = useSafeAreaInsets();
   const wide = useIsWide();
-  const pathname = usePathname();
   const theme = useTheme();
-  const actualInChat = pathname.startsWith('/chat/') || pathname.startsWith('/compose');
-  // Не меняем боковые отступы во время анимации перехода: иначе ширина
-  // страницы меняется на лету и сообщения/строки «дёргаются».
-  const [inChat, setInChat] = React.useState(actualInChat);
-  React.useEffect(() => {
-    if (!actualInChat) {
-      setInChat(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setInChat(true), 320);
-    return () => clearTimeout(timer);
-  }, [actualInChat]);
   useBodyBackground();
 
   return (
@@ -45,8 +31,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           paddingTop: (inset.top || 12) + 12,
           // Док/сайдбар плавающие: фоновая полоса под ними не нужна.
           paddingBottom: wide ? 32 : 0,
-          paddingLeft: wide ? (inset.left || 0) + SIDEBAR_WIDTH + 24 : inChat ? 0 : 16,
-          paddingRight: wide ? 28 : inChat ? 0 : 16,
+          // Одинаковые боковые отступы на всех мобильных экранах: смена
+          // padding при переходе чат ↔ список вызывала дёрганье ширины.
+          paddingLeft: wide ? (inset.left || 0) + SIDEBAR_WIDTH + 24 : 16,
+          paddingRight: wide ? 28 : 16,
         },
       ]}
     >
