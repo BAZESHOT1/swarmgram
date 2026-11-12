@@ -338,6 +338,22 @@ async function loadOwnedModule(id: string, ownerId: string): Promise<ModuleRecor
   return row;
 }
 
+/** Канонический MAC-идентификатор платы: esp32-<12 hex>. */
+function canonicalHardwareId(value: string): string | null {
+  const raw = value.trim().toLowerCase();
+  const hex = raw.replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+  if (hex.length !== 12) return null;
+  return `esp32-${hex}`;
+}
+
+function hardwareIdOrThrow(value: string, field = 'hardwareId'): string {
+  const canonical = canonicalHardwareId(value);
+  if (canonical) return canonical;
+  // Легаси-значения без MAC (старые записи) сохраняем, но новые — только MAC.
+  if (!/^esp32-/.test(value.trim().toLowerCase())) return value.trim().toLowerCase();
+  throw badRequest(`${field}_invalid`);
+}
+
 function signModuleToken(moduleId: string, publicId: string): string {
   const now = Math.floor(Date.now() / 1000);
   return signToken(
@@ -575,7 +591,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     };
 
     // hardwareId — основной идентификатор, boardUuid — legacy-имя того же поля.
-    const hardwareId = str(body.hardwareId ?? body.boardUuid, 'hardwareId', { max: 64 }).toLowerCase();
+    const hardwareId = hardwareIdOrThrow(str(body.hardwareId ?? body.boardUuid, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
 
     const computedPublicId = publicIdFromHardware(hardwareId);
@@ -931,7 +947,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       uptime?: number;
     };
 
-    const hardwareId = str(body.hardwareId, 'hardwareId', { max: 64 }).toLowerCase();
+    const hardwareId = hardwareIdOrThrow(str(body.hardwareId, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
     const computed = publicIdFromHardware(hardwareId);
     const provided = body.publicId === undefined || body.publicId === null ? '' : String(body.publicId).trim();
@@ -966,9 +982,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       transport: string;
     }>(
       `SELECT id, owner_id, blocked, public_id, role, transport FROM modules
-        WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1 OR public_id = $2
+        WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
         ORDER BY (lower(hardware_id) = $1) DESC LIMIT 1`,
-      [hardwareId, provided || computed],
+      [hardwareId],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
 

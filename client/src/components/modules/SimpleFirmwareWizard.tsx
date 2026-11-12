@@ -305,7 +305,7 @@ export function SimpleFirmwareWizard({
     lora:
       link === 'wifi_lora'
         ? {
-            chip: 'sx1278',
+            chip: board === 'esp32' ? 'sx1278' : 'sx1262',
             frequencyMhz: 868,
             spreadingFactor: 9,
             bandwidthKhz: 125,

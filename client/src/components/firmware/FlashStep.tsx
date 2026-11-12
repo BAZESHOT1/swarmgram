@@ -246,7 +246,7 @@ export function FlashStep({
         if (chip?.readMac) {
           const mac = await chip.readMac(loader);
           const hex = String(mac || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
-          if (hex.length >= 8) hardwareId = `esp32-${hex}`;
+          if (hex.length === 12) hardwareId = `esp32-${hex}`;
         }
       } catch {
         /* MAC не критичен: привязку можно сделать на странице модулей */

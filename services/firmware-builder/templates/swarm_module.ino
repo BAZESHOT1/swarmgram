@@ -1262,7 +1262,7 @@ static void sendAckTo(uint32_t dst, uint32_t originalId) {
 static String advertPayload() {
   String p = String("{\"id\":") + String((unsigned long)gNodeId) +
              ",\"role\":\"" + SG_ROLE + "\"" +
-             ",\"gw\":" + (isGateway() && WiFi.status() == WL_CONNECTED ? 1 : 0) +
+             ",\"gw\":" + (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? 1 : 0) +
              ",\"batt\":" + String(gBattery) +
              ",\"q\":" + String((unsigned)queueLoadValue()) +
              ",\"n\":" + String((unsigned)neighborCount()) + "}";
@@ -1674,9 +1674,13 @@ class SgBleServerCb : public BLEServerCallbacks {
 static void setupBle() {
   if (!isWearable()) return;
   String name = String("SG-") + gPublicId;
+  sgLog("[ble] init heap=%u", (unsigned)ESP.getFreeHeap());
   BLEDevice::init(name.c_str());
-  BLEDevice::setMTU(247);   // клиент может запросить больший MTU
   pBleServer = BLEDevice::createServer();
+  if (!pBleServer) {
+    sgLog("[ble] createServer failed heap=%u", (unsigned)ESP.getFreeHeap());
+    return;
+  }
   pBleServer->setCallbacks(new SgBleServerCb());
 
   BLEService *svc = pBleServer->createService(BLEUUID("a5c0"));
@@ -1730,7 +1734,7 @@ static void bleSendFrame(uint8_t, const uint8_t *, uint16_t) {}
 /* ------------------------------------------------------------- USB CDC --- */
 
 static void usbSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
-  if (!isWearable()) return;
+  if (!isWearable() || !gUsbSeen) return;
   uint8_t frame[6 + SG_MAX_PAYLOAD + 2];
   uint16_t off = 0;
   do {
@@ -1825,7 +1829,7 @@ static bool anyGatewayNeighbor() {
 }
 
 static String buildInfoJson() {
-  const bool gw = (isGateway() && WiFi.status() == WL_CONNECTED) || anyGatewayNeighbor();
+  const bool gw = (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED) || anyGatewayNeighbor();
   String j = String("{\"hardwareId\":\"") + gHardwareId +
              "\",\"publicId\":\"" + gPublicId +
              "\",\"role\":\"" + SG_ROLE +
@@ -1834,7 +1838,7 @@ static String buildInfoJson() {
              ",\"attached\":" + String(attached() ? 1 : 0) +
              ",\"gateway\":" + String(gw ? 1 : 0) +
              ",\"queue\":" + String((unsigned)queueLoadValue()) +
-             ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + "}";
+             ",\"rssi\":" + String(wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + "}";
   return j;
 }
 
@@ -2292,12 +2296,13 @@ static void diagPoll() {
   const uint32_t now = millis();
   if (now - gLastDiagMs < 30000UL) return;
   gLastDiagMs = now;
-  const int ch = (int)WiFi.channel();
+  const int ch = wifiTransportEnabled() && gWifiReady ? (int)WiFi.channel() : 0;
+  const int sta = wifiTransportEnabled() && gWifiReady && WiFi.status() == WL_CONNECTED ? 1 : 0;
+  const int apClients = wifiTransportEnabled() && gWifiReady ? (int)WiFi.softAPgetStationNum() : 0;
   sgLog("[diag] role=%s conn=%s wifi=%d lora=%d sta=%d ch=%d apClients=%d "
         "udp rx=%lu tx=%lu lora rx=%lu tx=%lu tx=%lu fwd=%lu q=%u",
         SG_ROLE, SG_CONNECTIVITY, gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
-        WiFi.status() == WL_CONNECTED ? 1 : 0, ch,
-        (int)WiFi.softAPgetStationNum(), (unsigned long)gUdpRxCount,
+        sta, ch, apClients, (unsigned long)gUdpRxCount,
         (unsigned long)gUdpTxCount, (unsigned long)gLoraRxCount,
         (unsigned long)gLoraTxCount, (unsigned long)gTxCount,
         (unsigned long)gFwdCount, (unsigned)queueLoadValue());
@@ -2704,7 +2709,7 @@ static void maybeDeepSleep() {
   if (!isWearable()) return;          // gateway/repeater никогда не спят
   if (gBleConnected) return;          // не спим, пока клиент подключён
   if (gUsbSeen && millis() - gLastClientActivityMs < 45000UL) return;
-  if (millis() < 60000UL) return;     // даём 60 c на подключение клиента
+  if (millis() < 300000UL) return;    // 5 минут на подключение клиента (отладка BLE)
   if (millis() - gLastClientActivityMs < 45000UL) return;
 
   // Перед сном — presence(offline) не шлём: нет времени ждать эфир.
@@ -2759,12 +2764,18 @@ void setup() {
   gBattery = readBatteryPercent();
   gLastBattMs = millis();
 
-  setupWifi();
-  setupLora();
+  // На wearable сначала BLE (им нужен телефон), Wi-Fi вообще не поднимаем.
+  if (isWearable()) {
+    setupBle();
+    setupLora();
+  } else {
+    setupWifi();
+    setupLora();
+    setupBle();
+  }
   sgLog("[boot] transports wifi=%d lora=%d (wifiReq=%d loraReq=%d)",
         gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
         wifiTransportEnabled() ? 1 : 0, loraTransportEnabled() ? 1 : 0);
-  setupBle();
   setupOta();
 
   // Первый ADVERT/presence и INFO клиенту.
@@ -2790,8 +2801,10 @@ void loop() {
   if (gOtaStarted) ArduinoOTA.handle();
 #endif
 
-  ensureWifiLink();
-  wifiPoll();
+  if (wifiTransportEnabled()) {
+    ensureWifiLink();
+    wifiPoll();
+  }
   loraPoll();
   diagPoll();
 
