@@ -152,9 +152,6 @@ export default function SettingsScreen() {
       <View style={styles.wrap}>
         <View style={styles.head}>
           <Text style={{ color: theme.textPrimary, fontSize: 26, fontWeight: '800' }}>Настройки</Text>
-          <Text style={{ color: theme.textSecondary, fontSize: 13, marginTop: 3 }}>
-            Профиль, уведомления, оформление и сеть
-          </Text>
         </View>
 
         {/* Поиск по названиям разделов */}

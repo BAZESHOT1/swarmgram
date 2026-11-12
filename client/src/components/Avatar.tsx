@@ -211,7 +211,7 @@ export function Avatar({
 
   // Отступ обводки от аватара: 2px. Без обводки сохраняем прежний вид.
   const inner = hasRing ? Math.max(12, size - 2 * (thickness + gap)) : size - 7;
-  const outerRadius = radius ?? size / 2;
+  const outerRadius = radius ?? Math.max(8, Math.round(size * 0.28));
   const innerRadius = Math.max(2, outerRadius - (hasRing ? thickness + gap : 3.5));
   const glowColor = node && moduleOn ? theme.ringNode : node ? theme.ringNode : theme.ringModule;
   const showPhoto = Boolean(photo) && !photoFailed && photo?.id === avatarObjectId;

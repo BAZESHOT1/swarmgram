@@ -179,6 +179,7 @@ export default function ChatScreen() {
    * (первое открытие, отправка, новое входящее), а не на каждый layout.
    */
   const pendingScrollRef = useRef(false);
+  const initialWindowRef = useRef(0);
   const userScrolledRef = useRef(false);
   const firstUnreadIndexRef = useRef(0);
   const unreadSeenRef = useRef<Set<string>>(new Set());
@@ -243,13 +244,17 @@ export default function ChatScreen() {
   /* ---------------------------------------------- оптимистичные сообщения */
   const upsertOptimistic = useCallback((message: ViewMessage) => {
     setOptimistic((prev) => {
-      const current = prev[message.id];
+      const key = message.clientId ?? message.id;
+      const current = prev[key] ?? prev[message.id];
       // Не теряем локальное превью при замене оптимистичного сообщения серверным.
       const merged =
         current?.localPreview && !message.localPreview
           ? { ...message, localPreview: current.localPreview }
           : message;
-      return { ...prev, [message.id]: merged };
+      const next = { ...prev };
+      if (key !== message.id) delete next[message.id];
+      next[key] = merged;
+      return next;
     });
   }, []);
 
@@ -357,6 +362,7 @@ export default function ChatScreen() {
     initialScrollRef.current = false;
     serverAdjustedRef.current = false;
     userScrolledRef.current = false;
+    initialWindowRef.current = Date.now() + 2500;
     pendingScrollRef.current = false;
     prevIdsRef.current = null;
     prependAnchorRef.current = null;
@@ -467,9 +473,9 @@ export default function ChatScreen() {
 
   const peer = chat?.members.find((m) => m.username !== myUsername);
   const title = chat
-    ? chat.type === 'channel'
-      ? chat.title
-      : peer?.displayName || peer?.username || chat.title
+    ? chat.type === 'direct'
+      ? peer?.displayName || peer?.username || chat.title
+      : chat.title
     : '';
   const isE2e = (chat as ChatExt | null)?.encryption === 'e2e';
   /** Канал: под постами доступно обсуждение. */
@@ -817,6 +823,17 @@ export default function ChatScreen() {
   const scrollToEnd = useCallback((animated = true) => {
     listRef.current?.scrollToEnd({ animated });
   }, []);
+
+  const initialScrollToRead = useCallback(() => {
+    if (userScrolledRef.current || Date.now() > initialWindowRef.current) return;
+    const unread = Math.max(0, Math.min(Number(chat?.unread ?? 0), allMessages.length));
+    if (unread > 0) {
+      const index = Math.max(0, allMessages.length - unread - 1);
+      listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.85 });
+    } else {
+      listRef.current?.scrollToEnd({ animated: false });
+    }
+  }, [chat?.unread, allMessages.length]);
 
   useEffect(() => {
     if (!chat || initialScrollRef.current || allMessages.length === 0) return;
@@ -1510,7 +1527,7 @@ export default function ChatScreen() {
           avatarRef={avatarRef}
           nodeOnline={peerPresence?.nodeOnline}
           moduleOnline={peerPresence?.moduleOnline}
-          avatar={peerPresence?.avatar ?? chat?.avatar ?? null}
+          avatar={chat?.type === 'direct' ? peerPresence?.avatar ?? null : chat?.avatar ?? null}
           chatType={chat?.type}
           membersCount={chat?.membersCount}
         />
@@ -1572,6 +1589,7 @@ export default function ChatScreen() {
           ) : (
             <FlatList
               ref={listRef}
+              onLayout={() => setTimeout(initialScrollToRead, 120)}
               data={visibleRows}
               keyExtractor={(r) => (r.album ? `album:${r.album.map((m) => m.clientId ?? m.id).join(',')}` : r.m.clientId ?? r.m.id)}
               ListHeaderComponent={
@@ -1724,6 +1742,7 @@ export default function ChatScreen() {
                   pendingScrollRef.current = false;
                   scrollToEnd(false);
                 }
+                initialScrollToRead();
               }}
               onScrollToIndexFailed={(info) => {
                 listRef.current?.scrollToOffset({

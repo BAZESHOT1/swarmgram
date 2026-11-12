@@ -24,6 +24,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Swipeable } from 'react-native-gesture-handler';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
@@ -389,26 +390,17 @@ function SwipeChatRow(props: {
   const theme = useTheme();
   const haptics = useHaptics();
   const reduced = useReducedMotion();
-  const translateX = useRef(new Animated.Value(0)).current;
-
-  const openRef = useRef(open);
-  openRef.current = open;
+  const swipeRef = useRef<Swipeable>(null);
   const idRef = useRef(chat.id);
-  const cbRef = useRef({ onOpenChange, reduced });
-  cbRef.current = { onOpenChange, reduced };
 
   const close = useCallback(() => {
-    if (cbRef.current.reduced) {
-      translateX.setValue(0);
-      return;
-    }
-    Animated.spring(translateX, { toValue: 0, ...SWIPE_SPRING, useNativeDriver: true }).start();
-  }, [translateX]);
+    swipeRef.current?.close();
+  }, []);
 
   useEffect(() => {
-    if (!open) close();
-    else translateX.setValue(-ACTIONS_WIDTH);
-  }, [open, close, translateX]);
+    if (open) swipeRef.current?.openRight();
+    else swipeRef.current?.close();
+  }, [open]);
 
   // Смена закрепления переносит ряд в другую секцию: закрываем свайп,
   // чтобы открытые действия не «переезжали» вместе с чатом.
@@ -419,63 +411,6 @@ function SwipeChatRow(props: {
     close();
     onOpenChange(null);
   }, [pinned, close, onOpenChange]);
-
-  const pan = useRef(
-    PanResponder.create({
-      // Захватываем жест только при явно горизонтальном движении: вертикальный
-      // скролл списка не должен «съедаться» строкой.
-      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy) * 1.7,
-      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.9,
-      onPanResponderTerminationRequest: () => false,
-      onShouldBlockNativeResponder: () => true,
-      onPanResponderGrant: () => {
-        onSwipeStart?.();
-        translateX.stopAnimation();
-      },
-      onPanResponderMove: (_e, g) => {
-        const base = openRef.current ? -ACTIONS_WIDTH : 0;
-        // Небольшой коэффициент сопротивления за пределами диапазона — жест
-        // ощущается предсказуемо, но не «рвётся».
-        const raw = base + g.dx;
-        const clamped = Math.max(-ACTIONS_WIDTH, Math.min(0, raw));
-        translateX.setValue(clamped);
-      },
-      onPanResponderRelease: (_e, g) => {
-        const base = openRef.current ? -ACTIONS_WIDTH : 0;
-        // Проекция с учётом скорости: короткий уверенный свайп открывает
-        // действия, медленный «случайный» сдвиг возвращает строку.
-        const projected = base + g.dx + g.vx * 110;
-        const wasOpen = openRef.current;
-        const shouldOpen = g.vx < -0.3 || projected < -ACTIONS_WIDTH * 0.25;
-        // Закрываем только уверенным свайпом вправо, иначе действия «убегают».
-        const shouldClose = g.vx > 0.5 || projected > -ACTIONS_WIDTH * 0.55;
-        const nextOpen = wasOpen ? !shouldClose : shouldOpen;
-        if (nextOpen !== wasOpen) haptics.tap();
-        if (cbRef.current.reduced) translateX.setValue(nextOpen ? -ACTIONS_WIDTH : 0);
-        else
-          Animated.spring(translateX, {
-            toValue: nextOpen ? -ACTIONS_WIDTH : 0,
-            ...SWIPE_SPRING,
-            useNativeDriver: true,
-          }).start();
-        cbRef.current.onOpenChange(nextOpen ? idRef.current : null);
-        onSwipeEnd?.();
-      },
-      onPanResponderTerminate: () => {
-        // Список забрал жест — не схлопываем уже открытые действия.
-        const nextOpen = openRef.current;
-        if (cbRef.current.reduced) translateX.setValue(nextOpen ? -ACTIONS_WIDTH : 0);
-        else
-          Animated.spring(translateX, {
-            toValue: nextOpen ? -ACTIONS_WIDTH : 0,
-            ...SWIPE_SPRING,
-            useNativeDriver: true,
-          }).start();
-        cbRef.current.onOpenChange(nextOpen ? idRef.current : null);
-        onSwipeEnd?.();
-      },
-    }),
-  ).current;
 
   const runAction = (fn: () => void) => {
     haptics.tap();
@@ -489,54 +424,68 @@ function SwipeChatRow(props: {
   const dangerA11y = leave ? `Выйти из чата ${title}` : `Удалить чат ${title}`;
 
   return (
-    <View style={styles.swipeWrap}>
-      <View style={styles.swipeActions} pointerEvents="box-none">
-        <Pressable
-          onPress={() => runAction(onTogglePin)}
-          accessibilityRole="button"
-          accessibilityLabel={pinned ? 'Открепить чат' : 'Закрепить чат'}
-          style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.accentSoft, opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Ionicons name={pinned ? 'pin-outline' : 'pin'} size={18} color={theme.accent} />
-          <Text style={{ color: theme.accent, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>
-            {pinned ? 'Открепить' : 'Закрепить'}
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => runAction(onToggleMute)}
-          accessibilityRole="button"
-          accessibilityLabel={muted ? 'Включить звук' : 'Без звука'}
-          style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.surfacePressed, opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Ionicons name={muted ? 'volume-high-outline' : 'notifications-off-outline'} size={18} color={theme.textSecondary} />
-          <Text style={{ color: theme.textSecondary, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>
-            {muted ? 'Со звуком' : 'Без звука'}
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => runAction(onDelete)}
-          accessibilityRole="button"
-          accessibilityLabel={dangerA11y}
-          style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.dangerSoft, opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Ionicons name={leave ? 'exit-outline' : 'trash-outline'} size={18} color={theme.danger} />
-          <Text style={{ color: theme.danger, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>{dangerLabel}</Text>
-        </Pressable>
-      </View>
-
-      <Animated.View style={{ transform: [{ translateX }] }} {...pan.panHandlers}>
-        <ChatRow
-          chat={chat}
-          title={title}
-          myUsername={myUsername}
-          unread={unread}
-          pinned={pinned}
-          muted={muted}
-          onOpen={onOpen}
-          onMenu={onMenu}
-        />
-      </Animated.View>
-    </View>
+    <Swipeable
+      ref={swipeRef}
+      friction={2}
+      rightThreshold={ACTIONS_WIDTH * 0.3}
+      overshootRight={false}
+      renderRightActions={() => (
+        <View style={styles.swipeActions}>
+          <Pressable
+            onPress={() => runAction(onTogglePin)}
+            accessibilityRole="button"
+            accessibilityLabel={pinned ? 'Открепить чат' : 'Закрепить чат'}
+            style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.accentSoft, opacity: pressed ? 0.7 : 1 }]}
+          >
+            <Ionicons name={pinned ? 'pin-outline' : 'pin'} size={18} color={theme.accent} />
+            <Text style={{ color: theme.accent, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>
+              {pinned ? 'Открепить' : 'Закрепить'}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => runAction(onToggleMute)}
+            accessibilityRole="button"
+            accessibilityLabel={muted ? 'Включить звук' : 'Без звука'}
+            style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.surfacePressed, opacity: pressed ? 0.7 : 1 }]}
+          >
+            <Ionicons name={muted ? 'volume-high-outline' : 'notifications-off-outline'} size={18} color={theme.textSecondary} />
+            <Text style={{ color: theme.textSecondary, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>
+              {muted ? 'Со звуком' : 'Без звука'}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => runAction(onDelete)}
+            accessibilityRole="button"
+            accessibilityLabel={dangerA11y}
+            style={({ pressed }) => [styles.swipeAction, { backgroundColor: theme.dangerSoft, opacity: pressed ? 0.7 : 1 }]}
+          >
+            <Ionicons name={leave ? 'exit-outline' : 'trash-outline'} size={18} color={theme.danger} />
+            <Text style={{ color: theme.danger, fontSize: 10.5, fontWeight: '600', marginTop: 3 }}>{dangerLabel}</Text>
+          </Pressable>
+        </View>
+      )}
+      onSwipeableWillOpen={() => {
+        haptics.tap();
+        onSwipeStart?.();
+        onOpenChange(chat.id);
+      }}
+      onSwipeableWillClose={() => {
+        onOpenChange(null);
+        onSwipeEnd?.();
+      }}
+      containerStyle={styles.swipeWrap}
+    >
+      <ChatRow
+        chat={chat}
+        title={title}
+        myUsername={myUsername}
+        unread={unread}
+        pinned={pinned}
+        muted={muted}
+        onOpen={onOpen}
+        onMenu={onMenu}
+      />
+    </Swipeable>
   );
 }
 
@@ -1434,7 +1383,6 @@ export default function ChatsScreen() {
       pinnedList.forEach((chat) => rows.push({ kind: 'chat', chat }));
     }
     if (rest.length) {
-      rows.push({ kind: 'section', title: 'Все чаты', count: rest.length });
       rest.forEach((chat) => rows.push({ kind: 'chat', chat }));
     }
     return rows;

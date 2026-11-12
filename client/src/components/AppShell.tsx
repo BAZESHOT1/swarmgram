@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/useTheme';
 import { useBodyBackground } from '../theme/useBodyBackground';
@@ -23,6 +24,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useBodyBackground();
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <View
       style={[
         styles.root,
@@ -41,6 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {children}
       <AppNavbar />
     </View>
+    </GestureHandlerRootView>
   );
 }
 
