@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { ThemeProvider, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import { AppState, Platform, View, ActivityIndicator, StyleSheet, Text } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useTheme } from '../src/theme/useTheme';
 import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
@@ -30,6 +31,7 @@ import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, typ
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
 import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCachedChatPreviews, findCachedChat } from '../src/data/cache';
 import { ensureWebPushPermission, initPush } from '../src/push';
+import { showMeshLocalNotification } from '../src/push/local';
 import { takeHandoffSession } from '../src/utils/secureContext';
 import { ModuleProvider } from '../src/modules/ModuleProvider';
 
@@ -71,7 +73,10 @@ function RealtimeBridge() {
       if (!useStore.getState().transportOnline) return;
       void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '')
         .then((sent) => {
-          if (sent.length) void queryClient.invalidateQueries({ queryKey: ['chats'] });
+          if (sent.length) {
+            void queryClient.invalidateQueries({ queryKey: ['chats'] });
+            void queryClient.invalidateQueries({ queryKey: ['messages'], type: 'active' });
+          }
         })
         .catch(() => undefined);
     };
@@ -581,6 +586,34 @@ function RealtimeBridge() {
           return [message, ...list];
         });
         void queryClient.invalidateQueries({ queryKey: ['chats'] });
+
+        // Mesh/BLE-конверт пришёл, пока приложение в фоне: показываем
+        // локальное уведомление. В foreground оставляем прежнее поведение,
+        // чтобы не дублировать in-app карточки.
+        if (AppState.currentState !== 'active') {
+          const mine = Boolean(getSession()?.userId && item.senderUserId === getSession()?.userId);
+          const muted = useStore.getState().mutedChats.includes(chatId);
+          const mutedUser = useStore
+            .getState()
+            .mutedUsers.includes(String(message.senderUsername ?? '').toLowerCase());
+          if (!mine && !muted && !mutedUser) {
+            const cached = findCachedChat(meName, chatId) ?? chat;
+            const title =
+              cached?.type === 'direct'
+                ? String(message.senderUsername || cached?.title || 'Сообщение')
+                : String(cached?.title || message.senderUsername || 'Сообщение');
+            const body =
+              String(message.text ?? '').trim() ||
+              (message.kind === 'media' ? 'Медиа' : message.kind === 'text' ? 'Новое сообщение' : 'Вложение');
+            await showMeshLocalNotification({
+              chatId,
+              messageId: typeof message.id === 'string' ? message.id : undefined,
+              title,
+              body,
+              kind: message.kind,
+            });
+          }
+        }
       })();
     });
 
@@ -695,13 +728,28 @@ function RealtimeBridge() {
           chat?.type === 'direct'
             ? String(env.senderUsername || chat?.title || 'Сообщение')
             : String(chat?.title || env.senderUsername || 'Сообщение');
-        useStore.getState().pushInApp({
-          kind: 'message',
-          chatId: env.chatId,
-          messageId: env.id,
-          title,
-          body: text || (env.kind === 'text' ? 'Новое сообщение' : 'Вложение'),
-        });
+        const body = text || (env.kind === 'text' ? 'Новое сообщение' : 'Вложение');
+        // В фоне in-app карточку не видно: показываем локальное уведомление.
+        // В foreground остаётся только in-app, поэтому дублей нет.
+        const backgrounded = AppState.currentState !== 'active';
+        const shownLocally = backgrounded
+          ? await showMeshLocalNotification({
+              chatId: env.chatId,
+              messageId: env.id,
+              title,
+              body,
+              kind: env.kind,
+            })
+          : false;
+        if (!shownLocally) {
+          useStore.getState().pushInApp({
+            kind: 'message',
+            chatId: env.chatId,
+            messageId: env.id,
+            title,
+            body,
+          });
+        }
       }
     }
 
@@ -895,6 +943,7 @@ export default function RootLayout() {
   }, [ready, segments, router, params.next, pathname, sessionState]);
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <View style={{ flex: 1, backgroundColor: theme.background }} suppressHydrationWarning>
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <QueryClientProvider client={queryClient} suppressHydrationWarning>
@@ -925,6 +974,7 @@ export default function RootLayout() {
         </ThemeProvider>
       </QueryClientProvider>
     </View>
+    </GestureHandlerRootView>
   );
 }
 

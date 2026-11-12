@@ -316,7 +316,7 @@ export function ModulesNetworkMap({ modules, focus, selectedId, onSelect, expand
         onPress={() => onSelect(focus)}
         accessibilityRole="button"
         accessibilityLabel={`${moduleRoleLabel(focus.role)}${
-          focus.publicId ? `, ID ${focus.publicId}` : ''
+          focus.hardwareId ? `, MAC ${focus.hardwareId}` : ''
         }, подключён к клиенту`}
         style={({ pressed }) => ({
           position: 'absolute',
@@ -389,7 +389,7 @@ export function ModulesNetworkMap({ modules, focus, selectedId, onSelect, expand
             onPress={() => onSelect(node.module)}
             accessibilityRole="button"
             accessibilityLabel={`${moduleRoleLabel(node.module.role)}${
-              node.module.publicId ? `, ID ${node.module.publicId}` : ''
+              node.module.hardwareId ? `, MAC ${node.module.hardwareId}` : ''
             }, ${status.text}${neighbors ? `, ${neighbors} соседей` : ''}`}
             style={({ pressed }) => ({
               position: 'absolute',

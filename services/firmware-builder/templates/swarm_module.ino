@@ -71,7 +71,7 @@
 #define SG_MESH_ID ""
 #endif
 #ifndef SG_MESH_HIDDEN
-#define SG_MESH_HIDDEN 1
+#define SG_MESH_HIDDEN 0
 #endif
 #ifndef SG_HUB_URL
 #define SG_HUB_URL ""
@@ -329,6 +329,7 @@ struct NeighborInfo {
   bool     border;        // сосед объявил себя border-нодой
   uint32_t lastMs;
   char     role[10];
+  char     hw[24];        // заводской MAC соседа (esp32-xxxxxxxxxxxx)
 };
 
 // Handover state machine поверх MT_DATA JSON-канала ("kind":"handover").
@@ -509,6 +510,24 @@ static const char *meshPass() {
 static const char *meshIdText() {
   return strlen(SG_MESH_ID) ? SG_MESH_ID : SG_DEFAULT_MESH_SSID;
 }
+
+/**
+ * У каждого узла своя подсеть SoftAP (10.42.X.1/24). Раньше все узлы
+ * поднимали 192.168.4.1/24: подсети совпадали с аплинком, маршруты
+ * конфликтовали, и UDP-пакеты не доходили между модулями.
+ */
+static IPAddress meshApAddress() {
+  const uint8_t third = (uint8_t)(1 + ((gNodeId >> 8) % 200));
+  const uint8_t fourth = (uint8_t)(1 + ((gNodeId >> 16) % 200));
+  return IPAddress(10, 42, third, fourth);
+}
+
+static void meshApConfig() {
+  const IPAddress ip = meshApAddress();
+  const IPAddress mask(255, 255, 255, 0);
+  WiFi.softAPConfig(ip, ip, mask);
+}
+
 static const char *hubBase() {
   return strlen(SG_HUB_URL) ? SG_HUB_URL : SG_DEFAULT_HUB_URL;
 }
@@ -982,6 +1001,8 @@ static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
       gNeighbors[i].border = jsonGetInt(json, "border") != 0;
       String r = jsonGetString(json, "role");
       if (r.length()) snprintf(gNeighbors[i].role, sizeof(gNeighbors[i].role), "%s", r.c_str());
+      String hw = jsonGetString(json, "hw");
+      if (hw.length()) snprintf(gNeighbors[i].hw, sizeof(gNeighbors[i].hw), "%s", hw.c_str());
       break;
     }
   }
@@ -1049,6 +1070,8 @@ static void neighborUpdatePresence(uint32_t id, int16_t rssi, const String &json
     const uint32_t cid = jsonGetU32(json, "cluster_id");
     if (cid) gNeighbors[i].clusterId = cid;
     if (json.indexOf("\"border\"") >= 0) gNeighbors[i].border = jsonGetInt(json, "border") != 0;
+    String hw = jsonGetString(json, "hw");
+    if (hw.length()) snprintf(gNeighbors[i].hw, sizeof(gNeighbors[i].hw), "%s", hw.c_str());
     break;
   }
 }
@@ -1596,6 +1619,21 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
     if (!wifiSameIp(apBcast, bcast) && wifiSendOne(apBcast, buf, len)) copies++;
   }
 
+  // Directed broadcast аплинка. В AP+STA подсети разные, поэтому
+  // глобальный broadcast не всегда уходит в STA-интерфейс.
+  const IPAddress lip = WiFi.localIP();
+  const IPAddress mask = WiFi.subnetMask();
+  if (lip[0] && mask[0]) {
+    const IPAddress staBcast(
+      (uint8_t)(lip[0] | (uint8_t)~mask[0]),
+      (uint8_t)(lip[1] | (uint8_t)~mask[1]),
+      (uint8_t)(lip[2] | (uint8_t)~mask[2]),
+      (uint8_t)(lip[3] | (uint8_t)~mask[3]));
+    if (!wifiSameIp(staBcast, bcast) && !wifiSameIp(staBcast, ap)) {
+      if (wifiSendOne(staBcast, buf, len)) copies++;
+    }
+  }
+
   // STA-клиент -> хост AP: дублируем unicast на адрес шлюза по STA.
   // Для самого gateway это адрес роутера, поэтому ему unicast не нужен.
   const IPAddress gw = WiFi.gatewayIP();
@@ -1604,11 +1642,10 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
   }
 
   // Fallback-unicast для собеседников: broadcast между STA и AP-хостом
-  // доходит не на всех ядрах, поэтому дублируем unicast (не больше двух
-  // адресов, чтобы не плодить трафик).
+  // доходит не на всех ядрах, поэтому дублируем unicast.
   const uint32_t now = millis();
   uint8_t unicasts = 0;
-  for (int i = 0; i < 4 && unicasts < 2; i++) {
+  for (int i = 0; i < 4 && unicasts < 4; i++) {
     if (!gPeerIps[i].used) continue;
     if (now - gPeerIps[i].lastMs > 10UL * 60UL * 1000UL) {
       gPeerIps[i].used = false;
@@ -1887,6 +1924,11 @@ static void appendBeaconFields(String &p) {
   p += String((unsigned long)gSelfClusterId);
   p += ",\"border\":";
   p += gBorderNode ? "1" : "0";
+  // Реальный MAC нужен соседям и Hub: идентичность модуля строится только
+  // на заводском MAC, а не на сгенерированном ID.
+  p += ",\"hw\":\"";
+  p += gHardwareId;
+  p += "\"";
   p += ",\"neighbor_clusters\":[";
   for (uint8_t i = 0; i < gBeaconNeighborClusterCount; i++) {
     if (i) p += ",";
@@ -2708,8 +2750,7 @@ static void loraPoll() {
 #if !SG_USE_ESP_MESH
 // SoftAP не должен «теряться» в режиме AP_STA: если режим сбросился,
 // поднимаем точку доступа заново на текущем канале.
-static void wifiEnsureAp() {
-  const wifi_mode_t mode = (wifi_mode_t)WiFi.getMode();
+static void wifiEnsureAp() {  const wifi_mode_t mode = (wifi_mode_t)WiFi.getMode();
   const IPAddress apip = WiFi.softAPIP();
   if ((mode & WIFI_AP) && apip[0] != 0) return;
   // Не дёргаем softAP в первые 15 секунд: DHCP/netif могут ещё подниматься.
@@ -2718,9 +2759,48 @@ static void wifiEnsureAp() {
   sgLog("[wifi] softAP not running (mode=%d ip=%s) -> restart ch%u",
         (int)mode, apip.toString().c_str(), (unsigned)ch);
   WiFi.mode(WIFI_AP_STA);
-  if (!WiFi.softAP(meshSsid(), meshPass(), ch, SG_MESH_HIDDEN ? 1 : 0, 4)) {
+  meshApConfig();
+  if (!WiFi.softAP(meshSsid(), meshPass(), ch, SG_MESH_HIDDEN ? 1 : 0, 8)) {
     sgLog("[wifi] softAP restart failed");
   }
+}
+
+/**
+ * Ищет в эфире AP соседнего модуля (SG-MESH), исключая собственную точку
+ * доступа, и подключается к самому сильному по BSSID+каналу. Работает и для
+ * скрытого SSID, к которому обычный WiFi.begin(ssid, pass) не цепляется.
+ */
+static bool wifiJoinBestMesh(bool force) {
+  static uint32_t lastScanMs = 0;
+  const uint32_t now = millis();
+  if (!force && now - lastScanMs < 12000UL) return false;
+  lastScanMs = now;
+  sgLog("[wifi] scan for mesh AP...");
+  const int found = WiFi.scanNetworks(false, true);
+  int best = -1;
+  int bestRssi = -1000;
+  const String ownBssid = WiFi.softAPmacAddress();
+  for (int i = 0; i < found; i++) {
+    if (WiFi.SSID(i) != String(meshSsid())) continue;
+    if (WiFi.BSSIDstr(i).equalsIgnoreCase(ownBssid)) continue;   // свой AP
+    const int rssi = WiFi.RSSI(i);
+    if (rssi > bestRssi) {
+      bestRssi = rssi;
+      best = i;
+    }
+  }
+  if (best >= 0) {
+    uint8_t bssid[6];
+    memcpy(bssid, WiFi.BSSID(best), 6);
+    const int ch = WiFi.channel(best);
+    sgLog("[wifi] join mesh ap %s ch%d rssi=%d", WiFi.BSSIDstr(best).c_str(), ch, bestRssi);
+    WiFi.begin(meshSsid(), meshPass(), ch, bssid, true);
+  } else {
+    sgLog("[wifi] mesh AP not found (%d nets)", found);
+  }
+  WiFi.scanDelete();
+  gLastScanMs = now;
+  return best >= 0;
 }
 
 static void ensureWifiLink() {
@@ -2777,40 +2857,16 @@ static void ensureWifiLink() {
     sgLog("[wifi] sta disconnected (ap clients=%d)", (int)WiFi.softAPgetStationNum());
   }
   if (!gStaDownSinceMs) gStaDownSinceMs = now;
-  if (now - gLastWifiAttemptMs < 15000UL) return;
+  if (now - gLastWifiAttemptMs < 10000UL) return;
   gLastWifiAttemptMs = now;
 
-  // Долго не можем подключиться к mesh: сканируем эфир (включая скрытые AP)
-  // и цепляемся к самому сильному узлу по BSSID+каналу. Спасает, когда
-  // скрытый SSID и/или канал AP не совпадают с ожидаемым.
-  if (!isGateway() && now - gStaDownSinceMs > 60000UL &&
-      now - gLastScanMs > 120000UL) {
-    gLastScanMs = now;
-    sgLog("[wifi] scan for hidden mesh AP...");
-    const int found = WiFi.scanNetworks(false, true);
-    int best = -1;
-    int bestRssi = -1000;
-    const String ownBssid = WiFi.softAPmacAddress();
-    for (int i = 0; i < found; i++) {
-      if (WiFi.SSID(i) != String(meshSsid())) continue;
-      if (WiFi.BSSIDstr(i).equalsIgnoreCase(ownBssid)) continue;   // свой AP
-      if (WiFi.RSSI(i) > bestRssi) {
-        bestRssi = WiFi.RSSI(i);
-        best = i;
-      }
-    }
-    if (best >= 0) {
-      uint8_t bssid[6];
-      memcpy(bssid, WiFi.BSSID(best), 6);
-      const int ch = WiFi.channel(best);
-      sgLog("[wifi] scan: mesh ap %s ch%d rssi=%d", WiFi.BSSIDstr(best).c_str(),
-            ch, bestRssi);
-      WiFi.begin(meshSsid(), meshPass(), ch, bssid, true);
-    } else {
-      sgLog("[wifi] scan: mesh ap not found (%d nets)", found);
-    }
-    WiFi.scanDelete();
-    if (best >= 0) return;
+  // Не-шлюз всегда сначала ищет AP соседа по скрытому или открытому SSID:
+  // без явного BSSID+канала ESP32 не подключается к скрытой сети и может
+  // «залипнуть» на собственной точке доступа.
+  if (!isGateway()) {
+    if (wifiJoinBestMesh(false)) return;
+    sgLog("[wifi] mesh ap not found, retry in 10s");
+    return;
   }
 
   if (isGateway()) {
@@ -2836,8 +2892,9 @@ static void setupWifi() {
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
 
+  meshApConfig();
   const bool apOk = WiFi.softAP(meshSsid(), meshPass(), SG_MESH_CHANNEL,
-                                SG_MESH_HIDDEN ? 1 : 0, 4);
+                                SG_MESH_HIDDEN ? 1 : 0, 8);
   if (apOk) {
     gApChannel = (uint8_t)SG_MESH_CHANNEL;
     sgLog("[wifi] softAP %s ch%d hidden=%d ip=%s",
@@ -3205,6 +3262,7 @@ static String neighborsJson() {
     if (!first) out += ",";
     first = false;
     out += String("{\"publicId\":\"") + publicIdForNode(gNeighbors[i].id) +
+           "\",\"hardwareId\":\"" + String(gNeighbors[i].hw) +
            "\",\"rssi\":" + String(gNeighbors[i].rssi) + "}";
   }
   out += "]";
@@ -3552,13 +3610,15 @@ void loop() {
   }
 
   // ADVERT раз в 60 c.
-  if (now - gLastAdvertMs >= 60000UL) {
+  // ADVERT: первые 2 минуты — каждые 8 с (быстрое обнаружение), затем 30 с.
+  const uint32_t advertEvery = millis() < 120000UL ? 8000UL : 30000UL;
+  if (now - gLastAdvertMs >= advertEvery) {
     gLastAdvertMs = now;
     sendAdvert();
   }
 
-  // PRESENCE раз в 30 c; при перегрузке sendPresence сам пропустит.
-  if (now - gLastPresenceMs >= 30000UL) {
+  // PRESENCE раз в 15 c; при перегрузке sendPresence сам пропустит.
+  if (now - gLastPresenceMs >= 15000UL) {
     gLastPresenceMs = now;
     sendPresence();
   }

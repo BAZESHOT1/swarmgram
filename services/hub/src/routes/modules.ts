@@ -1461,8 +1461,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       battery?: number;
       attached?: boolean;
       gateway?: boolean;
-      neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];
-      claimToken?: string;
+      neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];      claimToken?: string;
       rssi?: number;
       uptime?: number;
     };
@@ -1568,14 +1567,20 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     // Gossip: шлюз сообщает, какие модули он видит в mesh. Это позволяет
     // считать ретрансляторы/носимые онлайн без их собственного интернета.
+    // Матчим по MAC (каноническая идентичность), public_id — только fallback.
     for (const n of neighbors) {
       const pid = String(n.publicId ?? '').trim();
-      if (!isPublicId(pid)) continue;
+      const hwRaw = String(n.hardwareId ?? '').trim().toLowerCase();
+      const hw = hwRaw ? canonicalHardwareId(hwRaw) : null;
+      if (!hw && !isPublicId(pid)) continue;
       await query(
         `UPDATE modules SET last_seen_at = now(), status = 'online',
                 rssi = CASE WHEN $2 <> 0 THEN $2 ELSE rssi END, updated_at = now()
-          WHERE public_id = $1 AND blocked = false`,
-        [pid, Number(n.rssi ?? 0) | 0],
+          WHERE blocked = false AND (
+            ($1::text IS NOT NULL AND lower(hardware_id) = $1)
+            OR ($3::text <> '' AND public_id = $3)
+          )`,
+        [hw, Number(n.rssi ?? 0) | 0, pid],
       ).catch(() => undefined);
     }
 

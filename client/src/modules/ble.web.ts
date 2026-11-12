@@ -7,6 +7,11 @@
  */
 import { ModuleTransportError, type ModuleConnection, type ModuleInfo } from './types';
 
+/** Веб-сборка: Bluetooth-разрешений нет, всегда false. */
+export async function prepareBle(): Promise<boolean> {
+  return false;
+}
+
 export class NativeBleTransport implements ModuleConnection {
   readonly kind = 'ble' as const;
   readonly supported = false;

@@ -1499,7 +1499,7 @@ export default function ChatsScreen() {
           <View
             ref={searchHostRef}
             nativeID="sg-chats-search"
-            style={{ position: 'relative', zIndex: 40 }}
+            style={{ position: 'relative', zIndex: 40, paddingBottom: 12 }}
             onLayout={(e) => {
               const h = e.nativeEvent.layout.height;
               if (h > 0 && Math.abs(h - searchHeight) > 0.5) setSearchHeight(h);
@@ -2748,13 +2748,13 @@ const styles = StyleSheet.create({
   staticRow: { marginBottom: 6 },
   swipeWrap: { marginBottom: 6, borderRadius: 16, overflow: 'hidden', position: 'relative' },
   swipeActions: {
-    ...StyleSheet.absoluteFillObject,
+    width: ACTIONS_WIDTH,
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    height: '100%',
     borderRadius: 16,
     overflow: 'hidden',
   },
-  swipeAction: { width: ACTION_WIDTH, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  swipeAction: { width: ACTION_WIDTH, height: '100%', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
   onboarding: { marginHorizontal: 24, marginBottom: 24, padding: 14, borderRadius: 18, borderWidth: 1 },
   onboardingTile: { flex: 1, alignItems: 'center', paddingVertical: 10, paddingHorizontal: 6, borderRadius: 14, borderWidth: 1, minHeight: 76 },
   typeBadge: {

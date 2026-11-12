@@ -229,7 +229,7 @@ function ConnectedModuleCard({
                 style={{ color: theme.textSecondary, fontSize: 12, marginTop: 2 }}
                 numberOfLines={1}
               >
-                {module.publicId ? `ID ${module.publicId}` : 'ID пока нет'} · {moduleRoleLabel(module.role)}
+                MAC {module.hardwareId || module.boardUuid || '—'} · {moduleRoleLabel(module.role)}
               </Text>
             </View>
             <StatusBadge text={status.text} tone={status.tone} />
@@ -1109,7 +1109,7 @@ export default function ModulesScreen() {
                       </View>
 
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                        {module.publicId ? <StatusBadge text={`ID ${module.publicId}`} tone="neutral" /> : null}
+                        <StatusBadge text={`MAC ${module.hardwareId || module.boardUuid || '—'}`} tone="neutral" />
                         <StatusBadge text={moduleRoleLabel(module.role)} tone="accent" />
                         <StatusBadge
                           text={moduleEnvironmentLabel(module.kind, module.transport)}

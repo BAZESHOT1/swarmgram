@@ -225,7 +225,7 @@ export function ModuleCard({
           <Pressable
             onPress={() => onSelect(module)}
             accessibilityRole="button"
-            accessibilityLabel={`Показать ${moduleRoleLabel(module.role)}${publicId ? ` ID ${publicId}` : ''}`}
+            accessibilityLabel={`Показать ${moduleRoleLabel(module.role)}${hardwareId ? `, MAC ${hardwareId}` : ''}`}
             style={({ pressed }) => ({
               flexDirection: 'row',
               alignItems: 'flex-start',
@@ -270,7 +270,7 @@ export function ModuleCard({
                 }}
                 numberOfLines={1}
               >
-                {publicId ? `ID ${publicId}` : 'ID пока нет'} · {moduleEnvironmentLabel(module.kind, module.transport)} ·
+                MAC {hardwareId || '—'} · {moduleEnvironmentLabel(module.kind, module.transport)} ·
                 прошивка {module.firmware || '—'}
               </Text>
             </View>

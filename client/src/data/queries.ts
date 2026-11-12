@@ -176,10 +176,15 @@ export function useChatMessages(chat: Chat | null) {
     },
     initialData: () => (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
     initialDataUpdatedAt: 0,
-    staleTime: STALE.messages,
-    gcTime: 10 * 60_000,
+    // Лента всегда перечитывается при входе в чат и при возврате приложения:
+    // иначе подтверждённое сообщение может «пропасть» из устаревшего кэша.
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: true,
+    gcTime: 30 * 60_000,
     // Открытый чат не должен «зависать», даже если сокет потерял событие.
-    refetchInterval: 15_000,
+    refetchInterval: 12_000,
     placeholderData: (prev) => prev ?? (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
   });
 }

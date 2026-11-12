@@ -33,6 +33,8 @@ import type { PushCleanup, PushData, PushDisplayOptions, PushSession } from './t
 
 export const MESSAGES_CHANNEL_ID = 'kinto-messages';
 export const SYSTEM_CHANNEL_ID = 'kinto-system';
+/** LOW importance: постоянное уведомление Android foreground service. */
+export const MESH_CHANNEL_ID = 'kinto-mesh';
 export const BACKGROUND_FETCH_TASK_ID = 'kinto-pending-notifications';
 
 const MAX_PENDING_PER_FETCH = 10;
@@ -86,6 +88,14 @@ async function createChannels(): Promise<void> {
         id: SYSTEM_CHANNEL_ID,
         name: 'System',
         importance: AndroidImportance.DEFAULT,
+      },
+      {
+        id: MESH_CHANNEL_ID,
+        name: 'Mesh-соединение',
+        description: 'Постоянное уведомление, пока модуль подключён',
+        importance: AndroidImportance.LOW,
+        vibration: false,
+        badge: false,
       },
     ]);
   } catch (error) {
@@ -311,9 +321,26 @@ function registerForegroundPressHandler(): PushCleanup {
 
 async function requestNativePermission(): Promise<boolean> {
   const messaging = getMessagingSafe();
+  if (Platform.OS === 'ios') {
+    // Один системный диалог: notifee использует UNUserNotificationCenter.
+    // Firebase requestPermission на unsigned-сборке может не вернуться,
+    // поэтому на iOS не дублируем запрос вторым вызовом.
+    try {
+      const settings = await Promise.race([
+        notifee.requestPermission(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 12_000)),
+      ]);
+      if (settings) return settings.authorizationStatus >= NotifeeAuthorizationStatus.AUTHORIZED;
+    } catch (error) {
+      warn('notifee requestPermission failed', error);
+    }
+  }
   if (messaging) {
     try {
-      const status = await messaging.requestPermission();
+      const status = await Promise.race([
+        messaging.requestPermission(),
+        new Promise<number>((resolve) => setTimeout(() => resolve(-1), 12_000)),
+      ]);
       if (
         status === FirebaseAuthorizationStatus.AUTHORIZED ||
         status === FirebaseAuthorizationStatus.PROVISIONAL ||
@@ -329,8 +356,7 @@ async function requestNativePermission(): Promise<boolean> {
     }
   }
 
-  // On Android 13+ notifee also requests POST_NOTIFICATIONS; on iOS this is a
-  // second, idempotent attempt if Firebase permission could not be requested.
+  // Android 13+ notifee requests POST_NOTIFICATIONS.
   try {
     const settings = await notifee.requestPermission();
     return settings.authorizationStatus >= NotifeeAuthorizationStatus.AUTHORIZED;
@@ -381,17 +407,21 @@ export async function registerNativePush(session: PushSession | null | undefined
 
   try {
     if (Platform.OS === 'ios' && !messaging.isDeviceRegisteredForRemoteMessages) {
-      await messaging.registerDeviceForRemoteMessages().catch((error) => {
-        warn('registerDeviceForRemoteMessages failed', error);
-      });
+      // На unsigned iOS этот вызов может зависнуть — не блокируем запуск.
+      await Promise.race([
+        messaging.registerDeviceForRemoteMessages().catch((error) => {
+          warn('registerDeviceForRemoteMessages failed', error);
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+      ]);
     }
 
     // На unsigned iOS APNs-токен может не прийти — не блокируем запуск.
     const token = await Promise.race([
       messaging.getToken(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8_000)),
     ]);
-    if (token) await registerToken(token);
+    if (token) void registerToken(token);
 
     const unsubscribe = messaging.onTokenRefresh((nextToken: string) => {
       void registerToken(nextToken);

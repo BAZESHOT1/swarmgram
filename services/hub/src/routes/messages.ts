@@ -280,7 +280,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           seq: r.seq,
           chatId,
           kind: r.kind,
-          objectId: r.object_id,
+          // У системных сообщений нет объекта на узлах — ключ не отдаём.
+          ...(r.kind === 'system' ? {} : { objectId: r.object_id }),
           sizeBytes: r.size_bytes,
           nonce: extractNonce(r.header),
           header: r.header,
@@ -325,7 +326,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       seq: r.seq,
       chatId,
       kind: r.kind,
-      objectId: r.object_id,
+      // У системных сообщений нет объекта на узлах — ключ не отдаём.
+      ...(r.kind === 'system' ? {} : { objectId: r.object_id }),
       sizeBytes: r.size_bytes,
       nonce: extractNonce(r.header),
       header: r.header,
@@ -486,12 +488,17 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
   /* ------------------------------------------------------------ удаление - */
   app.delete('/chats/:id/messages/:messageId', { onRequest: [requireAuth()] }, async (req, reply) => {
     const { id: chatId, messageId } = req.params as { id: string; messageId: string };
-    const msg = await one<{ sender_user_id: string; object_id: string | null }>(
-      'SELECT sender_user_id, object_id FROM messages WHERE id = $1 AND chat_id = $2',
+    const msg = await one<{ sender_user_id: string; object_id: string | null; kind: string }>(
+      'SELECT sender_user_id, object_id, kind FROM messages WHERE id = $1 AND chat_id = $2',
       [messageId, chatId],
     );
     if (!msg) throw notFound('message');
-    if (msg.sender_user_id !== req.auth!.userId) throw forbidden('not_your_message');
+    if (msg.sender_user_id !== req.auth!.userId) {
+      // Служебные сообщения может удалять также тот, кому это позволяет роль чата.
+      if (msg.kind !== 'system' || !(await can(chatId, req.auth!.userId, 'deleteMessages'))) {
+        throw forbidden('not_your_message');
+      }
+    }
 
     await query('DELETE FROM messages WHERE id = $1', [messageId]);
     if (msg.object_id) {

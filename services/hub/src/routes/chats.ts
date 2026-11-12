@@ -180,6 +180,86 @@ async function memberIds(chatId: string): Promise<string[]> {
   return rows.map((r) => r.user_id);
 }
 
+export type SystemMessageEvent = 'member_joined' | 'member_left' | 'member_removed';
+
+/**
+ * Служебное сообщение о событии участников группы.
+ * Хранится в messages без object_id/шифротекста (kind='system'), текст — в header.
+ * Живёт по тем же правилам, что и обычное сообщение: обновляет chats.last_seq и
+ * рассылается всем участникам обычным envelope `{type:'message'}`.
+ *
+ * Для member_joined actor — вступивший, relatedUserId — пригласивший;
+ * для member_removed actor — исключивший, relatedUserId — исключённый.
+ */
+export async function insertSystemMessage(
+  chatId: string,
+  actorUserId: string,
+  event: SystemMessageEvent,
+  relatedUserId?: string | null,
+): Promise<void> {
+  // Служебные сообщения нужны только в группах.
+  const chat = await one<{ type: string }>('SELECT type FROM chats WHERE id = $1', [chatId]);
+  if (!chat || chat.type !== 'group') return;
+
+  const actor = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [actorUserId]);
+  const related = relatedUserId
+    ? await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [relatedUserId])
+    : null;
+  const actorUsername = actor?.username ?? '';
+  const targetUsername = related?.username ?? '';
+
+  const systemText =
+    event === 'member_left'
+      ? `${actorUsername || 'Участник'} вышел из группы`
+      : event === 'member_removed'
+        ? `${actorUsername || 'Участник'} исключил ${targetUsername || 'участника'} из группы`
+        : targetUsername
+          ? `${actorUsername || 'Участник'} вступил в группу по приглашению ${targetUsername}`
+          : `${actorUsername || 'Участник'} вступил в группу`;
+
+  const header = {
+    systemText,
+    system: true,
+    actorUsername,
+    targetUsername,
+    event,
+  };
+  const id = uuid();
+  const row = await one<{ seq: number; created_at: string }>(
+    `INSERT INTO messages (id, chat_id, sender_user_id, kind, header)
+     VALUES ($1,$2,$3,'system',$4) RETURNING seq, created_at`,
+    [id, chatId, actorUserId, JSON.stringify(header)],
+  );
+  if (!row) return;
+
+  await query('UPDATE chats SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1', [
+    chatId,
+    row.seq,
+  ]);
+
+  const envelope = {
+    type: 'message',
+    chatId,
+    message: {
+      id,
+      seq: row.seq,
+      chatId,
+      kind: 'system',
+      objectId: null,
+      nonce: '',
+      header,
+      replyTo: null,
+      asChannel: false,
+      senderUserId: actorUserId,
+      senderUsername: actorUsername,
+      senderDeviceId: null,
+      createdAt: row.created_at,
+      clientId: null,
+    },
+  };
+  for (const userId of await memberIds(chatId)) publish(userId, envelope);
+}
+
 /**
  * Выдать новому участнику доступ к объектам, которые уже есть в чате
  * (сообщения и комментарии). Иначе история будет видна как «зашифровано».
@@ -480,6 +560,7 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
       await query('DELETE FROM chats WHERE id = $1', [id]);
     } else {
       await query('DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2', [id, me]);
+      if (chat.type === 'group') await insertSystemMessage(id, me, 'member_left');
     }
     publishMany(members.map((m) => m.user_id), { type: 'chat_removed', chatId: id });
     return reply.send({ ok: true });
@@ -1049,6 +1130,7 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     await query('UPDATE chat_invite_links SET uses = uses + 1 WHERE id = $1', [invite.id]);
     publish(me, { type: 'chat_added', chatId: invite.chat_id });
     publishMany(await memberIds(invite.chat_id), { type: 'chat_updated', chatId: invite.chat_id });
+    await insertSystemMessage(invite.chat_id, me, 'member_joined', invite.created_by ?? invite.owner_id);
     await audit(invite.chat_id, me, 'invite_joined', invite.id, { role });
     return reply.send({ status: 'joined', chatId: invite.chat_id });
   });
@@ -1083,6 +1165,7 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     await grantChatObjects(id, me);
     publish(me, { type: 'chat_added', chatId: id });
     publishMany(await memberIds(id), { type: 'chat_updated', chatId: id });
+    await insertSystemMessage(id, me, 'member_joined', chat.owner_id);
     await audit(id, me, 'joined', me, {});
     return reply.send({ status: 'joined', chatId: id });
   });
@@ -1233,7 +1316,10 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     const { id, userId } = req.params as { id: string; userId: string };
     const me = req.auth!.userId;
     if (!(await can(id, me, 'manageMembers'))) throw forbidden('no_permission');
-    const chat = await one<{ owner_id: string | null }>('SELECT owner_id FROM chats WHERE id = $1', [id]);
+    const chat = await one<{ owner_id: string | null; type: string }>(
+      'SELECT owner_id, type FROM chats WHERE id = $1',
+      [id],
+    );
     if (!chat) throw notFound('chat');
     if (userId === chat.owner_id) throw forbidden('cannot_remove_owner');
     const target = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [id, userId]);
@@ -1243,6 +1329,7 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     await query('DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2', [id, userId]);
     publish(userId, { type: 'chat_removed', chatId: id });
     publishMany(members, { type: 'chat_updated', chatId: id });
+    if (chat.type === 'group') await insertSystemMessage(id, me, 'member_removed', userId);
     await audit(id, me, 'member_removed', userId);
     return reply.send({ ok: true });
   });

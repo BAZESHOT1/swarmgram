@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kinto",
     "slug": "kinto",
-    "version": "1.4.19",
+    "version": "1.4.20",
     "orientation": "portrait",
     "scheme": "kinto",
     "userInterfaceStyle": "dark",
@@ -50,9 +50,12 @@
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
       "react-native-background-fetch",
+      "./plugins/withNotifeeForegroundService",
       [
         "react-native-ble-plx",
         {
+          "isBackgroundEnabled": true,
+          "modes": ["central"],
           "bluetoothAlwaysPermission": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
       ],
@@ -62,7 +65,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "10419",
+      "buildNumber": "10420",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
@@ -70,13 +73,13 @@
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети.",
         "NSBluetoothPeripheralUsageDescription": "Kinto использует Bluetooth для связи с носимыми модулями.",
-        "UIBackgroundModes": ["fetch", "remote-notification"],
+        "UIBackgroundModes": ["fetch", "remote-notification", "bluetooth-central"],
         "FirebaseAppDelegateProxyEnabled": true
       }
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 10419,
+      "versionCode": 10420,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
@@ -86,6 +89,9 @@
       "permissions": [
         "INTERNET",
         "POST_NOTIFICATIONS",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_CONNECTED_DEVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC",
         "BLUETOOTH",
         "BLUETOOTH_ADMIN",
         "BLUETOOTH_SCAN",

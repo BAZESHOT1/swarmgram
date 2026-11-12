@@ -28,6 +28,7 @@ import {
 import { dbGet, dbSet, enqueueOutbox, listOutbox, removeOutbox, updateOutboxState, type OutboxItem } from './db';
 import { compressImage, uploadBytesWithProgress, type UploadStage } from './uploader';
 import { sendViaMesh, canSendViaMesh, isMeshCongested } from '../modules/meshLink';
+import { loadCachedMessages } from './cache';
 import { useStore } from '../state/useStore';
 
 /**
@@ -78,6 +79,13 @@ export interface ViewMessage {
   asChannel?: boolean;
   /** Просмотры поста канала (приходит с конвертом). */
   viewsCount?: number;
+  /* ---- системные сообщения о событиях группы (kind='system') ---- */
+  /** Кто совершил действие (для акцента в тексте). */
+  systemActor?: string;
+  /** Второй участник события: пригласивший или исключённый. */
+  systemTarget?: string;
+  /** Тип события участника группы. */
+  systemEvent?: string;
 }
 
 /** Колбэки прогресса отправки медиа (экран держит их в своём состоянии). */
@@ -265,7 +273,10 @@ export async function sendMessage(
     // Нет интернета, но подключён модуль — отдаём шифротекст в USB/BLE mesh.
     const viaMesh = await sendViaMesh(chatId, item);
     if (viaMesh) {
-      await removeOutbox(clientId);
+      // Оставляем сообщение в очереди: получатель уже увидел его через mesh,
+      // но Hub ещё не знает о нём. При появлении интернета оно уйдёт на сервер
+      // (идемпотентно по clientId), и история не потеряется после перезапуска.
+      await enqueueOutbox(item).catch(() => undefined);
       return { ...draft, delivered: false, pending: true, clientId };
     }
     // связь недоступна (нет интернета и модуля): держим шифротекст в очереди
@@ -429,8 +440,21 @@ async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUserna
     asChannel: envExt.asChannel === true || envHeader.asChannel === true,
     viewsCount: envExt.viewsCount,
   };
-  if (!env.objectId) {
-    return { ...common, delivered: true, failed: false, pending: false };
+  // Системное сообщение (или конверт без объекта) нечего скачивать с узлов:
+  // текст лежит открытым в header. UI рисует его отдельной центрированной строкой.
+  if (env.kind === 'system' || !env.objectId) {
+    const systemText = typeof envHeader.systemText === 'string' ? envHeader.systemText : '';
+    return {
+      ...common,
+      kind: 'system',
+      text: systemText,
+      systemActor: typeof envHeader.actorUsername === 'string' ? envHeader.actorUsername : undefined,
+      systemTarget: typeof envHeader.targetUsername === 'string' ? envHeader.targetUsername : undefined,
+      systemEvent: typeof envHeader.event === 'string' ? envHeader.event : undefined,
+      delivered: true,
+      failed: false,
+      pending: false,
+    };
   }
   if (!rawKey) {
     return { ...common, text: '', delivered: true, failed: true, pending: false };
@@ -499,7 +523,54 @@ export async function loadChatMessages(chat: Chat, myUsername: string, limit = 6
     if (rawKey) await topUpAllKeys(chat.id, rawKey);
     else await dbSet('chatKey_missing:' + chat.id, '1');
   }
-  return out;
+
+  // Локальные сообщения, которые ещё не подтверждены Hub (отправлены через
+  // mesh, лежат в очереди или не успели уйти), обязаны оставаться в ленте
+  // после повторного входа в чат. Раньше refetch затирал их кэшем сервера.
+  const confirmedClients = new Set(out.map((m) => m.clientId).filter((v): v is string => Boolean(v)));
+  const serverIds = new Set(out.map((m) => m.id));
+  const pending: ViewMessage[] = [];
+  try {
+    for (const item of await listOutbox()) {
+      if (item.chatId !== chat.id || !item.clientId || confirmedClients.has(item.clientId)) continue;
+      const extra = item as OutboxItem & { text?: string; file?: ViewMessage['file']; replyTo?: string };
+      pending.push({
+        id: item.clientId,
+        clientId: item.clientId,
+        seq: 0,
+        senderUsername: myUsername,
+        mine: true,
+        createdAt: item.createdAt,
+        kind: item.kind,
+        text: extra.text,
+        file: extra.file,
+        replyTo: extra.replyTo ?? null,
+        scheme: 'server',
+        reactions: [],
+        delivered: false,
+        pending: true,
+        failed: item.state === 'failed',
+      });
+    }
+  } catch {
+    /* очередь недоступна — не мешаем истории */
+  }
+  // Плюс оптимистичные сообщения из локального кэша, которых уже нет в
+  // очереди (например, отправленные через mesh и ожидающие синхронизации).
+  const cached = (await loadCachedMessages(chat.id).catch(() => null)) as ViewMessage[] | null;
+  if (Array.isArray(cached)) {
+    for (const m of cached) {
+      if (!m || m.seq > 0) continue;
+      if (m.clientId && confirmedClients.has(m.clientId)) continue;
+      if (m.id && serverIds.has(m.id)) continue;
+      if (pending.some((p) => p.clientId && p.clientId === m.clientId)) continue;
+      pending.push({ ...m, pending: true, delivered: false });
+    }
+  }
+  if (!pending.length) return out;
+  return [...out, ...pending].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
 }
 
 /* ------------------------------------------------------- поиск сообщений -- */

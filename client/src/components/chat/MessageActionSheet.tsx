@@ -57,7 +57,9 @@ export function MessageActionSheet({
             </View>
 
             <Text style={{ color: theme.textSecondary, fontSize: 12.5 }} numberOfLines={2}>
-              {message.senderUsername}: {message.text || (message.kind === 'media' ? 'Вложение' : 'Зашифрованное сообщение')}
+              {message.kind === 'system'
+                ? message.text
+                : `${message.senderUsername}: ${message.text || (message.kind === 'media' ? 'Вложение' : 'Зашифрованное сообщение')}`}
             </Text>
 
             <View style={[styles.reactions, { borderColor: theme.line }]}>
@@ -86,7 +88,9 @@ export function MessageActionSheet({
             {message.mine ? (
               <Action icon={pinned ? 'pin-outline' : 'pin'} label={pinned ? 'Открепить' : 'Закрепить'} onPress={onPin} />
             ) : null}
-            {message.mine ? <Action icon="trash-outline" label="Удалить" danger onPress={onDelete} /> : null}
+            {message.mine || message.kind === 'system' ? (
+              <Action icon="trash-outline" label="Удалить" danger onPress={onDelete} />
+            ) : null}
           </MotiView>
         ) : null}
       </View>

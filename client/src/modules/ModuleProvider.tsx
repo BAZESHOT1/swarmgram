@@ -17,7 +17,9 @@ import { api, isPendingTransfer } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
+import { prepareBle } from './ble';
 import { emitMeshEnvelope, setMeshCapabilities, setMeshSender } from './meshLink';
+import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import {
   readLastModule,
   writeLastModule,
@@ -154,9 +156,16 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
       if (previous && previous !== transport) await previous.close().catch(() => undefined);
 
+      // Android: пока модуль подключён, mesh живёт в foreground service.
+      // Запускаем сразу после установления связи, пока приложение активно
+      // (Android 12+ ограничивает старт сервиса из фона).
+      // iOS: no-op (background BLE включён через UIBackgroundModes).
+      void startMeshForegroundService({ publicId: nextInfo.publicId, role: nextInfo.role });
+
       unsubDisconnectRef.current?.();
       unsubDisconnectRef.current = transport.onDisconnect(() => {
         if (connectionRef.current !== transport) return;
+        void stopMeshForegroundService();
         const last = lastRecordRef.current;
         connectionRef.current = null;
         infoRef.current = null;
@@ -361,6 +370,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const disconnect = useCallback(async () => {
     const last = lastRecordRef.current;
     await detachCurrent();
+    void stopMeshForegroundService();
     setTransportModule(null);
     if (last?.moduleId && last.role === 'wearable') {
       await api.detachModule(last.moduleId).catch(() => undefined);
@@ -540,12 +550,22 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     }
   }, [adopt, setNearbyModules]);
 
+  // Разрешение Bluetooth запрашиваем сами после входа, не дожидаясь, пока
+  // пользователь откроет раздел модулей. Небольшая задержка нужна, чтобы
+  // системный диалог уведомлений успел закрыться (iOS не умеет показывать
+  // два разрешения одновременно).
+  useEffect(() => {
+    if (!session || Platform.OS === 'web') return undefined;
+    const timer = setTimeout(() => void prepareBle(), 2500);
+    return () => clearTimeout(timer);
+  }, [session?.userId, session]);
+
   // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
   useEffect(() => {
     if (!session || !moduleScreenActive) return undefined;
     // BLE запускаем только когда открыт раздел модулей: на главном экране
     // iOS-скан после выдачи разрешения приводил к зависанию.
-    const timer = setTimeout(() => void restore(), 1200);
+    const timer = setTimeout(() => void prepareBle().then(() => restore()), 1200);
     let activeTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
@@ -558,6 +578,23 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       sub.remove();
     };
   }, [session?.userId, restore, session, moduleScreenActive]);
+
+  // Переход в фон не должен рвать BLE: соединение и активное сканирование
+  // продолжают жить (iOS — bluetooth-central, Android — foreground service).
+  // При возврате в active сверяем состояние и при необходимости восстанавливаем.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      const current = connectionRef.current;
+      if (!current) return;
+      if (current.isOpen) return;
+      // Транспорт считает себя закрытым — честно снимаем состояние и
+      // пробуем восстановить последний модуль, если открыт раздел модулей.
+      void detachCurrent();
+      if (moduleScreenActive) setTimeout(() => void restore(), 1200);
+    });
+    return () => sub.remove();
+  }, [detachCurrent, restore, moduleScreenActive]);
 
   // Пока приложение открыто на смартфоне — периодически ищем носимый модуль
   // и подключаемся к ранее привязанному. В фоне не сканируем (экономия батареи).
@@ -591,6 +628,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     if (session) return;
     const last = lastRecordRef.current;
     void detachCurrent();
+    void stopMeshForegroundService();
     setTransportModule(null);
     if (last?.moduleId && last.role === 'wearable') {
       void api.detachModule(last.moduleId).catch(() => undefined);
@@ -603,6 +641,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       mountedRef.current = false;
       unsubEnvelopeRef.current?.();
       unsubDisconnectRef.current?.();
+      void stopMeshForegroundService();
       void connectionRef.current?.close().catch(() => undefined);
     };
   }, []);

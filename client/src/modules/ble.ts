@@ -6,3 +6,4 @@
  */
 export { NativeBleTransport } from './ble.web';
 export { NativeBleTransport as default } from './ble.web';
+export { prepareBle } from './ble.web';

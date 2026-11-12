@@ -21,7 +21,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../../src/theme/useTheme';
 import { useIsWide } from '../../../src/theme/useIsWide';
-import { MessageBubble, type BubbleGroup, type QuotedMessage } from '../../../src/components/MessageBubble';
+import { MessageBubble, SystemMessage, type BubbleGroup, type QuotedMessage } from '../../../src/components/MessageBubble';
 import type { PickedFile } from '../../../src/components/file';
 import { SkeletonMessages } from '../../../src/components/skeletons/Skeleton';
 import { EmptyState } from '../../../src/components/EmptyState';
@@ -295,9 +295,35 @@ export default function ChatScreen() {
     return [...out, ...pending];
   }, [older, data, optimistic]);
 
+  /**
+   * Сразу кладём подтверждённое Hub сообщение в кэш ленты и на диск.
+   * Refetch после отправки — лишь догон: даже если он вернёт устаревшую
+   * страницу, сообщение не исчезнет при повторном входе в чат.
+   */
+  const commitToCache = useCallback(
+    (message: ViewMessage) => {
+      const key = message.clientId ?? message.id;
+      const merged = allMessages.filter(
+        (m) => m.id !== message.id && (!message.clientId || m.clientId !== message.clientId) && m.id !== key,
+      );
+      const next = [...merged, message].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+      qc.setQueryData<ViewMessage[]>(['messages', chatId], next);
+      saveMessages(chatId, next);
+      setOptimistic((prev) => {
+        if (!prev[key] && !prev[message.id]) return prev;
+        const copy = { ...prev };
+        delete copy[key];
+        delete copy[message.id];
+        return copy;
+      });
+    },
+    [allMessages, chatId, qc],
+  );
+
   // Сохраняем ленту на диск: 40 прочитанных + 40 непрочитанных, не больше.
-  useEffect(() => {
-    if (!chatId || !allMessages.length) return;
+  useEffect(() => {    if (!chatId || !allMessages.length) return;
     const lastRead = Number(chat?.lastReadSeq ?? 0);
     const read = allMessages.filter((m) => Number(m.seq) > 0 && Number(m.seq) <= lastRead).slice(-40);
     const unread = allMessages.filter((m) => Number(m.seq) > lastRead).slice(-40);
@@ -660,6 +686,8 @@ export default function ChatScreen() {
     const near = (a?: ViewMessage, b?: ViewMessage) =>
       !!a &&
       !!b &&
+      a.kind !== 'system' &&
+      b.kind !== 'system' &&
       a.senderUsername === b.senderUsername &&
       Math.abs(new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) < 5 * 60_000;
     const isImage = (m: ViewMessage) => {
@@ -1080,7 +1108,10 @@ export default function ChatScreen() {
     const sendText = async () => {
       try {
         const vm = await sendMessage(chatId, { text: body }, 'text', myUsername, { replyTo: replyId, clientId, asChannel: postAsChannel });
-        upsertOptimistic({ ...vm, clientId: vm.clientId ?? clientId, uploadStage: null });
+        const confirmed = { ...vm, clientId: vm.clientId ?? clientId, uploadStage: null };
+        upsertOptimistic(confirmed);
+        // Подтверждённое сообщение фиксируем в кэше и на диске немедленно.
+        if (vm.delivered && !String(vm.id).startsWith('loc-')) commitToCache(confirmed);
         // Убираем локальную копию только после подтверждённой доставки.
         // Сообщение в очереди (delivered=false) остаётся в ленте до отправки.
         if (vm.delivered) scheduleOptimisticCleanup(clientId);
@@ -1131,6 +1162,9 @@ export default function ChatScreen() {
           },
         );
         upsertOptimistic({ ...vm, clientId: vm.clientId ?? clientId, uploadStage: null, uploadProgress: 1 });
+        if (vm.delivered && !String(vm.id).startsWith('loc-')) {
+          commitToCache({ ...vm, clientId: vm.clientId ?? clientId, uploadStage: null, uploadProgress: 1 });
+        }
         atBottomRef.current = true;
         setAtBottom(true);
         setNewCount(0);
@@ -1608,7 +1642,13 @@ export default function ChatScreen() {
               }}
               renderItem={({ item: row, index }) => (
                 <View>
-                  {row.album ? (
+                  {row.m.kind === 'system' ? (
+                    <SystemMessage
+                      item={row.m}
+                      onOpenMenu={() => setSheetMessage(row.m)}
+                      onUsernamePress={(username) => router.push(`/user/${username}` as never)}
+                    />
+                  ) : row.album ? (
                     <MediaAlbum
                       messages={row.album}
                       mine={row.m.mine}

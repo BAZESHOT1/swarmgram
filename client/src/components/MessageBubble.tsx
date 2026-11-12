@@ -90,6 +90,68 @@ function richText(text: string, query: string, baseColor: string, accent: string
   );
 }
 
+/**
+ * Системное сообщение о событии группы: без аватара и пузыря, по центру.
+ * Имена участников подсвечиваются акцентом и могут открывать профиль.
+ */
+export function SystemMessage({
+  item,
+  onOpenMenu,
+  onUsernamePress,
+}: {
+  item: ViewMessage;
+  /** Долгое нажатие открывает обычный action sheet сообщения (удаление). */
+  onOpenMenu?: () => void;
+  onUsernamePress?: (username: string) => void;
+}) {
+  const theme = useTheme();
+  const text = item.text ?? '';
+  const names = React.useMemo(
+    () => Array.from(new Set([item.systemActor, item.systemTarget].filter((n): n is string => Boolean(n)))),
+    [item.systemActor, item.systemTarget],
+  );
+  const chunks = React.useMemo(() => {
+    if (!names.length) return [{ text, name: false }];
+    const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const parts = text.split(new RegExp(`(${escaped.join('|')})`, 'gi'));
+    return parts.filter(Boolean).map((part) => ({
+      text: part,
+      name: names.some((n) => n.toLowerCase() === part.toLowerCase()),
+    }));
+  }, [text, names]);
+
+  return (
+    <View style={styles.systemRow}>
+      <Pressable
+        onLongPress={onOpenMenu}
+        delayLongPress={400}
+        disabled={!onOpenMenu}
+        accessibilityRole="button"
+        accessibilityLabel={`Системное сообщение: ${text}`}
+        style={({ pressed }) => [styles.systemPress, { opacity: pressed && onOpenMenu ? 0.65 : 1 }]}
+      >
+        <Text style={[styles.systemText, { color: theme.textSecondary }]}>
+          {chunks.map((chunk, i) =>
+            chunk.name ? (
+              <Text
+                key={i}
+                onPress={onUsernamePress ? () => onUsernamePress(chunk.text) : undefined}
+                accessibilityRole={onUsernamePress ? 'link' : undefined}
+                style={{ color: theme.accent, fontWeight: '700' }}
+              >
+                {chunk.text}
+              </Text>
+            ) : (
+              <React.Fragment key={i}>{chunk.text}</React.Fragment>
+            ),
+          )}
+        </Text>
+        <Text style={[styles.systemTime, { color: theme.textSecondary }]}>{fmtTime(item.createdAt)}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export function MessageBubble({
   item,
   group = 'single',
@@ -510,6 +572,10 @@ export function MessageBubble({
 }
 
 const styles = StyleSheet.create({
+  systemRow: { alignItems: 'center', paddingHorizontal: 28, marginVertical: 7 },
+  systemPress: { alignItems: 'center', maxWidth: 560 },
+  systemText: { fontSize: 12.5, lineHeight: 17, textAlign: 'center' },
+  systemTime: { fontSize: 10.5, marginTop: 2, opacity: 0.75 },
   row: { flexDirection: 'row', paddingHorizontal: 6, alignItems: 'flex-end' },
   rowMine: { justifyContent: 'flex-end' },
   avatarBtn: { marginRight: 6, marginBottom: 2 },

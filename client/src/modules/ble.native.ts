@@ -4,7 +4,8 @@
  * Этот файл попадает только в native-бандл: web-сборка использует ble.web.ts,
  * поэтому react-native-ble-plx никогда не тянется в браузер.
  */
-import { BleManager, State, type Device, type Subscription } from 'react-native-ble-plx';
+import { BleManager, State, type BleRestoredState, type Device, type Subscription } from 'react-native-ble-plx';
+import { PermissionsAndroid, Platform } from 'react-native';
 import {
   BLE_SHORT_UUIDS,
   BLE_UUIDS,
@@ -30,8 +31,49 @@ import {
 
 let sharedManager: BleManager | null = null;
 
+/**
+ * iOS отдаёт состояние центрального устройства после того, как система
+ * перезапустила приложение ради BLE-события в фоне. Идентификатор один и
+ * тот же на все запуски — по нему CoreBluetooth восстанавливает сессию.
+ */
+const RESTORE_STATE_IDENTIFIER = 'kinto-ble-central';
+
+/** Восстановленные периферийные устройства (для сверки состояния на active). */
+let restoredPeripherals: Device[] = [];
+const restoreListeners = new Set<(state: BleRestoredState | null) => void>();
+
+/** Устройства, которые iOS восстановила после фонового запуска. */
+export function getRestoredBlePeripherals(): Device[] {
+  return restoredPeripherals;
+}
+
+/** Подписка на восстановление состояния BLE (только iOS, может не сработать). */
+export function onBleRestoreState(listener: (state: BleRestoredState | null) => void): () => void {
+  restoreListeners.add(listener);
+  return () => restoreListeners.delete(listener);
+}
+
+/**
+ * Единственный BleManager на всё приложение. restoreStateIdentifier/Function
+ * включают background BLE: система может разбудить приложение и отдать уже
+ * подключённые периферийные устройства без повторного сканирования.
+ */
 function manager(): BleManager {
-  if (!sharedManager) sharedManager = new BleManager();
+  if (!sharedManager) {
+    sharedManager = new BleManager({
+      restoreStateIdentifier: RESTORE_STATE_IDENTIFIER,
+      restoreStateFunction: (state) => {
+        restoredPeripherals = state?.connectedPeripherals ? [...state.connectedPeripherals] : [];
+        for (const listener of restoreListeners) {
+          try {
+            listener(state);
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+    });
+  }
   return sharedManager;
 }
 
@@ -39,6 +81,37 @@ const BLE_READY_TIMEOUT_MS = 8000;
 const HELLO_ATTEMPTS = 3;
 const HELLO_RETRY_DELAY_MS = 700;
 const INFO_TIMEOUT_MS = 5000;
+
+/**
+ * Заранее запрашивает разрешения Bluetooth и создаёт BleManager.
+ * На iOS создание менеджера/чтение state поднимает системный диалог
+ * NSBluetoothAlways; на Android 12+ — BLUETOOTH_SCAN/CONNECT,
+ * на старых версиях — геолокацию. Никогда не бросает исключение.
+ */
+export async function prepareBle(): Promise<boolean> {
+  if (Platform.OS === 'android') {
+    try {
+      const version = Number(Platform.Version);
+      if (version >= 31) {
+        const result = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        ]);
+        return Object.values(result).every((value) => value === PermissionsAndroid.RESULTS.GRANTED);
+      }
+      const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+      return granted === PermissionsAndroid.RESULTS.GRANTED;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const state = await manager().state();
+    return state === State.PoweredOn;
+  } catch {
+    return false;
+  }
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
