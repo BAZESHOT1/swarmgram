@@ -3505,7 +3505,7 @@ static String neighborsJson() {
            "\",\"hardwareId\":\"" + String(gNeighbors[i].hw) +
            "\",\"role\":\"" + String(gNeighbors[i].role) +
            "\",\"clusterId\":" + String((unsigned long)gNeighbors[i].clusterId) +
-           "\",\"neighbors\":" + String((unsigned)gNeighbors[i].neigh) +
+           ",\"neighbors\":" + String((unsigned)gNeighbors[i].neigh) +
            ",\"battery\":" + String((unsigned)gNeighbors[i].batt) +
            ",\"anchor\":" + String(gNeighbors[i].anchor ? 1 : 0) +
            ",\"rssi\":" + String(gNeighbors[i].rssi) + "}";
