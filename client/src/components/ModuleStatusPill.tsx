@@ -36,10 +36,12 @@ export function ModuleStatusPill() {
     );
   }
 
-  const neighbors = Number(row?.neighbors ?? 0);
+  // Соседи и RSSI приходят живьём из INFO/STATUS; серверная карточка — fallback.
+  const neighbors = Math.max(0, Number(info.neighbors ?? row?.neighbors ?? 0));
+  const rssi = Number(info.rssi ?? 0);
   // Интернет: websocket или путь через шлюз mesh-сети.
   const internet = transportOnline;
-  const viaGateway = !internet && Boolean(info.gateway);
+  const viaGateway = Boolean(info.gateway);
   const netIcon: keyof typeof Ionicons.glyphMap = internet
     ? 'wifi'
     : viaGateway
@@ -64,6 +66,14 @@ export function ModuleStatusPill() {
           {neighbors}
         </Text>
       </View>
+      {rssi !== 0 ? (
+        <Text
+          accessibilityLabel={`Сигнал ${rssi} dBm`}
+          style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'] as never }}
+        >
+          {rssi}
+        </Text>
+      ) : null}
       <Ionicons name={netIcon} size={15} color={netColor} />
     </View>
   );

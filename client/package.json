@@ -1,6 +1,6 @@
 {
   "name": "@swarmgram/client",
-  "version": "1.4.29",
+  "version": "1.4.30",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {

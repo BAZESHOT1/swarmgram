@@ -119,6 +119,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const infoRef = useRef<ModuleInfo | null>(null);
   const lastRecordRef = useRef<LastModuleRecord | null>(null);
   const unsubEnvelopeRef = useRef<(() => void) | null>(null);
+  const unsubInfoRef = useRef<(() => void) | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
   const lastAttemptRef = useRef(0);
@@ -134,8 +135,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
   const detachCurrent = useCallback(async () => {
     unsubEnvelopeRef.current?.();
+    unsubInfoRef.current?.();
     unsubDisconnectRef.current?.();
     unsubEnvelopeRef.current = null;
+    unsubInfoRef.current = null;
     unsubDisconnectRef.current = null;
     const current = connectionRef.current;
     connectionRef.current = null;
@@ -172,6 +175,22 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       // iOS: no-op (background BLE включён через UIBackgroundModes).
       void startMeshForegroundService({ publicId: nextInfo.publicId, role: nextInfo.role });
 
+      unsubInfoRef.current?.();
+      unsubInfoRef.current =
+        transport.onInfo?.((next) => {
+          if (connectionRef.current !== transport) return;
+          infoRef.current = next;
+          if (mountedRef.current) setInfo(next);
+          setTransportModule({ gateway: Boolean(next.gateway), model: next.role });
+          setTransportGateway(Boolean(next.gateway));
+          setMeshCapabilities({
+            connected: true,
+            gateway: Boolean(next.gateway),
+            queue: Number(next.queue ?? 0),
+            neighbors: Number(next.neighbors ?? 0),
+          });
+        }) ?? null;
+
       unsubDisconnectRef.current?.();
       unsubDisconnectRef.current = transport.onDisconnect(() => {
         if (connectionRef.current !== transport) return;
@@ -179,17 +198,19 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const last = lastRecordRef.current;
         connectionRef.current = null;
         infoRef.current = null;
+        unsubInfoRef.current?.();
+        unsubInfoRef.current = null;
         setMeshSender(null);
         setMeshCapabilities({ connected: false, gateway: false, queue: 0, neighbors: 0 });
         if (mountedRef.current) {
           setConnection(null);
           setInfo(null);
           setTransportModule(null);
-        setTransportGateway(false);
+          setTransportGateway(false);
+        }
         if (presenceTimerRef.current) {
           clearInterval(presenceTimerRef.current);
           presenceTimerRef.current = null;
-        }
         }
         // Wearable больше не подключён к клиенту — честно сообщаем серверу.
         if (last?.moduleId && last.role === 'wearable') {
@@ -631,6 +652,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       // индикатор канала, чтобы UI не висел в «соединении».
       setTransportModule({ gateway: Boolean(currentInfo.gateway), model: String(currentInfo.role ?? '') });
       setTransportGateway(Boolean(currentInfo.gateway));
+      // Контекст должен видеть свежие gateway/rssi/queue, иначе шапка
+      // показывает «нет связи», хотя модуль уже нашёл шлюз.
+      setInfo((prev) => ({
+        ...currentInfo,
+        ...(prev ? { attached: prev.attached || currentInfo.attached } : {}),
+      }));
     }, 5_000);
     return () => clearInterval(timer);
   }, [setTransportGateway, setTransportModule]);

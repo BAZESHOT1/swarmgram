@@ -1089,7 +1089,7 @@ export default function ChatScreen() {
     }
     setError('');
     sendMutation.mutate(
-      { body, clientId, myUsername, replyId, asChannel: postAsChannel },
+      { body, clientId, myUsername, replyId, asChannel: postAsChannel, scheme: isE2e ? 'e2e' : 'server' },
       {
         onError: () => {
           haptics.error();

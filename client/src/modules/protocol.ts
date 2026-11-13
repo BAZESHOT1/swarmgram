@@ -128,7 +128,14 @@ export class FrameDecoder {
   private buffer: Uint8Array = new Uint8Array(0);
   private disposed = false;
   /** Сборка фрагментированного кадра (старший бит типа). */
-  private fragment: { type: number; total: number; data: Uint8Array; received: number } | null = null;
+  private fragment: {
+    type: number;
+    total: number;
+    data: Uint8Array;
+    /** offset → длина принятого куска; set() дедуплицирует повторы. */
+    parts: Map<number, number>;
+    at: number;
+  } | null = null;
 
   /** Добавляет чанк и возвращает все полностью собранные кадры. */
   push(chunk: Uint8Array): DecodedFrame[] {
@@ -194,23 +201,31 @@ export class FrameDecoder {
           this.fragment = null;
           continue;
         }
+        // Фрагменты могут прийти не по порядку (BLE/mesh теряет кадры).
+        // Собираем по offset и завершаем только когда покрыты все байты;
+        // дырка означает, что клиент запросит повторную отправку.
+        const stale = this.fragment && Date.now() - this.fragment.at > 15_000;
         if (
           !this.fragment ||
+          stale ||
           this.fragment.type !== (rawType & 0x7f) ||
-          this.fragment.total !== totalLen ||
-          offset !== this.fragment.received
+          this.fragment.total !== totalLen
         ) {
           this.fragment = {
             type: rawType & 0x7f,
             total: totalLen,
             data: new Uint8Array(totalLen),
-            received: 0,
+            parts: new Map(),
+            at: Date.now(),
           };
         }
         const fragment = this.fragment;
         fragment.data.set(chunk, offset);
-        fragment.received += chunk.length;
-        if (fragment.received >= fragment.total) {
+        fragment.parts.set(offset, chunk.length);
+        fragment.at = Date.now();
+        let covered = 0;
+        for (const partLen of fragment.parts.values()) covered += partLen;
+        if (covered >= fragment.total) {
           frames.push({ type: fragment.type, payload: fragment.data.slice(0, fragment.total) });
           this.fragment = null;
         }

@@ -203,6 +203,7 @@ export function useSendChatMessage(chatId: string) {
       myUsername: string;
       replyId?: string;
       asChannel?: boolean;
+      scheme?: 'e2e' | 'server';
     }) =>
       sendMessage(chatId, { text: input.body }, 'text', input.myUsername, {
         clientId: input.clientId,
@@ -222,7 +223,7 @@ export function useSendChatMessage(chatId: string) {
         kind: 'text',
         text: input.body,
         replyTo: input.replyId ?? null,
-        scheme: 'server',
+        scheme: input.scheme ?? 'server',
         reactions: [],
         delivered: false,
         pending: true,
@@ -765,7 +766,22 @@ export function useDeleteMessage(chatId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (messageId: string) => api.api.deleteMessage(chatId, messageId),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['messages', chatId] }),
+    onMutate: async (messageId) => {
+      await qc.cancelQueries({ queryKey: ['messages', chatId] });
+      const previous = qc.getQueryData<ViewMessage[]>(['messages', chatId]);
+      qc.setQueryData<ViewMessage[]>(['messages', chatId], (prev) =>
+        Array.isArray(prev)
+          ? prev.filter((m) => m.id !== messageId && m.clientId !== messageId)
+          : prev,
+      );
+      return { previous };
+    },
+    onError: (_error, _messageId, context) => {
+      if (context?.previous) qc.setQueryData(['messages', chatId], context.previous);
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['messages', chatId] });
+    },
   });
 }
 

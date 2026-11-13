@@ -27,7 +27,9 @@ const ARDUINO_DATA = join(DATA_DIR, 'arduino');
 const ARDUINO_USER = join(DATA_DIR, 'arduino-user');
 const TEMPLATE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'templates');
 
-const BUILD_TIMEOUT_MS = 1_200_000;
+// Полная сборка ядра ESP32 на 1 vCPU занимает ~20-25 минут. 20 минут —
+// гарантированный таймаут, после которого остаётся пустой output-dir.
+const BUILD_TIMEOUT_MS = 2_400_000;
 const CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
 const MAX_BODY_BYTES = 64 * 1024;
 // Минимум свободного места для компиляции (временные файлы ядра).
@@ -57,10 +59,14 @@ const log = (msg, meta = {}) => {
  * BUILD_TIMEOUT_MS, она падает с build_queue_timeout (Hub получит ошибку,
  * а не будет ждать вечно).
  */
+// Один общий queue: на 1 vCPU две параллельные сборки (esp32 + esp32c3)
+// съедают всю память, и сервер перестаёт отвечать по SSH/HTTP. Собираем строго
+// последовательно, даже если Hub попросил несколько плат одновременно.
+const GLOBAL_BUILD_QUEUE = 'global';
 const boardQueues = new Map();
 
-function enqueue(board, task, waitTimeoutMs = BUILD_TIMEOUT_MS) {
-  const prev = boardQueues.get(board) ?? Promise.resolve();
+function enqueue(board, task, waitTimeoutMs = BUILD_TIMEOUT_MS * 2) {
+  const prev = boardQueues.get(GLOBAL_BUILD_QUEUE) ?? Promise.resolve();
   const enqueuedAt = Date.now();
   let cancelled = false;
   let timer = null;
@@ -87,9 +93,9 @@ function enqueue(board, task, waitTimeoutMs = BUILD_TIMEOUT_MS) {
   // Следующая задача этой платы ждёт реального завершения текущей работы,
   // даже если эта задача уже отвалилась по таймауту ожидания.
   const settle = job.then(() => undefined, () => undefined);
-  boardQueues.set(board, settle);
+  boardQueues.set(GLOBAL_BUILD_QUEUE, settle);
   settle.then(() => {
-    if (boardQueues.get(board) === settle) boardQueues.delete(board);
+    if (boardQueues.get(GLOBAL_BUILD_QUEUE) === settle) boardQueues.delete(GLOBAL_BUILD_QUEUE);
   });
   return run;
 }
@@ -259,7 +265,8 @@ async function arduinoCli(args, timeout = BUILD_TIMEOUT_MS) {
   } catch (e) {
     // Сохраняем хвост компилятора: без него «ошибка сборки» бесполезна.
     const out = `${e?.stdout ?? ''}\n${e?.stderr ?? ''}`.trim().slice(-4000);
-    const err = new Error(`${e?.message ?? 'arduino-cli failed'}${out ? `\n${out}` : ''}`);
+    const killed = e?.killed ? '\n(killed by timeout)' : '';
+    const err = new Error(`${e?.message ?? 'arduino-cli failed'}${killed}${out ? `\n${out}` : ''}`);
     err.name = e?.name ?? 'Error';
     throw err;
   }
@@ -505,11 +512,10 @@ async function compileFirmware(config, version) {
         await writeFile(join(DATA_DIR, 'last-build.log'), message).catch(() => undefined);
         throw firstError;
       }
-      // Повреждённый incremental build — частая причина «ошибка сборки».
+      // Повтор без удаления buildDir: на 1 vCPU пересборка всего ядра
+      // дольше таймаута. Недостающие объекты дособерутся инкрементально.
       log('build_retry', { board, error: message.slice(0, 300) });
       await writeFile(join(DATA_DIR, 'last-build.log'), message).catch(() => undefined);
-      await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);
-      await mkdir(buildDir, { recursive: true });
       try {
         ({ stdout, stderr } = await arduinoCli(compileArgs, BUILD_TIMEOUT_MS));
       } catch (secondError) {

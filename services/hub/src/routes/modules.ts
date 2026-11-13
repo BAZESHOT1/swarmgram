@@ -72,6 +72,40 @@ const ROLES: ModuleRole[] = ['gateway', 'repeater', 'wearable'];
 const TRANSPORTS: ModuleTransport[] = ['wifi', 'lora', 'ble', 'usb'];
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 
+/**
+ * Идемпотентность KMT-запросов. Модуль может прислать один и тот же
+ * зашифрованный запрос повторно (mesh retry), а его `ts` к этому моменту
+ * уже старше 120 с. Кэшируем зашифрованный ответ по request id и отдаём
+ * его повторно — без relay_expired и без повторного выполнения.
+ */
+const RELAY_CACHE_TTL_MS = 10 * 60_000;
+const relayCache = new Map<string, { blob: string; at: number }>();
+
+function relayCacheGet(key: string): string | null {
+  const hit = relayCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > RELAY_CACHE_TTL_MS) {
+    relayCache.delete(key);
+    return null;
+  }
+  return hit.blob;
+}
+
+function relayCacheSet(key: string, blob: string): void {
+  if (relayCache.size >= 64) {
+    let oldestKey = '';
+    let oldestAt = Number.POSITIVE_INFINITY;
+    for (const [k, v] of relayCache) {
+      if (v.at < oldestAt) {
+        oldestAt = v.at;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) relayCache.delete(oldestKey);
+  }
+  relayCache.set(key, { blob, at: Date.now() });
+}
+
 function asRole(value: unknown, fallback: ModuleRole): ModuleRole {
   return ROLES.includes(value as ModuleRole) ? (value as ModuleRole) : fallback;
 }
@@ -1491,6 +1525,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
    * от имени пользователя и возвращает зашифрованный ответ.
    */
   app.post('/modules/http', { onRequest: [requireModule()] }, async (req, reply) => {
+    const started = Date.now();
     const body = (req.body ?? {}) as { userId?: string; deviceId?: string; blob?: string };
     if (!body.userId || !body.deviceId || !body.blob) throw badRequest('relay_payload_required');
     if (body.blob.length > 48_000) throw badRequest('relay_too_large');
@@ -1521,6 +1556,14 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     }
 
     if (!request || request.v !== 1 || typeof request.path !== 'string') throw badRequest('relay_invalid');
+    const relayKey = request.id ? `${body.userId}:${body.deviceId}:${request.id}` : '';
+    if (relayKey) {
+      const cached = relayCacheGet(relayKey);
+      if (cached) {
+        req.log.info({ msg: 'module_relay_cached', path: request.path, id: request.id, ms: Date.now() - started });
+        return reply.send({ ok: true, blob: cached, cached: true });
+      }
+    }
     if (request.ts && Math.abs(Date.now() - Number(request.ts)) > 120_000) throw forbidden('relay_expired');
     const method = String(request.method ?? 'GET').toUpperCase();
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw badRequest('method_invalid');
@@ -1569,6 +1612,16 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       nonce: iv.toString('base64'),
       ciphertext: ct.toString('base64'),
     }), 'utf8').toString('base64');
+
+    if (relayKey) relayCacheSet(relayKey, blob);
+    req.log.info({
+      msg: 'module_relay',
+      path: request.path,
+      method,
+      status: upstream.status,
+      bytes: text.length,
+      ms: Date.now() - started,
+    });
 
     return reply.send({ ok: true, blob });
   });

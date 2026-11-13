@@ -13,6 +13,11 @@ interface Pending {
   resolve: (value: MeshHttpResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Повторная отправка, если часть чанков потерялась по дороге. */
+  resendTimer: ReturnType<typeof setTimeout> | null;
+  resends: number;
+  userId: string;
+  deviceId: string;
 }
 
 export interface MeshHttpResponse {
@@ -23,6 +28,35 @@ export interface MeshHttpResponse {
 const pending = new Map<string, Pending>();
 const assemblies = new Map<string, { total: number; parts: Map<number, string> }>();
 let wired = false;
+
+/** Переспросить потерянные чанки: не чаще двух раз, через 5 с без прогресса. */
+function armResend(id: string, item: Pending): void {
+  if (item.resendTimer) clearTimeout(item.resendTimer);
+  if (item.resends >= 2) {
+    item.resendTimer = null;
+    return;
+  }
+  item.resendTimer = setTimeout(() => {
+    item.resendTimer = null;
+    if (!pending.has(id)) return;
+    item.resends += 1;
+    void sendViaMesh('__http__', {
+      kind: 'http_resend',
+      id,
+      userId: item.userId,
+      deviceId: item.deviceId,
+    }).then((ok) => {
+      // Запрос ушёл — ждём ответ и при необходимости повторим ещё раз.
+      if (ok && pending.has(id)) armResend(id, item);
+    });
+  }, 5000);
+}
+
+function clearTimers(item: Pending): void {
+  clearTimeout(item.timer);
+  if (item.resendTimer) clearTimeout(item.resendTimer);
+  item.resendTimer = null;
+}
 
 function wire(): void {
   if (wired) return;
@@ -44,7 +78,12 @@ function wire(): void {
         assemblies.set(env.id, assembly);
       }
       assembly.parts.set(part, env.chunk);
-      if (assembly.parts.size < total) return;
+      if (assembly.parts.size < total) {
+        // Прогресс есть — отодвигаем переспрос; если чанк потерян,
+        // таймер сработает через 5 с и шлюз пришлёт ответ ещё раз.
+        armResend(env.id, item);
+        return;
+      }
       const ordered: string[] = [];
       for (let i = 0; i < total; i += 1) {
         const chunk = assembly.parts.get(i);
@@ -56,7 +95,7 @@ function wire(): void {
     }
     if (!packedText) return;
     pending.delete(env.id);
-    clearTimeout(item.timer);
+    clearTimers(item);
     void (async () => {
       try {
         const session = getSession();
@@ -101,6 +140,9 @@ export async function meshHttpFetch(
 ): Promise<MeshHttpResponse | null> {
   const session = getSession();
   if (!session?.meshRelayKey) return null;
+  // Медиа/objects и служебные разделы Hub через mesh не проксируются.
+  // Не тратим 35 секунд на гарантированный 403.
+  if (/^\/v1\/(admin|auth|objects|uploads)\b/.test(path)) return null;
   wire();
 
   const id = `mh-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -125,12 +167,17 @@ export async function meshHttpFetch(
       pending.delete(id);
       assemblies.delete(id);
       resolve(null);
-    }, 30_000);
-    pending.set(id, {
+    }, 35_000);
+    const item: Pending = {
       resolve,
       reject: () => resolve(null),
       timer,
-    });
+      resendTimer: null,
+      resends: 0,
+      userId: session.userId,
+      deviceId: session.deviceId,
+    };
+    pending.set(id, item);
     void sendViaMesh('__http__', {
       kind: 'http',
       id,
@@ -139,10 +186,13 @@ export async function meshHttpFetch(
       blob,
     }).then((ok) => {
       if (!ok) {
-        clearTimeout(timer);
+        clearTimers(item);
         pending.delete(id);
         resolve(null);
+        return;
       }
+      // Ответ начинается не сразу: страхуемся от потери первых чанков.
+      armResend(id, item);
     });
   });
   return result;

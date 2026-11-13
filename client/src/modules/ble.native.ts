@@ -199,7 +199,14 @@ export class NativeBleTransport implements ModuleConnection {
   private statusSub: Subscription | null = null;
   private disconnectSub: Subscription | null = null;
   private readonly envelopeHandlers = new Set<(message: ModuleEnvelope) => void>();
+  private readonly infoHandlers = new Set<(info: ModuleInfo) => void>();
   private readonly disconnectHandlers = new Set<() => void>();
+  /**
+   * Очередь BLE-записей. Несколько API-запросов могут одновременно уйти в
+   * mesh; без сериализации их 20-байтные куски перемешиваются, и прошивка
+   * собирает битые кадры.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
   private infoWaiter: {
     resolve: (info: ModuleInfo) => void;
     reject: (error: Error) => void;
@@ -484,13 +491,25 @@ export class NativeBleTransport implements ModuleConnection {
     for (const frame of this.decoder.push(chunk)) this.handleFrame(frame);
   }
 
+  /** Обновляет info и рассылает его подписчикам (шапка чатов, транспорт). */
+  private applyInfo(info: ModuleInfo): void {
+    this.info = info;
+    for (const handler of this.infoHandlers) {
+      try {
+        handler(info);
+      } catch {
+        /* один слушатель не должен ломать остальные */
+      }
+    }
+  }
+
   private handleFrame(frame: DecodedFrame): void {
     switch (frame.type) {
       case FrameType.INFO: {
         const parsed = parseModuleInfo(frame.payload);
         if (parsed) {
           const info = normalizeInfo(parsed);
-          this.info = info;
+          this.applyInfo(info);
           if (this.infoWaiter) {
             clearTimeout(this.infoWaiter.timer);
             this.infoWaiter.resolve(info);
@@ -533,16 +552,23 @@ export class NativeBleTransport implements ModuleConnection {
     }
     if (!raw) return;
     updateClusterFromModule(raw);
-    this.info = {
+    const bool = (value: unknown, fallback: boolean | undefined): boolean | undefined => {
+      if (value === undefined || value === null) return fallback;
+      return value === true || value === 1 || value === '1' || value === 'true';
+    };
+    const next: ModuleInfo = {
       ...this.info,
       attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,
       meshRole: typeof raw.meshRole === 'string' ? raw.meshRole : this.info.meshRole,
-      gateway: typeof raw.gateway === 'boolean' ? raw.gateway : this.info.gateway,
+      gateway: bool(raw.gateway, this.info.gateway),
       firmware: typeof raw.firmware === 'string' ? raw.firmware : this.info.firmware,
+      neighbors: Number.isFinite(Number(raw.neighbors)) ? Math.max(0, Number(raw.neighbors)) : this.info.neighbors,
+      border: bool(raw.border, this.info.border),
     };
+    this.applyInfo(next);
   }
 
   private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
@@ -564,22 +590,28 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   /** Чанк ровно 20 байт — как в web, чтобы не упираться в длинные write на iOS. */
-  private async writeFrame(type: number, payload: Uint8Array): Promise<void> {
-    const deviceId = this.deviceId;
-    if (!deviceId || this.closing) {
-      throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
-    }
-    const frame = encodeFrame(type, payload);
-    const chunkSize = 20;
-    for (let offset = 0; offset < frame.length; offset += chunkSize) {
-      const chunk = frame.slice(offset, offset + chunkSize);
-      await manager().writeCharacteristicWithResponseForDevice(
-        deviceId,
-        BLE_UUIDS.service,
-        BLE_UUIDS.tx,
-        bytesToBase64(chunk),
-      );
-    }
+  private writeFrame(type: number, payload: Uint8Array): Promise<void> {
+    const run = async (): Promise<void> => {
+      const deviceId = this.deviceId;
+      if (!deviceId || this.closing) {
+        throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
+      }
+      const frame = encodeFrame(type, payload);
+      const chunkSize = 20;
+      for (let offset = 0; offset < frame.length; offset += chunkSize) {
+        const chunk = frame.slice(offset, offset + chunkSize);
+        await manager().writeCharacteristicWithResponseForDevice(
+          deviceId,
+          BLE_UUIDS.service,
+          BLE_UUIDS.tx,
+          bytesToBase64(chunk),
+        );
+      }
+    };
+    const next = this.writeChain.then(run, run);
+    // Ошибку одного кадра не тащим в очередь следующих запросов.
+    this.writeChain = next.catch(() => undefined);
+    return next;
   }
 
   async sendEnvelope(chatId: string, envelope: unknown): Promise<void> {
@@ -602,6 +634,19 @@ export class NativeBleTransport implements ModuleConnection {
   onEnvelope(callback: (message: ModuleEnvelope) => void): () => void {
     this.envelopeHandlers.add(callback);
     return () => this.envelopeHandlers.delete(callback);
+  }
+
+  onInfo(callback: (info: ModuleInfo) => void): () => void {
+    this.infoHandlers.add(callback);
+    // Отдаём текущее состояние сразу, чтобы UI не ждал следующего INFO.
+    if (this.info) {
+      try {
+        callback(this.info);
+      } catch {
+        /* ignore */
+      }
+    }
+    return () => this.infoHandlers.delete(callback);
   }
 
   onDisconnect(callback: () => void): () => void {

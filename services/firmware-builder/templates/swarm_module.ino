@@ -245,7 +245,10 @@ static const uint16_t SG_MAX_PAYLOAD = 1024;       // общий предел pa
 static const uint16_t SG_LORA_MAX_PAYLOAD = 180;   // предел LoRa payload
 static const size_t   SG_QUEUE_MAX = 200;          // записей в /queue.log
 static const uint32_t SG_QUEUE_TTL_SEC = 72UL * 3600UL;
-static const uint8_t  SG_BLE_CHUNK = 12;           // 8 байт кадра + 12 = 20 (MTU 23)
+// Верхняя граница данных в одном BLE-notification. При MTU 23 реальный chunk
+// равен 8 (20 байт на кадр), при MTU 185/247 — до 170/232 байт. Большой chunk
+// критичен для ответов KMT: 11 КБ иначе превращаются в ~1500 notifications.
+static const uint16_t SG_BLE_CHUNK = 200;
 static const uint16_t SG_USB_CHUNK = SG_MAX_PAYLOAD;   // USB может принять кадр целиком
 
 static const uint8_t F_MAGIC0 = 0xA5;
@@ -408,7 +411,40 @@ static bool gUsbSeen = false;
 // бинарному протоколу (до подключения клиента они полезны).
 static bool gUsbProtoActive = false;
 static uint32_t gLastClientActivityMs = 0;
+static uint32_t gLastInfoMs = 0;
 static String gStatusJson;
+
+// Последние KMT-ответы: нужны, чтобы переслать потерянные BLE/mesh-чанки
+// без повторного запроса в Hub (иначе старый ts даёт relay_expired).
+// Два слота — потому что приложение параллельно запрашивает чаты/историю/статус.
+struct HttpRespCache {
+  String id;
+  String blob;
+  uint16_t total;
+  uint32_t at;
+};
+static HttpRespCache gHttpCache[2];
+static uint8_t gHttpCacheNext = 0;
+
+static HttpRespCache *httpCacheFind(const String &id) {
+  for (auto &slot : gHttpCache) {
+    if (slot.total && slot.id == id && millis() - slot.at < 180000UL) return &slot;
+  }
+  return nullptr;
+}
+
+static void httpCacheStore(const String &id, const String &blob, uint16_t total) {
+  // Очень крупный ответ не дублируем: на C3 это риск фрагментации heap.
+  if (blob.length() > 24000) {
+    for (auto &slot : gHttpCache) { slot.id = ""; slot.blob = ""; slot.total = 0; }
+  }
+  HttpRespCache &slot = gHttpCache[gHttpCacheNext];
+  gHttpCacheNext = (uint8_t)((gHttpCacheNext + 1) % 2);
+  slot.id = id;
+  slot.blob = blob;
+  slot.total = total;
+  slot.at = millis();
+}
 
 // Таймеры.
 static uint32_t gLastAdvertMs = 0;
@@ -1834,13 +1870,23 @@ static void wifiNotePeer(const IPAddress &ip) {
   if (fresh) sgLog("[udp] peer %s", ip.toString().c_str());
 }
 
-static bool wifiSendOne(const IPAddress &dst, const uint8_t *buf, size_t len) {
+static bool wifiSendOnce(const IPAddress &dst, const uint8_t *buf, size_t len) {
   if (!gUdp.beginPacket(dst, SG_MESH_UDP_PORT)) return false;
   if (gUdp.write(buf, len) != len) {
-    gUdp.endPacket();
+    gUdp.endPacket();   // сбрасываем недоотправленный буфер
     return false;
   }
   return gUdp.endPacket() == 1;
+}
+
+static bool wifiSendOne(const IPAddress &dst, const uint8_t *buf, size_t len) {
+  // UDP-буфер LWIP при пачке чанков иногда занят: одна короткая повторная
+  // попытка убирает ложные «selected iface unavailable -> flood».
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (wifiSendOnce(dst, buf, len)) return true;
+    delay(1);
+  }
+  return false;
 }
 
 static bool wifiSendRaw(const uint8_t *buf, size_t len) {
@@ -1848,10 +1894,10 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
 
   uint8_t copies = 0;
   const IPAddress bcast(255, 255, 255, 255);
-  if (wifiSendOne(bcast, buf, len)) copies++;
+  // Глобальный 255.255.255.255 не шлём: он дублирует subnet-broadcast и
+  // переполняет UDP-буфер при серии KMT-чанков.
 
-  // Broadcast подсети SoftAP: гарантированно уходит в AP-интерфейс
-  // (глобальный 255.255.255.255 маршрутизируется только через STA).
+  // Broadcast подсети SoftAP: гарантированно уходит в AP-интерфейс.
   const IPAddress ap = WiFi.softAPIP();
   if (ap[0]) {
     const IPAddress apBcast(ap[0], ap[1], ap[2], 255);
@@ -2099,8 +2145,12 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
         }
         return true;
       }
-      sgLog("[route] selected iface unavailable dst=%s -> flood",
-            publicIdForNode(dst).c_str());
+      static uint32_t lastUnavailableLogMs = 0;
+      if (millis() - lastUnavailableLogMs > 3000UL) {
+        lastUnavailableLogMs = millis();
+        sgLog("[route] selected iface unavailable dst=%s -> flood",
+              publicIdForNode(dst).c_str());
+      }
     }
   }
 #else
@@ -2148,14 +2198,15 @@ static bool meshTransmit(uint8_t type, uint32_t dst, const uint8_t *payload,
 
 static void deliverToClients(uint8_t frameType, const uint8_t *payload, uint16_t len);
 static void clientFeedFrame(uint8_t type, const uint8_t *payload, uint16_t len);
+static void sendInfoToClient();
 static bool wifiSendRaw(const uint8_t *buf, size_t len);
 
 static void sendAckTo(uint32_t dst, uint32_t originalId) {
   uint8_t pl[4];
   writeLe32(pl, originalId);
-  // ACK отправляем flood-ом: подтверждение должно дойти даже при устаревшем
-  // маршруте; route table используется для handover/route-control.
-  meshTransmit(MT_ACK, dst, pl, 4, SG_LORA_MAX_HOPS);
+  // Сначала пробуем маршрут (unicast), при недоступном интерфейсе
+  // transmitRouted сам откатится на flood.
+  meshTransmitRouted(MT_ACK, dst, pl, 4, 4, KINTO_TRAFFIC_TELEMETRY);
 }
 
 // Поля beacon v2: cluster_id / border / neighbor_clusters (+ mesh addr).
@@ -2244,6 +2295,26 @@ static void sendRouteReq(uint32_t dst) {
 
 static int hubPostJson(const String &path, const String &body, String &resp, bool auth);
 
+/** Отправка KMT-ответа чанками. Вынесена отдельно для повторной посылки. */
+static void sendHttpResponseChunks(const String &reqId, uint32_t dst,
+                                   const String &blob, uint16_t total) {
+  const uint16_t chunkSize = 280;
+  for (uint16_t part = 0; part < total; part++) {
+    const int off = (int)part * chunkSize;
+    const String chunk = blob.substring(off, off + chunkSize);
+    String out = String("{\"chatId\":\"__http__\",\"envelope\":{\"kind\":\"http_resp\",\"id\":\"") +
+                 jsonEsc(reqId) + "\",\"part\":" + String((unsigned)part) +
+                 ",\"total\":" + String((unsigned)total) +
+                 ",\"chunk\":\"" + chunk + "\"}}";
+    meshTransmitRouted(MT_DATA, dst, (const uint8_t *)out.c_str(),
+                       (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
+    // Wearable принимает Wi-Fi-чанк и сразу отдаёт его в BLE. При паузе 4 мс
+    // он не успевает разгрузить UDP-буфер: 41 пакет приходит быстрее, чем
+    // уходит в BLE, и хвост ответа теряется.
+    delay(20);
+  }
+}
+
 /** API-туннель: шлюз пересылает зашифрованный запрос в Hub и отвечает src. */
 static void handleHttpRelay(const String &raw, uint32_t src) {
   if (!isGateway() || !gatewayUp()) return;
@@ -2272,21 +2343,13 @@ static void handleHttpRelay(const String &raw, uint32_t src) {
   if (!strlen(rblob)) return;
 
   // Ответ API может быть больше одного mesh-кадра (Wi-Fi SG_MAX_PAYLOAD).
-  // Режем blob на части; клиент собирает по id/part/total.
+  // Режем blob на части; клиент собирает по id/part/total и может попросить
+  // повторную отправку, если BLE/mesh потерял часть кадров.
   const uint16_t chunkSize = 280;
   const uint16_t total = (uint16_t)((strlen(rblob) + chunkSize - 1) / chunkSize);
   const String blobStr = String(rblob);
-  for (uint16_t part = 0; part < total; part++) {
-    const int off = (int)part * chunkSize;
-    const String chunk = blobStr.substring(off, off + chunkSize);
-    String out = String("{\"chatId\":\"__http__\",\"envelope\":{\"kind\":\"http_resp\",\"id\":\"") +
-                 jsonEsc(String(reqId)) + "\",\"part\":" + String((unsigned)part) +
-                 ",\"total\":" + String((unsigned)total) +
-                 ",\"chunk\":\"" + chunk + "\"}}";
-    meshTransmitRouted(MT_DATA, src, (const uint8_t *)out.c_str(),
-                       (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
-    delay(3);
-  }
+  httpCacheStore(String(reqId), blobStr, total);
+  sendHttpResponseChunks(String(reqId), src, blobStr, total);
   sgLog("[http] relay ok %u bytes in %u chunks", (unsigned)strlen(rblob), (unsigned)total);
 }
 
@@ -2302,13 +2365,26 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
             raw.indexOf("\"kind\": \"handover\"") >= 0) {
           control = true;
           handoverHandle(raw, h);
+        } else if (raw.indexOf("\"kind\":\"http_resend\"") >= 0) {
+          // Клиент не собрал ответ: повторяем последний blob из RAM.
+          control = true;
+          // ACK до обработки: запрос уже доставлен, повторять его из mesh-очереди
+          // не нужно (иначе три копии ответа и лишний трафик).
+          if (isGateway()) sendAckTo(h.src, h.packetId);
+          String rid = jsonGetString(raw, "id");
+          HttpRespCache *cached = rid.length() ? httpCacheFind(rid) : nullptr;
+          if (cached) {
+            sgLog("[http] resend %s -> %s (%u chunks)", rid.c_str(),
+                  publicIdForNode(h.src).c_str(), (unsigned)cached->total);
+            sendHttpResponseChunks(cached->id, h.src, cached->blob, cached->total);
+          }
         } else if (raw.indexOf("\"__http__\"") >= 0 &&
                    raw.indexOf("\"kind\":\"http\"") >= 0) {
           control = true;
-          handleHttpRelay(raw, h.src);
-          // Подтверждаем запрос, иначе он навсегда останется в mesh-очереди
-          // телефона и будет ретраиться с просроченным ts (403 relay_expired).
+          // Подтверждаем ДО запроса в Hub: fetch может занять секунды, а
+          // телефон иначе ретраит запрос каждые 4 с (старый ts -> relay_expired).
           if (isGateway()) sendAckTo(h.src, h.packetId);
+          handleHttpRelay(raw, h.src);
         }
       }
       if (control) break;
@@ -2319,8 +2395,11 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
         // Uplink на Hub. Если интернета нет — запись ждёт в LittleFS.
         queueAdd(payload, h.payloadLen, QK_HUB, h.packetId);
       }
-      // ACK: unicast-адресату всегда, broadcast — только при локальной доставке.
-      if (h.dst == gNodeId || (h.dst == MESH_BROADCAST && isWearable() && attached())) {
+      // ACK: unicast-адресату всегда, broadcast — при локальной доставке.
+      // Шлюз тоже обязан подтверждать uplink от wearable, иначе запись
+      // остаётся в его mesh-очереди и ретраится с просроченным ts.
+      if (h.dst == gNodeId ||
+          (h.dst == MESH_BROADCAST && (isWearable() || isGateway()))) {
         sendAckTo(h.src, h.packetId);
       }
       break;
@@ -2618,7 +2697,7 @@ static void bleSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
     pBleRx->setValue(frame, n);
     pBleRx->notify();
     off = (uint16_t)(off + chunk);
-    delay(4);   // небольшой зазор между notifications
+    delay(6);   // зазор между notifications: не переполняем буфер BLE-стека
   } while (off < len);
 }
 
@@ -2679,9 +2758,28 @@ class SgBleServerCb : public BLEServerCallbacks {
     gBleMtu = 23;
     sgLog("[ble] client disconnected");
   }
-  // MTU не переопределяем: API onMtuChanged отличается между ESP32/C3/S3.
-  // Работаем с безопасным MTU 23 и чанками 12 байт; телефон может поднять MTU,
-  // но прошивка продолжит слать совместимыми чанками.
+  // Телефон поднимает MTU (Android 247/517, iOS 185). Запоминаем его, чтобы
+  // не отправлять 11 КБ по 20 байт: иначе очередь notifications переполняется,
+  // NimBLE теряет пакеты и клиент переподключается.
+#if defined(CONFIG_BLUEDROID_ENABLED)
+  void onMtuChanged(BLEServer *srv, esp_ble_gatts_cb_param_t *param) {
+    (void)srv;
+    if (param && param->mtu.mtu >= 23) {
+      gBleMtu = param->mtu.mtu;
+      sgLog("[ble] mtu=%u", (unsigned)gBleMtu);
+    }
+  }
+#endif
+#if defined(CONFIG_NIMBLE_ENABLED)
+  void onMtuChanged(BLEServer *srv, ble_gap_conn_desc *desc, uint16_t mtu) {
+    (void)srv;
+    (void)desc;
+    if (mtu >= 23) {
+      gBleMtu = mtu;
+      sgLog("[ble] mtu=%u", (unsigned)gBleMtu);
+    }
+  }
+#endif
 };
 
 static void setupBle() {
@@ -2689,6 +2787,9 @@ static void setupBle() {
   String name = String("SG-") + gPublicId;
   sgLog("[ble] init heap=%u", (unsigned)ESP.getFreeHeap());
   BLEDevice::init(name.c_str());
+  // Просим максимальный ATT MTU: ответы KMT по 11 КБ иначе не успевают
+  // пройти по BLE до таймаута клиента.
+  BLEDevice::setMTU(247);
   pBleServer = BLEDevice::createServer();
   if (!pBleServer) {
     sgLog("[ble] createServer failed heap=%u", (unsigned)ESP.getFreeHeap());
@@ -2736,6 +2837,12 @@ static void bleLoop() {
     gBleWantInfo = false;
     pBleStatus->setValue(gStatusJson.c_str());
     pBleStatus->notify();
+  }
+  // Живой статус: gateway/RSSI/соседи меняются после подключения к шлюзу.
+  // Без периодического INFO шапка навсегда остаётся с «нет mesh-связи».
+  if (gBleConnected && millis() - gLastInfoMs >= 5000UL) {
+    gLastInfoMs = millis();
+    sendInfoToClient();
   }
 }
 #else
@@ -2854,6 +2961,7 @@ static String buildInfoJson() {
              ",\"cluster_id\":" + String((unsigned long)gSelfClusterId) +
              ",\"border\":" + String(gBorderNode ? 1 : 0) +
              ",\"handover\":" + String((unsigned)gHandoverState) +
+             ",\"neighbors\":" + String((unsigned)neighborCount()) +
              ",\"queue\":" + String((unsigned)queueLoadValue()) +
              ",\"rssi\":" + String(wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + "}";
   return j;
@@ -2863,7 +2971,10 @@ static void sendInfoToClient() {
   String j = buildInfoJson();
   gStatusJson = j;
 #if SG_BLE_ENABLED
-  if (pBleStatus) pBleStatus->setValue(gStatusJson.c_str());
+  if (pBleStatus) {
+    pBleStatus->setValue(gStatusJson.c_str());
+    pBleStatus->notify();
+  }
 #endif
   deliverToClients(FT_INFO, (const uint8_t *)j.c_str(), (uint16_t)j.length());
   sgLog("[client] INFO sent");

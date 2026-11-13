@@ -109,6 +109,17 @@ async function openPort(path, baud = 115200) {
   await new Promise((resolve, reject) => {
     port.open((err) => (err ? reject(err) : resolve()));
   });
+  // ESP32-C3/S3 (USB-Serial/JTAG) после esptool остаётся в download mode,
+  // если линии DTR/RTS выставлены «как при прошивке». Нормальный boot:
+  // DTR=0, RTS=1 (EN low) -> RTS=0 (EN high при GPIO9 high).
+  try {
+    port.set({ dtr: false, rts: true });
+    await sleep(250);
+    port.set({ dtr: false, rts: false });
+    await sleep(150);
+  } catch {
+    /* платы с обычным UART не требуют этой последовательности */
+  }
   session.openedAt = new Date().toISOString();
 
   let pending = '';

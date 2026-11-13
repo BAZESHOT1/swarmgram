@@ -24,6 +24,14 @@ export interface ModuleInfo {
   gateway?: boolean;
   queue: number;
   rssi: number;
+  /** Сколько соседей модуль видит в mesh-кластере. */
+  neighbors?: number;
+  /** ID mesh-кластера. */
+  clusterId?: string;
+  /** Является ли модуль пограничным узлом кластера. */
+  border?: boolean;
+  /** Состояние handover (0 — нет перехода). */
+  handover?: number;
 }
 
 /** Входящий конверт из mesh-сети. */
@@ -59,6 +67,11 @@ export interface ModuleConnection {
   sendConfig?(config: ModuleWifiConfig): Promise<void>;
   /** Подписка на входящие конверты; возвращает функцию отписки. */
   onEnvelope(callback: (message: ModuleEnvelope) => void): () => void;
+  /**
+   * Подписка на обновления INFO/STATUS (gateway, RSSI, соседи, очередь).
+   * Необязательна: старые транспорты могут её не реализовывать.
+   */
+  onInfo?(callback: (info: ModuleInfo) => void): () => void;
   /** Подписка на разрыв связи; возвращает функцию отписки. */
   onDisconnect(callback: () => void): () => void;
   close(): Promise<void>;
@@ -85,10 +98,17 @@ export function normalizeInfo(raw: {
   battery?: number;
   meshRole?: string;
   attached?: boolean;
+  gateway?: boolean | number | string;
   queue?: number;
   rssi?: number;
+  neighbors?: number;
+  cluster_id?: string | number;
+  border?: boolean | number | string;
+  handover?: number;
 }): ModuleInfo {
   const role = raw.role === 'wearable' || raw.role === 'repeater' || raw.role === 'gateway' ? raw.role : 'gateway';
+  // Прошивка отдаёт gateway/border как 0/1, старые версии — как boolean.
+  const truthy = (value: unknown): boolean => value === true || value === 1 || value === '1' || value === 'true';
   return {
     hardwareId: raw.hardwareId,
     bleMac: raw.bleMac,
@@ -98,8 +118,13 @@ export function normalizeInfo(raw: {
     battery: Math.max(0, Math.min(100, Number(raw.battery ?? 0))),
     meshRole: raw.meshRole,
     attached: Boolean(raw.attached),
+    gateway: truthy(raw.gateway),
     queue: Math.max(0, Number(raw.queue ?? 0)),
     rssi: Number(raw.rssi ?? 0),
+    neighbors: Math.max(0, Number(raw.neighbors ?? 0)),
+    clusterId: raw.cluster_id != null ? String(raw.cluster_id) : undefined,
+    border: truthy(raw.border),
+    handover: Number(raw.handover ?? 0),
   };
 }
 
