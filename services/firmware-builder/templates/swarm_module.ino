@@ -330,6 +330,7 @@ struct NeighborInfo {
   bool     fromLora;      // последний пакет пришёл по LoRa
   uint32_t clusterId;     // cluster_id из ADVERT/PRESENCE (0 = неизвестен)
   bool     border;        // сосед объявил себя border-нодой
+  bool     anchor;        // сосед — якорь кластера (gateway/repeater)
   uint32_t lastMs;
   char     role[10];
   char     hw[24];        // заводской MAC соседа (esp32-xxxxxxxxxxxx)
@@ -1061,6 +1062,13 @@ static void neighborTouch(uint32_t id, int16_t rssi, bool fromLora) {
 
 static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
                                  bool fromLora) {
+  // Чужой (старый) узел может переслать наш же beacon, подменив src.
+  // Игнорируем любой beacon, в котором hw == наш MAC: это наш собственный
+  // маяк, иначе cluster_id начинает считать сам себя вторым якорем.
+  {
+    String ownHw = jsonGetString(json, "hw");
+    if (ownHw.length() && ownHw.equalsIgnoreCase(gHardwareId)) return;
+  }
   neighborTouch(id, rssi, fromLora);
   for (int i = 0; i < 8; i++) {
     if (gNeighbors[i].used && gNeighbors[i].id == id) {
@@ -1069,6 +1077,7 @@ static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
       gNeighbors[i].gateway = jsonGetInt(json, "gw") != 0;
       gNeighbors[i].clusterId = jsonGetU32(json, "cluster_id");
       gNeighbors[i].border = jsonGetInt(json, "border") != 0;
+      gNeighbors[i].anchor = jsonGetInt(json, "is_anchor") != 0;
       String r = jsonGetString(json, "role");
       if (r.length()) snprintf(gNeighbors[i].role, sizeof(gNeighbors[i].role), "%s", r.c_str());
       String hw = jsonGetString(json, "hw");
@@ -1134,12 +1143,17 @@ static void handoverStart(uint32_t newCluster);
 
 static void neighborUpdatePresence(uint32_t id, int16_t rssi, const String &json,
                                    bool fromLora) {
+  {
+    String ownHw = jsonGetString(json, "hw");
+    if (ownHw.length() && ownHw.equalsIgnoreCase(gHardwareId)) return;
+  }
   neighborTouch(id, rssi, fromLora);
   for (int i = 0; i < 8; i++) {
     if (!gNeighbors[i].used || gNeighbors[i].id != id) continue;
     const uint32_t cid = jsonGetU32(json, "cluster_id");
     if (cid) gNeighbors[i].clusterId = cid;
     if (json.indexOf("\"border\"") >= 0) gNeighbors[i].border = jsonGetInt(json, "border") != 0;
+    if (json.indexOf("\"is_anchor\"") >= 0) gNeighbors[i].anchor = jsonGetInt(json, "is_anchor") != 0;
     String hw = jsonGetString(json, "hw");
     if (hw.length()) snprintf(gNeighbors[i].hw, sizeof(gNeighbors[i].hw), "%s", hw.c_str());
     break;
@@ -1260,7 +1274,10 @@ static uint32_t clusterComputeSelfId() {
   for (int i = 0; i < 8 && ac < 9; i++) {
     if (!gNeighbors[i].used) continue;
     if (now - gNeighbors[i].lastMs > 12000UL) continue;
-    if (!gNeighbors[i].gateway) continue;
+    // Якорь — только is_anchor (gateway/repeater). gw=1 означает лишь
+    // «есть путь к шлюзу» и не должен попадать в cluster_id.
+    if (!gNeighbors[i].anchor) continue;
+    if (gNeighbors[i].hw[0] && strcmp(gNeighbors[i].hw, gHardwareId.c_str()) == 0) continue;
     anchors[ac] = gNeighbors[i].hw[0] ? String(gNeighbors[i].hw)
                                      : publicIdForNode(gNeighbors[i].id);
     ptrs[ac] = anchors[ac].c_str();
@@ -1345,7 +1362,7 @@ static void clusterTick() {
     if (memcmp(list[i].mesh_addr, selfAddr, 8) == 0) continue;
     if (meshAddrCmp(list[i].mesh_addr, selfAddr) < 0) betterAddrs++;
   }
-  const bool border = selfSeesTwo && betterAddrs < KINTO_BORDER_MAX;
+  const bool border = !isGateway() && selfSeesTwo && betterAddrs < KINTO_BORDER_MAX;
 
   if (border != gBorderNode) {
     gBorderNode = border;
@@ -1503,9 +1520,12 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
   if (op == "request") {
     sgLog("[handover] request from %s cluster=%lu", publicIdForNode(h.src).c_str(),
           (unsigned long)cluster);
-    if (isWearable() || isGateway() || gBorderNode) {
+    // Принимаем переход только если мы реально border-нода между кластерами.
+    // Старые прошивки шлют request на любой узел; без этого шлюз с одним
+    // кластером бесконечно подтверждает бессмысленный handover.
+    const bool canBridge = gBorderNode && cluster && cluster != gSelfClusterId;
+    if (canBridge && (isWearable() || isGateway() || gBorderNode)) {
       handoverSend("accept", h.src, cluster);
-      // Принимающая сторона не ведёт FSM: она только подтверждает переход.
       if (isWearable()) {
         gHandoverPeer = h.src;
         gHandoverTargetCluster = cluster;
@@ -1513,7 +1533,17 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
         gHandoverSinceMs = millis();
         gHandoverCooldownUntilMs = millis() + 10000UL;
       }
+    } else {
+      handoverSend("reject", h.src, cluster);
     }
+  } else if (op == "reject") {
+    if (gHandoverState == HO_IDLE) return;
+    if (gHandoverPeer && h.src != gHandoverPeer) return;
+    gHandoverState = HO_IDLE;
+    gHandoverPeer = 0;
+    gHandoverTargetCluster = 0;
+    gHandoverCooldownUntilMs = millis() + 15000UL;
+    sgLog("[handover] reject from %s", publicIdForNode(h.src).c_str());
   } else if (op == "accept") {
     if (gHandoverState != HO_REQUESTED && gHandoverState != HO_RETRY &&
         gHandoverState != HO_ACCEPTED) return;
@@ -1650,9 +1680,10 @@ static void meshMacForNode(uint32_t id, uint8_t out[6]) {
   // из beacon и обновится при следующем пакете.
 }
 
-static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
-                        uint32_t packetId, uint8_t ttl, uint8_t hop,
-                        const uint8_t *payload, uint16_t len) {
+static size_t meshBuildFrom(uint8_t *out, size_t cap, uint8_t type, uint32_t src,
+                            const uint8_t srcMac[6], uint32_t dst,
+                            uint32_t packetId, uint8_t ttl, uint8_t hop,
+                            const uint8_t *payload, uint16_t len) {
   if (!out || cap < sizeof(MeshHeader) + (size_t)len || len > SG_MAX_PAYLOAD) return 0;
   MeshHeader h;
   memset(&h, 0, sizeof(h));
@@ -1665,10 +1696,10 @@ static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
   h.hop = hop;
   h.reserved = 0;
   h.payloadLen = len;
-  h.src = gNodeId;
+  h.src = src;
   h.dst = dst;
   h.packetId = packetId;
-  memcpy(h.srcMac, gMac, 6);
+  memcpy(h.srcMac, srcMac ? srcMac : gMac, 6);
   meshMacForNode(dst, h.dstMac);
   h.crc = 0;
   memcpy(out, &h, sizeof(h));
@@ -1677,6 +1708,12 @@ static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
   h.crc = crc;
   memcpy(out, &h, sizeof(h));
   return sizeof(h) + len;
+}
+
+static size_t meshBuild(uint8_t *out, size_t cap, uint8_t type, uint32_t dst,
+                        uint32_t packetId, uint8_t ttl, uint8_t hop,
+                        const uint8_t *payload, uint16_t len) {
+  return meshBuildFrom(out, cap, type, gNodeId, gMac, dst, packetId, ttl, hop, payload, len);
 }
 
 static bool meshParse(const uint8_t *buf, size_t n, MeshHeader &h, const uint8_t *&payload) {
@@ -1854,9 +1891,14 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
 
   uint32_t origId = 0;
   uint32_t dst = MESH_BROADCAST;
+  uint32_t src = gNodeId;
+  uint8_t srcMac[6];
+  memcpy(srcMac, gMac, 6);
   if (len >= sizeof(MeshHeader)) {
-    memcpy(&origId, buf + 18, 4);
+    memcpy(&src, buf + 10, 4);
     memcpy(&dst, buf + 14, 4);
+    memcpy(&origId, buf + 18, 4);
+    memcpy(srcMac, buf + 22, 6);
   }
 
   for (uint8_t i = 0; i < total; i++) {
@@ -1869,8 +1911,8 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
     memcpy(pl + 6, buf + off, chunk);
     uint8_t frag[sizeof(MeshHeader) + sizeof(pl)];
     const uint32_t fragId = origId ^ ((uint32_t)(i + 1) << 24);
-    const size_t fn = meshBuild(frag, sizeof(frag), MT_FRAG, dst, fragId,
-                                SG_LORA_MAX_HOPS, 0, pl, (uint16_t)(6 + chunk));
+    const size_t fn = meshBuildFrom(frag, sizeof(frag), MT_FRAG, src, srcMac, dst, fragId,
+                                    SG_LORA_MAX_HOPS, 0, pl, (uint16_t)(6 + chunk));
     if (!fn || !loraSendRaw(frag, fn)) return false;
   }
   sgLog("[lora] fragmented %u bytes into %u", (unsigned)len, (unsigned)total);
@@ -2315,9 +2357,9 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
     if (!nextTtl) return;
 
     uint8_t fwd[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
-    size_t fn = meshBuild(fwd, sizeof(fwd), h.type, h.dst, h.packetId,
-                          nextTtl, (uint8_t)(h.hop + 1),
-                          payload, h.payloadLen);
+    size_t fn = meshBuildFrom(fwd, sizeof(fwd), h.type, h.src, h.srcMac, h.dst, h.packetId,
+                              nextTtl, (uint8_t)(h.hop + 1),
+                              payload, h.payloadLen);
     if (fn) {
       gFwdCount++;
       if (millis() - gLastFwdLogMs > 2000UL) {

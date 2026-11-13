@@ -1642,6 +1642,29 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
           )`,
         [hw, Number(n.rssi ?? 0) | 0, pid],
       ).catch(() => undefined);
+      await query(
+        `INSERT INTO mesh_devices
+           (mesh_addr, hardware_id, public_id, role, transport, kind, cluster_id,
+            border, transports, neighbors, last_rssi, firmware, status, last_seen_at)
+         SELECT hardware_id, hardware_id, public_id, role, transport, kind, cluster_id,
+                border, transports, neighbors, $2, firmware, 'online', now()
+           FROM modules
+          WHERE blocked = false AND (
+            ($1::text IS NOT NULL AND lower(hardware_id) = $1)
+            OR ($3::text <> '' AND public_id = $3)
+          )
+          LIMIT 1
+         ON CONFLICT (mesh_addr) DO UPDATE SET
+           role = CASE WHEN EXCLUDED.role <> '' THEN EXCLUDED.role ELSE mesh_devices.role END,
+           transport = CASE WHEN EXCLUDED.transport <> '' THEN EXCLUDED.transport ELSE mesh_devices.transport END,
+           kind = CASE WHEN EXCLUDED.kind <> '' THEN EXCLUDED.kind ELSE mesh_devices.kind END,
+           cluster_id = CASE WHEN EXCLUDED.cluster_id <> '' THEN EXCLUDED.cluster_id ELSE mesh_devices.cluster_id END,
+           border = EXCLUDED.border,
+           transports = CASE WHEN EXCLUDED.transports = '{}' THEN mesh_devices.transports ELSE EXCLUDED.transports END,
+           neighbors = EXCLUDED.neighbors,
+           status = 'online', last_rssi = EXCLUDED.last_rssi, last_seen_at = now(), updated_at = now()`,
+        [hw, Number(n.rssi ?? 0) | 0, pid],
+      ).catch(() => undefined);
     }
 
     // TELEMETRY_REPORT: register/checkin уже содержит кластер, соседей и
