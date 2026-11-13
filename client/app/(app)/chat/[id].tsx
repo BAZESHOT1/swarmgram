@@ -44,12 +44,11 @@ import { MediaAlbum } from '../../../src/components/chat/MediaAlbum';
 import { SecretBanner } from '../../../src/components/chat/SecretBanner';
 import { AttachmentMenu } from '../../../src/components/chat/AttachmentMenu';
 import { VoiceRecorder } from '../../../src/components/chat/VoiceRecorder';
-import { useChatMessages, humanError, useDeleteMessage } from '../../../src/data/queries';
+import { useChatMessages, humanError, useDeleteMessage, useSendChatMessage } from '../../../src/data/queries';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   attachAndSendWithProgress,
   decryptEnvelopeAuto,
-  sendMessage,
   type ViewMessage,
 } from '../../../src/data/messaging';
 import { loadChatKey, topUpAllKeys } from '../../../src/data/chatkit';
@@ -231,6 +230,7 @@ export default function ChatScreen() {
     [chatId],
   );
   const chatQuery = useChatMessages(chatId ? (chat ?? placeholderChat) : null);
+  const sendMutation = useSendChatMessage(chatId);
   const deleteMsg = useDeleteMessage(chatId);
 
   const queryMessages = chatQuery.data as ViewMessage[] | undefined;
@@ -1069,28 +1069,10 @@ export default function ChatScreen() {
       return;
     }
 
-    /* --- текст: сразу локальный пузырь, сеть — потом --- */
+    /* --- текст: optimistic update через useMutation --- */
     const clientId = makeClientId();
     const replyId = replyTo?.id;
     const postAsChannel = asChannel && canPostAsChannel;
-    const optimisticMessage: ViewMessage = {
-      id: clientId,
-      clientId,
-      seq: Number.MAX_SAFE_INTEGER,
-      senderUsername: myUsername,
-      mine: true,
-      createdAt: new Date().toISOString(),
-      kind: 'text',
-      text: body,
-      replyTo: replyId ?? null,
-      scheme: isE2e ? 'e2e' : 'server',
-      reactions: [],
-      delivered: false,
-      failed: false,
-      pending: true,
-      asChannel: postAsChannel,
-    };
-    upsertOptimistic(optimisticMessage);
     setText('');
     inputRef.current?.clear();
     setInputHeight(42);
@@ -1101,44 +1083,20 @@ export default function ChatScreen() {
     pendingScrollRef.current = true;
     try {
       sounds.send();
-      // Короткий тактильный отклик на отправку (web — 12 мс, native — light impact).
       haptics.send();
     } catch {
       /* звук не критичен */
     }
-
     setError('');
-    const sendText = async () => {
-      try {
-        const vm = await sendMessage(chatId, { text: body }, 'text', myUsername, { replyTo: replyId, clientId, asChannel: postAsChannel });
-        const confirmed = { ...vm, clientId: vm.clientId ?? clientId, uploadStage: null };
-        upsertOptimistic(confirmed);
-        // Подтверждённое сообщение фиксируем в кэше и на диске немедленно.
-        if (vm.delivered && !String(vm.id).startsWith('loc-')) commitToCache(confirmed);
-        // Убираем локальную копию только после подтверждённой доставки.
-        // Сообщение в очереди (delivered=false) остаётся в ленте до отправки.
-        if (vm.delivered) scheduleOptimisticCleanup(clientId);
-        // Сообщение уже отправлено: сбой фонового обновления ленты не должен
-        // помечать пузырь как ошибочный.
-        if (!vm.failed) await chatQuery.refetch().catch(() => undefined);
-        else haptics.error();
-      } catch (e: unknown) {
-        patchOptimistic(clientId, { pending: false, failed: true });
-        setError(humanError(e));
-        haptics.error();
-        sounds.error();
-      }
-    };
-    // Повтор текста переиспользует тот же clientId: сервер не создаст дубль.
-    const retryText = () => {
-      const controller = new AbortController();
-      uploadsRef.current.set(clientId, { controller, retry: retryText });
-      patchOptimistic(clientId, { pending: true, failed: false });
-      void sendText();
-    };
-    uploadsRef.current.set(clientId, { controller: new AbortController(), retry: retryText });
-    // Не ждём сеть: локальный пузырь уже в ленте, остальное — фоном.
-    void sendText();
+    sendMutation.mutate(
+      { body, clientId, myUsername, replyId, asChannel: postAsChannel },
+      {
+        onError: () => {
+          haptics.error();
+          sounds.error();
+        },
+      },
+    );
   }
 
   /* --- медиа: превью → сжатие → шифрование → загрузка с прогрессом --- */

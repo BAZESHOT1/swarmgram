@@ -5,7 +5,7 @@ import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import * as api from './api';
 import type { Chat, Envelope, UserProfile } from './api';
-import { loadChatMessages, type ViewMessage } from './messaging';
+import { loadChatMessages, sendMessage, type ViewMessage } from './messaging';
 import { useStore } from '../state/useStore';
 import {
   getCachedChats,
@@ -186,6 +186,79 @@ export function useChatMessages(chat: Chat | null) {
     // Открытый чат не должен «зависать», даже если сокет потерял событие.
     refetchInterval: 12_000,
     placeholderData: (prev) => prev ?? (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
+  });
+}
+
+/**
+ * Отправка сообщения через useMutation с настоящим optimistic update:
+ * cancelQueries → setQueryData → mutation → rollback onError → replace onSuccess.
+ * Транспорт выбирает sendMessage: интернет → HTTP, иначе KMT/mesh/outbox.
+ */
+export function useSendChatMessage(chatId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      body: string;
+      clientId: string;
+      myUsername: string;
+      replyId?: string;
+      asChannel?: boolean;
+    }) =>
+      sendMessage(chatId, { text: input.body }, 'text', input.myUsername, {
+        clientId: input.clientId,
+        replyTo: input.replyId,
+        asChannel: input.asChannel,
+      }),
+    onMutate: async (input) => {
+      await qc.cancelQueries({ queryKey: ['messages', chatId] });
+      const previous = qc.getQueryData<ViewMessage[]>(['messages', chatId]);
+      const optimistic: ViewMessage = {
+        id: input.clientId,
+        clientId: input.clientId,
+        seq: Number.MAX_SAFE_INTEGER,
+        senderUsername: input.myUsername,
+        mine: true,
+        createdAt: new Date().toISOString(),
+        kind: 'text',
+        text: input.body,
+        replyTo: input.replyId ?? null,
+        scheme: 'server',
+        reactions: [],
+        delivered: false,
+        pending: true,
+        failed: false,
+        asChannel: input.asChannel,
+      };
+      const base = Array.isArray(previous) ? previous : [];
+      const next = [...base, optimistic].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+      qc.setQueryData<ViewMessage[]>(['messages', chatId], next);
+      saveMessages(chatId, next);
+      return { previous, clientId: input.clientId };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previous) {
+        qc.setQueryData(['messages', chatId], context.previous);
+        saveMessages(chatId, context.previous);
+      } else {
+        qc.setQueryData<ViewMessage[]>(['messages', chatId], (prev) =>
+          Array.isArray(prev) ? prev.filter((m) => m.clientId !== context?.clientId) : prev,
+        );
+      }
+    },
+    onSuccess: (message, _input, context) => {
+      const key = message.clientId ?? context?.clientId ?? message.id;
+      qc.setQueryData<ViewMessage[]>(['messages', chatId], (prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        const next = list.filter((m) => m.clientId !== key && m.id !== message.id && m.id !== key);
+        next.push(message);
+        next.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        saveMessages(chatId, next);
+        return next;
+      });
+      void qc.invalidateQueries({ queryKey: ['chats'] });
+    },
   });
 }
 

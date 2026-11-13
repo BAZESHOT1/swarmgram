@@ -2304,7 +2304,11 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
           handoverHandle(raw, h);
         } else if (raw.indexOf("\"__http__\"") >= 0 &&
                    raw.indexOf("\"kind\":\"http\"") >= 0) {
+          control = true;
           handleHttpRelay(raw, h.src);
+          // Подтверждаем запрос, иначе он навсегда останется в mesh-очереди
+          // телефона и будет ретраиться с просроченным ts (403 relay_expired).
+          if (isGateway()) sendAckTo(h.src, h.packetId);
         }
       }
       if (control) break;
