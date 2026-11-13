@@ -1531,7 +1531,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     if (!request.path.startsWith('/v1/')) {
       throw forbidden('relay_path_forbidden');
     }
-    if (/^\/v1\/(admin|auth|objects|uploads|keys|account\/keys)\b/.test(request.path)) {
+    if (/^\/v1\/(admin|auth|objects|uploads)\b/.test(request.path)) {
       throw forbidden('relay_path_forbidden');
     }
 
@@ -1547,6 +1547,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
         headers: {
           authorization: `Bearer ${token}`,
           'content-type': 'application/json',
+          'x-sg-mesh': '1',
         },
         body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify(request.body ?? {}),
         signal: AbortSignal.timeout(15_000),

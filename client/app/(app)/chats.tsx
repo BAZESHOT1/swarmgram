@@ -1435,7 +1435,16 @@ export default function ChatsScreen() {
           animate={{ opacity: 1 }}
           transition={{ type: 'timing', duration: 200 }}
         >
-          {connectionPhase ? <ConnectionPill phase={connectionPhase} /> : <ModuleStatusPill />}
+          {connectionPhase === 'mesh' ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <ConnectionPill phase="mesh" />
+              <ModuleStatusPill />
+            </View>
+          ) : connectionPhase ? (
+            <ConnectionPill phase={connectionPhase} />
+          ) : (
+            <ModuleStatusPill />
+          )}
         </MotiView>
         <MotiView
           from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -6, scale: 0.96 }}

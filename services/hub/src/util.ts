@@ -84,6 +84,7 @@ export function errorHandler(err: unknown, _req: FastifyRequest, reply: FastifyR
       log('warn', 'api_error', {
         status: err.status,
         code: err.code,
+        message: err.message,
         url: _req.url,
         ip: _req.ip,
       });

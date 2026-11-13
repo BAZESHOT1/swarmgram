@@ -97,6 +97,29 @@ function RealtimeBridge() {
     };
   }, []);
 
+  // Автопереключение интернет ↔ mesh: при появлении сети досылаем outbox и
+  // обновляем данные, при потере — сразу переводим API на mesh-туннель.
+  useEffect(() => {
+    let prev = useStore.getState().transportOnline;
+    const unsub = useStore.subscribe((state) => {
+      const online = state.transportOnline;
+      if (online === prev) return;
+      prev = online;
+      if (online) {
+        void flushOutbox(state.me?.username ?? getSession()?.username ?? '')
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: ['chats'] });
+            void queryClient.invalidateQueries({ queryKey: ['messages'], type: 'active' });
+          })
+          .catch(() => undefined);
+      } else {
+        // Офлайн: перечитываем кэш; новые запросы уйдут через KMT.
+        void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      }
+    });
+    return () => unsub();
+  }, []);
+
   React.useEffect(() => {
     if (!session) return;
     let socket: WebSocket | null = null;
@@ -589,7 +612,9 @@ function RealtimeBridge() {
         queryClient.setQueryData<any[]>(['messages', chatId], (prev) => {
           const list = Array.isArray(prev) ? prev : [];
           if (list.some((m) => m?.id === message.id || (m?.clientId && m.clientId === item.clientId))) return list;
-          return [message, ...list];
+          return [...list, message].sort(
+            (a, b) => new Date(a?.createdAt ?? 0).getTime() - new Date(b?.createdAt ?? 0).getTime(),
+          );
         });
         void queryClient.invalidateQueries({ queryKey: ['chats'] });
 

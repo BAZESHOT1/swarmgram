@@ -12,6 +12,7 @@ import { publish, publishMany } from '../realtime.js';
 import { enqueueNotification } from '../push.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { can } from './chats.js';
+import { getFragment } from '../nodes.js';
 
 const MAX_NONCE_B64 = 64;
 
@@ -272,6 +273,45 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       for (const c of commentRows) commentsByMsg.set(c.message_id, c.count);
     }
 
+    // Mesh-клиент не может скачать object с узлов: для небольших текстовых
+    // сообщений отдаём шифротекст inline.
+    const inlineMap = new Map<string, string>();
+    if (req.headers['x-sg-mesh'] === '1' && rows.length) {
+      for (const r of rows.slice(0, 30)) {
+        if (!r.object_id || !r.size_bytes || r.size_bytes > 4096) continue;
+        try {
+          const frag = await one<{ index: number; node_id: string; public_url: string; ticket_secret: string }>(
+            `SELECT f.index, n.id AS node_id, n.public_url, n.ticket_secret
+               FROM fragments f JOIN nodes n ON n.id = f.node_id
+              WHERE f.object_id = $1 AND f.state = 'ok' AND n.status <> 'banned'
+              ORDER BY (n.status = 'online') DESC, n.reputation DESC
+              LIMIT 1`,
+            [r.object_id],
+          );
+          if (!frag) continue;
+          const stream = await getFragment(
+            { id: frag.node_id, public_url: frag.public_url, ticket_secret: frag.ticket_secret },
+            r.object_id,
+            frag.index,
+            me,
+          );
+          const chunks: Buffer[] = [];
+          let total = 0;
+          for await (const chunk of stream) {
+            const buf = chunk as Buffer;
+            total += buf.length;
+            if (total > 4096) break;
+            chunks.push(buf);
+          }
+          if (total > 0 && total <= 4096) {
+            inlineMap.set(r.id, Buffer.concat(chunks).toString('base64url'));
+          }
+        } catch {
+          /* клиент попробует object позже */
+        }
+      }
+    }
+
     return reply.send(
       rows.reverse().map((r) => {
         const meta = headerMeta(r.header);
@@ -282,6 +322,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           kind: r.kind,
           // У системных сообщений нет объекта на узлах — ключ не отдаём.
           ...(r.kind === 'system' ? {} : { objectId: r.object_id }),
+          ...(inlineMap.has(r.id) ? { envelopeB64: inlineMap.get(r.id) } : {}),
           sizeBytes: r.size_bytes,
           nonce: extractNonce(r.header),
           header: r.header,
