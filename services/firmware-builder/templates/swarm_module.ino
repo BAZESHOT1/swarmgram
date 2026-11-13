@@ -38,9 +38,32 @@
 #include <time.h>
 #include <esp_system.h>
 #include <esp_random.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <esp_log.h>
 
 // config.h должен идти до условных include: в нём роль, транспорт, LoRa.
 #include "config.h"
+
+// ESP-NOW Long Range — основной mesh-транспорт. UDP остаётся только как
+// аварийный fallback, если ESP-NOW не поднялся (старые прошивки/странный SDK).
+#ifndef SG_USE_ESPNOW
+#define SG_USE_ESPNOW 1
+#endif
+// ESP-NOW LR требует отдельного STA-интерфейса/канала: на шлюзе, который
+// одновременно держит STA к роутеру, IDF не даёт включить LR на AP, а LR на
+// STA рвёт ассоциацию. Поэтому по умолчанию — обычный ESP-NOW; LR включается
+// флагом для выделенного mesh-канала.
+#ifndef SG_ESPNOW_LR
+#define SG_ESPNOW_LR 0
+#endif
+// Аварийный bootstrap для плат, где ESP-NOW молча не работает на
+// неассоциированной STA: один раз ассоциируемся с mesh-AP (<=3 c), затем
+// disconnect(). Это заставляет IDF выставить home-канал и поднять STA.
+// По умолчанию выключено.
+#ifndef SG_ESPNOW_ASSOC_BOOTSTRAP
+#define SG_ESPNOW_ASSOC_BOOTSTRAP 1
+#endif
 
 /* ------------------------------------------------------- дефолты конфига -- */
 
@@ -243,6 +266,11 @@ enum kinto_traffic_t {
 static const uint16_t SG_MESH_UDP_PORT = 45678;
 static const uint16_t SG_MAX_PAYLOAD = 1024;       // общий предел payload
 static const uint16_t SG_LORA_MAX_PAYLOAD = 180;   // предел LoRa payload
+// ESP-NOW v1: один кадр <= 250 байт. Крупные mesh-пакеты режем MT_FRAG
+// (тот же формат, что и для LoRa), чтобы не зависеть от ESP-NOW v2.
+static const uint16_t SG_ESPNOW_MAX_FRAME = 240;
+static const uint8_t  SG_ESPNOW_PEER_MAX = 20;
+static const uint16_t SG_ESPNOW_RX_QUEUE = 6;
 static const size_t   SG_QUEUE_MAX = 200;          // записей в /queue.log
 static const uint32_t SG_QUEUE_TTL_SEC = 72UL * 3600UL;
 // Верхняя граница данных в одном BLE-notification. При MTU 23 реальный chunk
@@ -276,6 +304,10 @@ enum MeshType {
   MT_ROUTE_REP = 5,
   MT_PRESENCE = 6,
   MT_FRAG = 7,
+  MT_DISCOVER = 8,
+  MT_DISCOVER_ACK = 9,
+  MT_LORA_ADVERT = 10,
+  MT_LORA_DATA = 11,
 };
 
 // LoRa-фрагментация: 150 байт данных × до 16 фрагментов.
@@ -335,7 +367,9 @@ struct NeighborInfo {
   bool     border;        // сосед объявил себя border-нодой
   bool     anchor;        // сосед — якорь кластера (gateway/repeater)
   uint8_t  neigh;         // сколько соседей видит сам этот узел (beacon n)
+  uint8_t  streak;        // сколько beacon-интервалов подряд видим соседа
   uint32_t lastMs;
+  uint32_t lastAdvertMs;
   char     role[10];
   char     hw[24];        // заводской MAC соседа (esp32-xxxxxxxxxxxx)
 };
@@ -352,8 +386,22 @@ enum HandoverState {
 struct RouteEntry {
   uint32_t dst;
   uint32_t nextHop;   // 0xFFFFFFFF = flood
+  uint8_t  iface;     // KINTO_IFACE_ESPNOW / KINTO_IFACE_LORA
+  uint8_t  hops;
+  uint16_t metric;    // EWMA RTT + hops*35 + queue*8
   uint32_t updatedMs;
+  uint32_t expiresMs; // ESP-NOW 300 c, LoRa 900 c
   bool     used;
+};
+
+// LoRa bridge: cluster_id -> узел, который объявил кластер по LoRa.
+// Определение вынесено до функций: Arduino генерирует прототипы в начало
+// .ino, и тип из сигнатуры должен быть известен там.
+struct LoraClusterRoute {
+  uint32_t clusterId;
+  uint32_t nextHop;
+  uint32_t lastMs;
+  bool used;
 };
 
 // Сборка чанкованных кадров BLE/USB.
@@ -413,6 +461,56 @@ static bool gUsbProtoActive = false;
 static uint32_t gLastClientActivityMs = 0;
 static uint32_t gLastInfoMs = 0;
 static String gStatusJson;
+
+/* ------------------------------------------------------ ESP-NOW LR state -- */
+static bool gEspNowReady = false;
+static bool gEspNowLr = false;
+static uint8_t gEspNowChannel = 0;
+static uint32_t gEspNowTxCount = 0;
+static uint32_t gEspNowRxCount = 0;
+static uint32_t gEspNowTxFail = 0;
+static uint32_t gEspNowWindowStartMs = 0;
+static uint32_t gEspNowWindowTx = 0;
+static uint32_t gEspNowWindowRx = 0;
+static uint8_t gEspNowLoad = 0;
+static uint8_t gEspNowQueueDepth = 0;
+
+/* ------------------------------------------- ESP-NOW channel discovery ---- */
+// Нода (не шлюз) не ассоциируется с Wi-Fi: ESP-NOW нужен только канал шлюза.
+// При старте перебираем 1..13 и ждём MT_DISCOVER_ACK/ADVERT с полем "ch".
+static volatile bool gDiscoverSeen = false;
+static uint32_t gDiscoverNonce = 0;
+static uint8_t gDiscoveredChannel = 0;
+static uint32_t gLastDiscoverMs = 0;
+
+struct EspNowPeer {
+  uint32_t nodeId;
+  uint8_t mac[6];
+  uint32_t lastMs;
+  bool used;
+};
+static EspNowPeer gEspNowPeers[12];
+
+struct EspNowRxItem {
+  uint8_t data[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint16_t len;
+  int16_t rssi;
+  uint8_t srcMac[6];
+};
+static EspNowRxItem gEspNowRx[SG_ESPNOW_RX_QUEUE];
+static volatile uint8_t gEspNowRxHead = 0;
+static volatile uint8_t gEspNowRxTail = 0;
+
+/* ------------------------------------------------ LoRa LBT / duty load --- */
+static uint32_t gLoraTxAirMs = 0;
+static uint32_t gLoraWindowStartMs = 0;
+static uint32_t gLoraCadBusy = 0;
+static uint32_t gLoraCadTotal = 0;
+static uint8_t gLoraLoad = 0;
+static uint8_t gLoraQueueDepth = 0;
+static uint32_t gLoadLastMs = 0;
+static bool gAllowedVoice = true;
+static bool gAllowedPhoto = true;
 
 // Последние KMT-ответы: нужны, чтобы переслать потерянные BLE/mesh-чанки
 // без повторного запроса в Hub (иначе старый ts даёт relay_expired).
@@ -528,6 +626,22 @@ static void sgLog(const char *fmt, ...) {
   Serial.println(buf);
 }
 
+/**
+ * Видимый ERROR-лог в обход compile-time фильтра скетча.
+ * ESP_LOGE() из .ino при CORE_DEBUG_LEVEL=0 разворачивается в no-op, поэтому
+ * на C3 (COM5) видны только сообщения IDF-библиотек. Прямой esp_log_write()
+ * не проходит через макрос LOG_LOCAL_LEVEL и печатается на том же консольном
+ * бэкенде, что и ошибки IDF.
+ */
+static void sgLogE(const char *fmt, ...) {
+  char buf[192];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  esp_log_write(ESP_LOG_ERROR, "kinto", "%s\n", buf);
+}
+
 static bool roleIs(const char *role) {
   return strcmp(SG_ROLE, role) == 0;
 }
@@ -560,6 +674,15 @@ static const char *meshPass() {
 }
 static const char *meshIdText() {
   return strlen(SG_MESH_ID) ? SG_MESH_ID : SG_DEFAULT_MESH_SSID;
+}
+
+/** Текущий mesh-канал: SoftAP шлюза / ESP-NOW / дефолт. */
+static uint8_t currentMeshChannel() {
+#if !SG_USE_ESP_MESH
+  if (gApChannel) return gApChannel;
+#endif
+  if (gEspNowChannel) return gEspNowChannel;
+  return (uint8_t)SG_MESH_CHANNEL;
 }
 
 /**
@@ -1123,6 +1246,8 @@ static NeighborInfo gNeighbors[8];
 static uint32_t gSelfClusterId = 0;
 static uint32_t gPrevClusterId = 0;
 static bool     gBorderNode = false;
+static uint8_t  gBorderStreak = 0;
+static uint8_t  gHandoverStableCount = 0;
 static uint32_t gBeaconNeighborClusters[2] = {0, 0};
 static uint8_t  gBeaconNeighborClusterCount = 0;
 static uint32_t gLastClusterMs = 0;
@@ -1175,6 +1300,12 @@ static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
       gNeighbors[i].border = jsonGetInt(json, "border") != 0;
       gNeighbors[i].anchor = jsonGetInt(json, "is_anchor") != 0;
       gNeighbors[i].neigh = (uint8_t)jsonGetInt(json, "n");
+      // Стабильность для border election: считаем beacon-интервалы, а не
+      // каждый пакет (advert может дублироваться).
+      if (millis() - gNeighbors[i].lastAdvertMs >= KINTO_BEACON_INTERVAL_MS / 2) {
+        if (gNeighbors[i].streak < 255) gNeighbors[i].streak++;
+        gNeighbors[i].lastAdvertMs = millis();
+      }
       String r = jsonGetString(json, "role");
       if (r.length()) snprintf(gNeighbors[i].role, sizeof(gNeighbors[i].role), "%s", r.c_str());
       String hw = jsonGetString(json, "hw");
@@ -1200,32 +1331,103 @@ static uint8_t neighborCount() {
 
 static RouteEntry gRoutes[8];
 
-static void routeLearn(uint32_t dst, uint32_t nextHop) {
+static LoraClusterRoute gLoraClusterRoutes[8];
+
+static void loraClusterRouteUpsert(uint32_t clusterId, uint32_t nextHop) {
+  if (!clusterId || !nextHop) return;
+  int slot = -1;
+  int oldest = 0;
+  for (int i = 0; i < 8; i++) {
+    if (gLoraClusterRoutes[i].used && gLoraClusterRoutes[i].clusterId == clusterId) {
+      slot = i;
+      break;
+    }
+    if (!gLoraClusterRoutes[i].used && slot < 0) slot = i;
+    if (gLoraClusterRoutes[i].used &&
+        gLoraClusterRoutes[i].lastMs < gLoraClusterRoutes[oldest].lastMs) {
+      oldest = i;
+    }
+  }
+  if (slot < 0) slot = oldest;
+  gLoraClusterRoutes[slot].clusterId = clusterId;
+  gLoraClusterRoutes[slot].nextHop = nextHop;
+  gLoraClusterRoutes[slot].lastMs = millis();
+  gLoraClusterRoutes[slot].used = true;
+}
+
+static LoraClusterRoute *loraClusterRouteFind(uint32_t clusterId) {
+  if (!clusterId || clusterId == gNodeId || clusterId == MESH_BROADCAST) return NULL;
+  const uint32_t now = millis();
+  for (int i = 0; i < 8; i++) {
+    if (!gLoraClusterRoutes[i].used ||
+        gLoraClusterRoutes[i].clusterId != clusterId) {
+      continue;
+    }
+    if (now - gLoraClusterRoutes[i].lastMs > 600000UL) {  // 10 минут
+      gLoraClusterRoutes[i].used = false;
+      return NULL;
+    }
+    return &gLoraClusterRoutes[i];
+  }
+  return NULL;
+}
+
+// Один отложенный unicast: пока идёт path request (Reticulum-style),
+// пакет не флудится сразу, а ждёт MT_ROUTE_REP до 9 с.
+struct PendingRoute {
+  bool active;
+  uint32_t dst;
+  uint32_t startedMs;
+  uint32_t lastReqMs;
+  uint8_t tries;
+  uint8_t ttl;
+  kinto_traffic_t traffic;
+  uint16_t len;
+  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+};
+static PendingRoute gPendingRoute;
+static void sendRouteReq(uint32_t dst);
+
+static void routeLearn(uint32_t dst, uint32_t nextHop,
+                       uint8_t iface = KINTO_IFACE_ESPNOW,
+                       uint8_t hops = 1, uint16_t metric = 0) {
   if (!dst || dst == gNodeId) return;
   int slot = -1;
   int oldest = 0;
+  const uint32_t now = millis();
   for (int i = 0; i < 8; i++) {
     if (gRoutes[i].used && gRoutes[i].dst == dst) { slot = i; break; }
     if (!gRoutes[i].used && slot < 0) slot = i;
     if (gRoutes[i].used && gRoutes[i].updatedMs < gRoutes[oldest].updatedMs) oldest = i;
   }
   if (slot < 0) slot = oldest;
+  // Не затираем более короткий/свежий маршрут худшим.
+  if (gRoutes[slot].used && gRoutes[slot].dst == dst && metric &&
+      gRoutes[slot].metric && metric > gRoutes[slot].metric + 40 &&
+      now - gRoutes[slot].updatedMs < 30000UL) {
+    return;
+  }
   gRoutes[slot].dst = dst;
   gRoutes[slot].nextHop = nextHop;
-  gRoutes[slot].updatedMs = millis();
+  gRoutes[slot].iface = iface;
+  gRoutes[slot].hops = hops;
+  gRoutes[slot].metric = metric;
+  gRoutes[slot].updatedMs = now;
+  gRoutes[slot].expiresMs = now + (iface == KINTO_IFACE_LORA
+                                       ? KINTO_ROUTE_EXPIRY_LORA_MS
+                                       : KINTO_ROUTE_EXPIRY_ESPNOW_MS);
   gRoutes[slot].used = true;
 }
 
 static uint32_t routeLookup(uint32_t dst) {
+  const uint32_t now = millis();
   for (int i = 0; i < 8; i++) {
-    if (gRoutes[i].used && gRoutes[i].dst == dst) {
-      // TTL таблицы — 10 минут.
-      if (millis() - gRoutes[i].updatedMs > 10UL * 60UL * 1000UL) {
-        gRoutes[i].used = false;
-        return 0;
-      }
-      return gRoutes[i].nextHop;
+    if (!gRoutes[i].used || gRoutes[i].dst != dst) continue;
+    if (gRoutes[i].expiresMs && now > gRoutes[i].expiresMs) {
+      gRoutes[i].used = false;
+      return 0;
     }
+    return gRoutes[i].nextHop;
   }
   return 0;
 }
@@ -1237,6 +1439,7 @@ static uint32_t routeLookup(uint32_t dst) {
 static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payload,
                                uint16_t len, uint8_t ttl, kinto_traffic_t traffic);
 static void handoverStart(uint32_t newCluster);
+static void handoverSend(const char *op, uint32_t dst, uint32_t cluster);
 
 static void neighborUpdatePresence(uint32_t id, int16_t rssi, const String &json,
                                    bool fromLora) {
@@ -1273,11 +1476,12 @@ static void meshV2RouteUpdate(uint32_t id, int16_t rssi, bool fromLora, uint8_t 
   memset(&r, 0, sizeof(r));
   nodeMeshAddr(id, r.dst);
   nodeMeshAddr(id, r.next_hop);   // сосед = прямой next hop
-  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_WIFI;
+  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_ESPNOW;
   r.ewma_ms = rssiToEwma(rssi);
   r.hops = 1;
   r.queue_depth = queueDepth;
-  r.expiry_ms = millis() + KINTO_ROUTE_EXPIRY_MS;
+  r.expiry_ms = millis() + (fromLora ? KINTO_ROUTE_EXPIRY_LORA_MS
+                                     : KINTO_ROUTE_EXPIRY_ESPNOW_MS);
   r.valid = true;
   kinto_route_upsert(&r);
 }
@@ -1289,11 +1493,12 @@ static void meshV2RouteLearned(uint32_t dst, uint32_t nextHop, bool fromLora) {
   memset(&r, 0, sizeof(r));
   nodeMeshAddr(dst, r.dst);
   nodeMeshAddr(nextHop, r.next_hop);
-  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_WIFI;
+  r.iface = fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_ESPNOW;
   r.ewma_ms = 220;
   r.hops = 2;
   r.queue_depth = 0;
-  r.expiry_ms = millis() + KINTO_ROUTE_EXPIRY_MS;
+  r.expiry_ms = millis() + (fromLora ? KINTO_ROUTE_EXPIRY_LORA_MS
+                                     : KINTO_ROUTE_EXPIRY_ESPNOW_MS);
   r.valid = true;
   kinto_route_upsert(&r);
   sgLog("[route] learned dst=%s next=%s via=%s", publicIdForNode(dst).c_str(),
@@ -1302,7 +1507,8 @@ static void meshV2RouteLearned(uint32_t dst, uint32_t nextHop, bool fromLora) {
 
 static kinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, uint16_t len) {
   if (type == MT_ADVERT || type == MT_PRESENCE || type == MT_ROUTE_REQ ||
-      type == MT_ROUTE_REP) {
+      type == MT_ROUTE_REP || type == MT_DISCOVER ||
+      type == MT_DISCOVER_ACK || type == MT_LORA_ADVERT) {
     return KINTO_TRAFFIC_TELEMETRY;
   }
   if (type == MT_DATA && payload && len) {
@@ -1386,6 +1592,17 @@ static uint32_t clusterComputeSelfId() {
     gAnchorNodeId = 0;
     return 0;
   }
+  // Сортируем якоря ДО хэширования: порядок соседей в таблице не должен
+  // менять cluster_id (иначе cid «прыгает» при перестановке соседей).
+  for (unsigned i = 1; i < ac; i++) {
+    const char *value = ptrs[i];
+    int j = (int)i - 1;
+    while (j >= 0 && strcmp(ptrs[j], value) > 0) {
+      ptrs[j + 1] = ptrs[j];
+      j--;
+    }
+    ptrs[j + 1] = value;
+  }
   return kinto_compute_cluster_id(ptrs, ac);
 }
 
@@ -1414,6 +1631,7 @@ static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
     out[n].rssi = gNeighbors[i].rssi;
     out[n].queue_depth = gNeighbors[i].load;
     out[n].battery = gNeighbors[i].batt;
+    out[n].streaks = gNeighbors[i].streak;
     out[n].last_seen_ms = now;   // сосед виден в текущем окне
     n++;
   }
@@ -1440,6 +1658,28 @@ static void clusterTick() {
   const uint32_t prevAnchor = gAnchorNodeId;
   gSelfClusterId = clusterComputeSelfId();
 
+  // Любое изменение cid сбрасывает счётчик стабильности handover.
+  if (gSelfClusterId != gPrevClusterId) gHandoverStableCount = 0;
+
+  // HO_ACCEPTED: не завершаем сразу. Ждём 3 подряд beacon-интервала, где
+  // пересчитанный cluster_id совпал с целевым. Иначе — ABORT по таймауту.
+  if (gHandoverState == HO_ACCEPTED) {
+    if (gHandoverTargetCluster && gSelfClusterId == gHandoverTargetCluster) {
+      if (gHandoverStableCount < 3) gHandoverStableCount++;
+      if (gHandoverStableCount >= 3) {
+        sgLog("[handover] stable 3/3 cluster=%lu -> complete",
+              (unsigned long)gHandoverTargetCluster);
+        if (gHandoverPeer) handoverSend("complete", gHandoverPeer, gHandoverTargetCluster);
+        gHandoverState = HO_IDLE;
+        gHandoverPeer = 0;
+        gHandoverTargetCluster = 0;
+        gHandoverCooldownUntilMs = millis() + 10000UL;
+      }
+    } else {
+      gHandoverStableCount = 0;
+    }
+  }
+
   kinto_cluster_neighbor_t list[9];
   unsigned count = 0;
   clusterCollectNeighbors(list, 9, &count);
@@ -1448,6 +1688,23 @@ static void clusterTick() {
   kinto_border_candidate_t elected[KINTO_BORDER_MAX];
   const unsigned electedCount =
       kinto_elect_border_nodes(list, count, now ? now : 1, elected);
+
+  // Порог для себя: чужой кластер >= -95 dBm и очередь <= 8 три beacon-интервала.
+  int bestForeignRssi = -127;
+  uint8_t maxForeignQueue = 0;
+  for (int i = 0; i < 8; i++) {
+    if (!gNeighbors[i].used || !gNeighbors[i].clusterId) continue;
+    if (now - gNeighbors[i].lastMs > 12000UL) continue;
+    if (gNeighbors[i].clusterId == gSelfClusterId) continue;
+    if (gNeighbors[i].rssi > bestForeignRssi) bestForeignRssi = gNeighbors[i].rssi;
+    if (gNeighbors[i].load > maxForeignQueue) maxForeignQueue = gNeighbors[i].load;
+  }
+  if (selfSeesTwo && bestForeignRssi >= KINTO_BORDER_MIN_RSSI &&
+      maxForeignQueue <= KINTO_BORDER_MAX_QUEUE) {
+    if (gBorderStreak < 255) gBorderStreak++;
+  } else {
+    gBorderStreak = 0;
+  }
 
   // Детерминированный выбор: border-нода — до KINTO_BORDER_MAX узлов
   // с наименьшим mesh-адресом среди тех, кто видит чужой кластер.
@@ -1459,7 +1716,8 @@ static void clusterTick() {
     if (memcmp(list[i].mesh_addr, selfAddr, 8) == 0) continue;
     if (meshAddrCmp(list[i].mesh_addr, selfAddr) < 0) betterAddrs++;
   }
-  const bool border = !isGateway() && selfSeesTwo && betterAddrs < KINTO_BORDER_MAX;
+  const bool border = !isGateway() && gBorderStreak >= 3 &&
+                      betterAddrs < KINTO_BORDER_MAX;
 
   if (border != gBorderNode) {
     gBorderNode = border;
@@ -1527,6 +1785,13 @@ static void clusterTick() {
   }
 }
 #else
+static uint16_t rssiToEwma(int16_t rssi) {
+  if (rssi >= -50) return 40;
+  if (rssi >= -65) return 80;
+  if (rssi >= -75) return 140;
+  if (rssi >= -85) return 240;
+  return 380;
+}
 static void meshV2RouteUpdate(uint32_t, int16_t, bool, uint8_t) {}
 static void meshV2RouteLearned(uint32_t, uint32_t, bool) {}
 static kinto_traffic_t meshV2TrafficFor(uint8_t, const uint8_t *, uint16_t) {
@@ -1604,6 +1869,7 @@ static void handoverStart(uint32_t newCluster) {
   gHandoverTargetCluster = newCluster;
   gHandoverSourceCluster = gSelfClusterId;
   gHandoverSinceMs = millis();
+  gHandoverStableCount = 0;
   gHandoverAttempts = 1;
   sgLog("[handover] request peer=%s cluster=%lu", publicIdForNode(peer).c_str(),
         (unsigned long)newCluster);
@@ -1639,6 +1905,7 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
     gHandoverState = HO_IDLE;
     gHandoverPeer = 0;
     gHandoverTargetCluster = 0;
+    gHandoverStableCount = 0;
     gHandoverCooldownUntilMs = millis() + 15000UL;
     sgLog("[handover] reject from %s", publicIdForNode(h.src).c_str());
   } else if (op == "accept") {
@@ -1649,19 +1916,9 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
     gHandoverState = HO_ACCEPTED;
     gHandoverTargetCluster = cluster;
     gHandoverSinceMs = millis();
-    sgLog("[handover] accepted by %s cluster=%lu", publicIdForNode(h.src).c_str(),
-          (unsigned long)cluster);
-    handoverSend("complete", h.src, cluster);
-    // Инициатор завершает переход локально: COMPLETE — финальное подтверждение.
-    if (cluster) {
-      gSelfClusterId = cluster;
-      gPrevClusterId = cluster;
-    }
-    gHandoverState = HO_IDLE;
-    gHandoverPeer = 0;
-    gHandoverTargetCluster = 0;
-    gHandoverCooldownUntilMs = millis() + 10000UL;
-    sgLog("[handover] complete cluster=%lu", (unsigned long)cluster);
+    gHandoverStableCount = 0;
+    sgLog("[handover] accepted by %s cluster=%lu, waiting 3 stable beacons",
+          publicIdForNode(h.src).c_str(), (unsigned long)cluster);
   } else if (op == "complete") {
     if (gHandoverState == HO_IDLE) return;
     if (gHandoverPeer && h.src != gHandoverPeer) return;
@@ -1672,6 +1929,7 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
     gHandoverState = HO_IDLE;
     gHandoverPeer = 0;
     gHandoverTargetCluster = 0;
+    gHandoverStableCount = 0;
     gHandoverCooldownUntilMs = millis() + 10000UL;
     sgLog("[handover] complete cluster=%lu", (unsigned long)cluster);
   } else if (op == "retry") {
@@ -1691,6 +1949,7 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
     gHandoverState = HO_IDLE;
     gHandoverPeer = 0;
     gHandoverTargetCluster = 0;
+    gHandoverStableCount = 0;
     gHandoverCooldownUntilMs = millis() + 5000UL;
     sgLog("[handover] abort from %s", publicIdForNode(h.src).c_str());
   }
@@ -1699,8 +1958,8 @@ static void handoverHandle(const String &raw, const MeshHeader &h) {
 static void handoverTick() {
   if (!handoverInProgress()) return;
   const uint32_t now = millis();
-  // HANDOVER_TIMEOUT = 10 c на весь переход, затем ABORT и возврат.
-  if (now - gHandoverSinceMs >= 10000UL && gHandoverState != HO_ACCEPTED) {
+  // HANDOVER_TIMEOUT = 10 c на весь переход (включая ожидание стабильности).
+  if (now - gHandoverSinceMs >= 10000UL) {
     if (gHandoverPeer) handoverSend("abort", gHandoverPeer, gHandoverSourceCluster);
     sgLog("[handover] abort cluster=%lu -> back %lu",
           (unsigned long)gHandoverTargetCluster, (unsigned long)gHandoverSourceCluster);
@@ -1710,9 +1969,13 @@ static void handoverTick() {
     }
     gHandoverState = HO_IDLE;
     gHandoverPeer = 0;
+    gHandoverTargetCluster = 0;
+    gHandoverStableCount = 0;
     gHandoverCooldownUntilMs = now + 10000UL;
     return;
   }
+  // В HO_ACCEPTED не шлём повторные request: ждём стабильные beacon.
+  if (gHandoverState == HO_ACCEPTED) return;
   if (now - gHandoverSinceMs < 3000UL) return;
   if (gHandoverAttempts >= 3) return;
   gHandoverAttempts++;
@@ -1833,10 +2096,329 @@ static bool meshParse(const uint8_t *buf, size_t n, MeshHeader &h, const uint8_t
   return true;
 }
 
-/* --------------------------------------------------------- transport TX -- */
+/* ------------------------------------------------------ ESP-NOW LR TX/RX -- */
 
-// Объявления транспортов: transmitPacket может вызываться до их определения.
+static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_t rssi);
 static bool wifiSendRaw(const uint8_t *buf, size_t len);
+
+static wifi_interface_t espNowIface() {
+  // Шлюз раздаёт mesh через SoftAP; носимые/репитеры работают STA-only
+  // (без SoftAP), чтобы home-канал мог следовать за каналом шлюза.
+  return isGateway() ? WIFI_IF_AP : WIFI_IF_STA;
+}
+
+/** Запомнить реальный MAC ESP-NOW-отправителя (у AP это AP MAC, не STA). */
+static void espNowLearnPeer(uint32_t id, const uint8_t mac[6]) {
+  if (!id || id == gNodeId || !mac) return;
+  int slot = -1;
+  int oldest = 0;
+  const uint32_t now = millis();
+  for (int i = 0; i < 12; i++) {
+    if (gEspNowPeers[i].used && gEspNowPeers[i].nodeId == id) { slot = i; break; }
+    if (!gEspNowPeers[i].used && slot < 0) slot = i;
+    if (gEspNowPeers[i].used && gEspNowPeers[i].lastMs < gEspNowPeers[oldest].lastMs) oldest = i;
+  }
+  if (slot < 0) slot = oldest;
+  const bool fresh = !gEspNowPeers[slot].used || gEspNowPeers[slot].nodeId != id;
+  gEspNowPeers[slot].nodeId = id;
+  memcpy(gEspNowPeers[slot].mac, mac, 6);
+  gEspNowPeers[slot].lastMs = now;
+  gEspNowPeers[slot].used = true;
+  if (fresh) {
+    sgLog("[espnow] peer %s mac=%s", publicIdForNode(id).c_str(),
+          meshMacText(mac).c_str());
+  }
+}
+
+static bool espNowPeerMac(uint32_t id, uint8_t out[6]) {
+  for (int i = 0; i < 12; i++) {
+    if (!gEspNowPeers[i].used || gEspNowPeers[i].nodeId != id) continue;
+    if (millis() - gEspNowPeers[i].lastMs > 30UL * 60UL * 1000UL) {
+      gEspNowPeers[i].used = false;
+      return false;
+    }
+    memcpy(out, gEspNowPeers[i].mac, 6);
+    return true;
+  }
+  return false;
+}
+
+static bool espNowEnsurePeer(const uint8_t mac[6]) {
+  if (!gEspNowReady || !mac) return false;
+  if (esp_now_is_peer_exist(mac)) return true;
+  esp_now_peer_info_t peer;
+  memset(&peer, 0, sizeof(peer));
+  memcpy(peer.peer_addr, mac, 6);
+  // Канал пира ДОЛЖЕН совпадать с текущим каналом ESP-NOW. channel=0
+  // («текущий») на практике даёт silent drop после смены канала Wi-Fi
+  // (IDF home_channel bug): пакеты уходят в никуда без ошибки.
+  peer.channel = gEspNowChannel ? gEspNowChannel : 0;
+  peer.ifidx = espNowIface();
+  peer.encrypt = false;
+  {
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&primary, &second);
+    sgLog("[espnow] peer.ch=%u home=%u if=%d", (unsigned)peer.channel,
+          (unsigned)primary, (int)peer.ifidx);
+    sgLogE("[espnow] peer.ch=%u home=%u if=%d", (unsigned)peer.channel,
+           (unsigned)primary, (int)peer.ifidx);
+  }
+  const esp_err_t err = esp_now_add_peer(&peer);
+  if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
+    sgLog("[espnow] add peer %s failed %d", meshMacText(mac).c_str(), (int)err);
+    return false;
+  }
+  // LR: 250 кбит/с, PHY mode LR. Для broadcast конфиг тоже применяется.
+  if (gEspNowLr) {
+    esp_now_rate_config_t rate;
+    memset(&rate, 0, sizeof(rate));
+    rate.phymode = WIFI_PHY_MODE_LR;
+    rate.rate = WIFI_PHY_RATE_LORA_250K;
+    esp_now_set_peer_rate_config(mac, &rate);
+  }
+  return true;
+}
+
+static void espNowRecvCb(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (!info || !data || len <= 0) return;
+  const uint8_t next = (uint8_t)((gEspNowRxHead + 1) % SG_ESPNOW_RX_QUEUE);
+  if (next == gEspNowRxTail) {
+    // Wi-Fi задача не должна блокироваться: при переполнении теряем кадр,
+    // mesh-очередь/ретраи восстановят доставку.
+    return;
+  }
+  EspNowRxItem &item = gEspNowRx[gEspNowRxHead];
+  item.len = (uint16_t)min((size_t)len, sizeof(item.data));
+  memcpy(item.data, data, item.len);
+  item.rssi = info->rx_ctrl ? (int16_t)info->rx_ctrl->rssi : 0;
+  if (info->src_addr) memcpy(item.srcMac, info->src_addr, 6);
+  gEspNowRxHead = next;
+  // Видимый маркер приёма (на C3 sgLog/Serial может быть не виден).
+  static uint32_t lastRxLogMs = 0;
+  if (millis() - lastRxLogMs > 5000UL) {
+    lastRxLogMs = millis();
+    sgLog("[espnow] rx %dB ch=%u", len, (unsigned)gEspNowChannel);
+    sgLogE("[espnow] rx %dB ch=%u", len, (unsigned)gEspNowChannel);
+  }
+}
+
+static void espNowSendCb(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  (void)info;
+  if (status == ESP_NOW_SEND_SUCCESS) return;
+  gEspNowTxFail++;
+  // esp_now_send()==ESP_OK означает лишь постановку в очередь; реальный
+  // результат виден только здесь. Без этого лога «tx растёт, rx=0» неотличим
+  // от «кадры ушли, но никто не принял».
+  static uint32_t lastFailCbMs = 0;
+  if (millis() - lastFailCbMs > 5000UL) {
+    lastFailCbMs = millis();
+    sgLog("[espnow] tx cb fail ch=%u", (unsigned)gEspNowChannel);
+    sgLogE("[espnow] tx cb fail ch=%u", (unsigned)gEspNowChannel);
+  }
+}
+
+/**
+ * LR-режим задаётся на интерфейсе ДО esp_wifi_start(): после старта IDF
+ * отвечает ESP_ERR_WIFI_STATE, и esp_now_send падает с
+ * «invalid format, need change phy mode to LR».
+ * Останавливаем Wi-Fi, меняем PHY, запускаем обратно; softAP/begin — позже.
+ */
+static void espNowConfigurePhy() {
+#if SG_USE_ESPNOW && SG_ESPNOW_LR
+  gEspNowLr = false;
+  esp_wifi_stop();
+  const esp_err_t err = esp_wifi_config_80211_tx_rate(
+      espNowIface(), WIFI_PHY_RATE_LORA_250K);
+  if (err == ESP_OK) gEspNowLr = true;
+  esp_wifi_start();
+  sgLog("[espnow] LR phy if=%d err=%d -> %s", (int)espNowIface(), (int)err,
+        gEspNowLr ? "LR" : "normal");
+#else
+  gEspNowLr = false;
+  sgLog("[espnow] PHY normal (LR needs dedicated STA/channel)");
+#endif
+}
+
+static bool espNowInit(uint8_t channel = 0) {
+#if SG_USE_ESPNOW
+  if (gEspNowReady) return true;
+  // Явный канал не перетираем "протухшим" WiFi.channel(): после WiFi.begin()
+  // он может вернуть старый/нулевой канал. Приоритет: аргумент > gEspNowChannel > WiFi.
+  uint8_t target = channel;
+  if (!target) target = gEspNowChannel;
+  if (!target) target = (uint8_t)WiFi.channel();
+
+  // ESP-NOW требует ЗАПУЩЕННЫЙ Wi-Fi-интерфейс. Arduino core не вызывает
+  // esp_wifi_start() до WiFi.begin(), а wearable работает STA-only и begin()
+  // не делает вовсе. Повторный старт безвреден (ошибку "already started"
+  // игнорируем, только логируем).
+  const esp_err_t startErr = esp_wifi_start();
+  if (startErr != ESP_OK) {
+    sgLog("[espnow] esp_wifi_start err=%d (ok if already started)", (int)startErr);
+    sgLogE("[espnow] esp_wifi_start err=%d", (int)startErr);
+  }
+
+  if (target) {
+    const esp_err_t chErr = esp_wifi_set_channel(target, WIFI_SECOND_CHAN_NONE);
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&primary, &second);
+    gEspNowChannel = target;
+    sgLog("[espnow] home ch=%u want=%u", (unsigned)primary, (unsigned)target);
+    sgLogE("[espnow] home ch=%u want=%u set=%d", (unsigned)primary,
+           (unsigned)target, (int)chErr);
+  }
+
+  const esp_err_t err = esp_now_init();
+  if (err != ESP_OK) {
+    sgLog("[espnow] init failed %d", (int)err);
+    sgLogE("[espnow] init failed err=%d home=%u", (int)err,
+           (unsigned)gEspNowChannel);
+    return false;
+  }
+  esp_now_register_recv_cb(espNowRecvCb);
+  esp_now_register_send_cb(espNowSendCb);
+  gEspNowReady = true;
+  uint8_t bcast[6];
+  memset(bcast, 0xFF, 6);
+  espNowEnsurePeer(bcast);
+  gEspNowWindowStartMs = millis();
+  {
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&primary, &second);
+    sgLog("[espnow] ready if=%d ch=%u home=%u rate=%s", (int)espNowIface(),
+          (unsigned)gEspNowChannel, (unsigned)primary,
+          gEspNowLr ? "LR250K" : "normal");
+    ESP_LOGE("kinto", "espnow ready if=%d ch=%u home=%u lr=%d",
+             (int)espNowIface(), (unsigned)gEspNowChannel, (unsigned)primary,
+             gEspNowLr ? 1 : 0);
+    sgLogE("[espnow] ready if=%d ch=%u home=%u lr=%d", (int)espNowIface(),
+           (unsigned)gEspNowChannel, (unsigned)primary, gEspNowLr ? 1 : 0);
+  }
+  return true;
+#else
+  (void)channel;
+  return false;
+#endif
+}
+
+static void espNowReinitOnChannel(uint8_t channel) {
+  if (!channel) return;
+  // Уже на этом канале и ESP-NOW жив — повторный deinit каждый loop() не нужен.
+  if (channel == gEspNowChannel && gEspNowReady) return;
+  sgLog("[espnow] channel %u -> %u, reinit", (unsigned)gEspNowChannel,
+        (unsigned)channel);
+  // На STA-only ноде драйвер мог ещё не быть запущен — поднимаем перед сменой.
+  const esp_err_t startErr = esp_wifi_start();
+  if (startErr != ESP_OK) {
+    sgLog("[espnow] esp_wifi_start err=%d (reinit)", (int)startErr);
+  }
+  const esp_err_t chErr = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+  {
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&primary, &second);
+    sgLog("[espnow] home ch=%u want=%u", (unsigned)primary, (unsigned)channel);
+    sgLogE("[espnow] reinit home ch=%u want=%u set=%d", (unsigned)primary,
+           (unsigned)channel, (int)chErr);
+  }
+  delay(20);
+  if (gEspNowReady) esp_now_deinit();
+  gEspNowReady = false;
+  memset(gEspNowPeers, 0, sizeof(gEspNowPeers));
+  gEspNowChannel = channel;
+  espNowInit(channel);
+}
+
+static bool espNowSendFrame(const uint8_t *buf, size_t len, uint32_t nextHop) {
+  if (!gEspNowReady || !buf || !len) return false;
+  uint8_t mac[6];
+  bool bcast = (nextHop == 0 || nextHop == MESH_BROADCAST);
+  if (!bcast && !espNowPeerMac(nextHop, mac)) bcast = true;
+  if (bcast) memset(mac, 0xFF, 6);
+  if (!espNowEnsurePeer(mac)) return false;
+  const esp_err_t err = esp_now_send(mac, buf, len);
+  if (err == ESP_OK) {
+    gEspNowTxCount++;
+    gEspNowWindowTx++;
+    static uint32_t lastOkLogMs = 0;
+    if (millis() - lastOkLogMs > 5000UL) {
+      lastOkLogMs = millis();
+      sgLog("[espnow] tx ok ch=%u dst=%08lx len=%u", (unsigned)gEspNowChannel,
+            (unsigned long)nextHop, (unsigned)len);
+      sgLogE("[espnow] tx ok ch=%u dst=%08lx len=%u", (unsigned)gEspNowChannel,
+             (unsigned long)nextHop, (unsigned)len);
+    }
+    return true;
+  }
+  gEspNowTxFail++;
+  static uint32_t lastErrLogMs = 0;
+  if (millis() - lastErrLogMs > 5000UL) {
+    lastErrLogMs = millis();
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    esp_wifi_get_channel(&primary, &second);
+    sgLog("[espnow] send err %d ch=%u dst=%08lx len=%u", (int)err,
+          (unsigned)gEspNowChannel, (unsigned long)nextHop, (unsigned)len);
+    ESP_LOGE("kinto", "espnow send err=%d ch=%u home=%u len=%u next=%08lx bcast=%d",
+             (int)err, (unsigned)gEspNowChannel, (unsigned)primary,
+             (unsigned)len, (unsigned long)nextHop, bcast ? 1 : 0);
+    sgLogE("[espnow] send err=%d ch=%u home=%u len=%u next=%08lx bcast=%d",
+           (int)err, (unsigned)gEspNowChannel, (unsigned)primary,
+           (unsigned)len, (unsigned long)nextHop, bcast ? 1 : 0);
+  }
+  return false;
+}
+
+static bool espNowSendFragments(const uint8_t *buf, size_t len, uint32_t nextHop) {
+  MeshHeader h;
+  const uint8_t *payload = NULL;
+  if (!meshParse(buf, len, h, payload)) return false;
+  const uint8_t total = (uint8_t)((len + SG_LORA_FRAG_DATA - 1) / SG_LORA_FRAG_DATA);
+  if (!total || total > SG_MAX_FRAGMENTS) return false;
+  for (uint8_t i = 0; i < total; i++) {
+    const size_t off = (size_t)i * SG_LORA_FRAG_DATA;
+    const uint16_t chunk = (uint16_t)min((size_t)SG_LORA_FRAG_DATA, len - off);
+    uint8_t pl[6 + SG_LORA_FRAG_DATA];
+    writeLe32(pl, h.packetId);
+    pl[4] = i;
+    pl[5] = total;
+    memcpy(pl + 6, buf + off, chunk);
+    uint8_t frag[sizeof(MeshHeader) + sizeof(pl)];
+    const uint32_t fragId = h.packetId ^ ((uint32_t)(i + 1) << 24);
+    const size_t fn = meshBuildFrom(frag, sizeof(frag), MT_FRAG, h.src, h.srcMac, h.dst,
+                                    fragId, h.ttl, 0, pl, (uint16_t)(6 + chunk));
+    if (!fn || !espNowSendFrame(frag, fn, nextHop)) return false;
+  }
+  return true;
+}
+
+static bool espNowSendRaw(const uint8_t *buf, size_t len, uint32_t nextHop) {
+  if (!gEspNowReady) return false;
+  if (len > SG_ESPNOW_MAX_FRAME) return espNowSendFragments(buf, len, nextHop);
+  return espNowSendFrame(buf, len, nextHop);
+}
+
+static void espNowPoll() {
+  if (!gEspNowReady) return;
+  uint8_t guard = 0;
+  while (gEspNowRxTail != gEspNowRxHead && guard++ < 32) {
+    EspNowRxItem &item = gEspNowRx[gEspNowRxTail];
+    MeshHeader h;
+    const uint8_t *payload = NULL;
+    if (meshParse(item.data, item.len, h, payload)) {
+      espNowLearnPeer(h.src, item.srcMac);
+    }
+    gEspNowRxCount++;
+    gEspNowWindowRx++;
+    handleMeshPacket(item.data, item.len, false, item.rssi);
+    gEspNowRxTail = (uint8_t)((gEspNowRxTail + 1) % SG_ESPNOW_RX_QUEUE);
+  }
+}
+
+/* --------------------------------------------------------- transport TX -- */
 
 #if !SG_USE_ESP_MESH
 static bool wifiStartUdp() {
@@ -1958,20 +2540,59 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
 #endif
 
 #if SG_USE_LORA
+/** Скользящий бюджет airtime: wearable 1%, остальные 10% от часа. */
+static uint32_t loraBudgetMs() {
+  return isWearable() ? 36000UL : 360000UL;
+}
+
+static bool loraBudgetAllows(uint32_t airMs) {
+  const uint32_t now = millis();
+  if (!gLoraWindowStartMs || now - gLoraWindowStartMs >= 3600000UL) {
+    gLoraWindowStartMs = now;
+    gLoraTxAirMs = 0;
+  }
+  return gLoraTxAirMs + airMs <= loraBudgetMs();
+}
+
 static bool loraSendRaw(const uint8_t *buf, size_t len) {
   if (!gLoraReady) return false;
   if (len > (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) return false;
+  const uint32_t airMs =
 #if SG_LORA_CHIP_SX1262
+      (uint32_t)gRadio->getTimeOnAir(len) + 8;
+#else
+      (uint32_t)(len * 8.0f / (SG_LORA_BW * 1000.0f) * 1000.0f * 2.0f) + 50;
+#endif
+  if (!loraBudgetAllows(airMs)) {
+    sgLog("[lora] duty budget full (%lu/%lu ms)", (unsigned long)gLoraTxAirMs,
+          (unsigned long)loraBudgetMs());
+    return false;
+  }
+#if SG_LORA_CHIP_SX1262
+  // LBT: CAD перед передачей. Канал занят — пакет остаётся в очереди,
+  // без blind-retry (иначе сами создаём коллизии).
+  gLoraCadTotal++;
+  const int16_t cad = gRadio->scanChannel();
+  if (cad == RADIOLIB_PREAMBLE_DETECTED) {
+    gLoraCadBusy++;
+    return false;
+  }
+  if (cad < 0) {
+    sgLog("[lora] cad err %d", (int)cad);
+    return false;
+  }
   int st = gRadio->transmit((uint8_t *)buf, len);
   if (st != RADIOLIB_ERR_NONE) {
     sgLog("[lora] tx err %d", st);
     return false;
   }
 #else
+  // Sandeep Mistry LoRa: CAD API зависит от версии; duty-cycle уже проверен.
   LoRa.beginPacket();
   LoRa.write(buf, len);
   if (LoRa.endPacket() != 1) return false;
 #endif
+  gLoraTxAirMs += airMs;
   gLoraTxCount++;
   gLastLoraTxMs = millis();
   return true;
@@ -1979,7 +2600,12 @@ static bool loraSendRaw(const uint8_t *buf, size_t len) {
 #endif
 
 static bool transportCanCarry(uint16_t len) {
+#if SG_USE_ESPNOW
+  // ESP-NOW LR: крупный пакет режется на MT_FRAG-фрагменты.
+  if (gEspNowReady && len <= SG_FRAG_MAX_TOTAL) return true;
+#else
   if (wifiTransportEnabled() && gWifiReady && len <= SG_MAX_PAYLOAD) return true;
+#endif
   if (loraTransportEnabled() && gLoraReady && len <= SG_LORA_MAX_PAYLOAD) return true;
   return false;
 }
@@ -2028,7 +2654,8 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
 #endif
 
 /** Приём фрагмента; при полном наборе — обычная обработка пакета. */
-static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rssi) {
+static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rssi,
+                         bool fromLora) {
   if (h.payloadLen < 7) return;
   const uint32_t origId = readLe32(payload);
   const uint8_t index = payload[4];
@@ -2072,11 +2699,11 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
     const uint16_t n = slot->len;
     memcpy(assembled, slot->data, n);
     slot->active = false;
-    sgLog("[lora] reassembled %u bytes id=%08lx -> mesh", (unsigned)n,
-          (unsigned long)origId);
+    sgLog("[frag] reassembled %u bytes id=%08lx via=%s", (unsigned)n,
+          (unsigned long)origId, fromLora ? "lora" : "espnow");
     // Собранный пакет проходит обычный путь: локальная обработка + ретрансляция
-    // в Wi-Fi (и обратно в LoRa, если TTL позволяет).
-    handleMeshPacket(assembled, n, true, rssi);
+    // в выбранный интерфейс (и обратно, если TTL позволяет).
+    handleMeshPacket(assembled, n, fromLora, rssi);
   } else if (slot->mask == ((uint32_t)1 << index)) {
     sgLog("[lora] frag %u/%u id=%08lx %uB", (unsigned)(index + 1),
           (unsigned)total, (unsigned long)origId, (unsigned)chunk);
@@ -2085,19 +2712,54 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
 
 
 // Отправка готового пакета во все доступные транспорты (bridge).
+/**
+ * Минимальный LoRa-мост: собрать пакет с dst (cluster_id или nodeId)
+ * и отправить только по радио. Не трогает espNow/маршруты.
+ */
+static bool transmitLoraBridge(uint8_t type, uint32_t dst, const uint8_t *payload,
+                               uint16_t len, uint8_t ttl) {
+#if SG_USE_LORA
+  if (!loraTransportEnabled() || !gLoraReady || !payload) return false;
+  if (len > SG_MAX_PAYLOAD) return false;
+  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  const uint32_t id = nextPacketId();
+  const size_t n = meshBuild(buf, sizeof(buf), type, dst, id,
+                             ttl ? ttl : SG_LORA_MAX_HOPS, 0, payload, len);
+  if (!n) return false;
+  meshMarkOwn(id);
+  if (n <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
+    return loraSendRaw(buf, n);
+  }
+  return loraSendFragments(buf, n);
+#else
+  (void)type;
+  (void)dst;
+  (void)payload;
+  (void)len;
+  (void)ttl;
+  return false;
+#endif
+}
+
 static bool transmitPacket(const uint8_t *buf, size_t len) {
   bool ok = false;
   bool viaWifi = false;
   bool viaLora = false;
+#if SG_USE_ESPNOW
+  if (gEspNowReady) {
+    if (espNowSendRaw(buf, len, 0)) { ok = true; viaWifi = true; }
+  }
+#else
   if (wifiTransportEnabled() && gWifiReady) {
     if (wifiSendRaw(buf, len)) { ok = true; viaWifi = true; }
   }
+#endif
 #if SG_USE_LORA
   if (loraTransportEnabled() && gLoraReady) {
     if (len <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
       if (loraSendRaw(buf, len)) { ok = true; viaLora = true; }
     } else {
-      // Крупный пакет: WiFi уже получил целиком, LoRa — фрагментами.
+      // Крупный пакет: ESP-NOW уже получил целиком, LoRa — фрагментами.
       if (loraSendFragments(buf, len)) { ok = true; viaLora = true; }
     }
   }
@@ -2114,9 +2776,14 @@ static bool transmitPacket(const uint8_t *buf, size_t len) {
 }
 
 // Отправка только через выбранный route-таблицей интерфейс.
-static bool transmitViaIface(const uint8_t *buf, size_t len, kinto_iface_t iface) {
-  if (iface == KINTO_IFACE_WIFI) {
+static bool transmitViaIface(const uint8_t *buf, size_t len, kinto_iface_t iface,
+                             uint32_t nextHop) {
+  if (iface == KINTO_IFACE_ESPNOW || iface == KINTO_IFACE_WIFI) {
+#if SG_USE_ESPNOW
+    if (gEspNowReady) return espNowSendRaw(buf, len, nextHop);
+#else
     if (wifiTransportEnabled() && gWifiReady) return wifiSendRaw(buf, len);
+#endif
     return false;
   }
 #if SG_USE_LORA
@@ -2136,25 +2803,63 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
                            kinto_traffic_t traffic) {
 #if SG_MESH_V2
   if (dst != MESH_BROADCAST) {
+    uint32_t nextHop = routeLookup(dst);
+    const bool canQueue = (traffic == KINTO_TRAFFIC_TEXT ||
+                           traffic == KINTO_TRAFFIC_MEDIA ||
+                           traffic == KINTO_TRAFFIC_SEARCH);
+    if (!nextHop && canQueue) {
+      if (!gPendingRoute.active) {
+        gPendingRoute.active = true;
+        gPendingRoute.dst = dst;
+        gPendingRoute.startedMs = millis();
+        gPendingRoute.lastReqMs = 0;
+        gPendingRoute.tries = 0;
+        gPendingRoute.ttl = SG_LORA_MAX_HOPS;
+        gPendingRoute.traffic = traffic;
+        gPendingRoute.len = (uint16_t)min(len, sizeof(gPendingRoute.buf));
+        memcpy(gPendingRoute.buf, buf, gPendingRoute.len);
+        sendRouteReq(dst);
+        gPendingRoute.lastReqMs = millis();
+        gPendingRoute.tries = 1;
+        sgLog("[route] pending dst=%s -> path request", publicIdForNode(dst).c_str());
+        return true;
+      }
+      if (gPendingRoute.dst == dst) return true;
+    }
+    if (!nextHop) nextHop = dst;
     kinto_iface_t iface = KINTO_IFACE_NONE;
     uint8_t hops = 0;
     if (meshV2SelectIface(dst, traffic, &iface, &hops)) {
-      if (transmitViaIface(buf, len, iface)) {
+      if (transmitViaIface(buf, len, iface, nextHop)) {
         gTxCount++;
         static uint32_t lastRouteLogMs = 0;
         if (millis() - lastRouteLogMs > 2000UL) {
           lastRouteLogMs = millis();
-          sgLog("[route] tx dst=%s via=%s hops=%u %uB",
-                publicIdForNode(dst).c_str(),
-                iface == KINTO_IFACE_LORA ? "lora" : "wifi",
+          sgLog("[route] tx dst=%s next=%s via=%s hops=%u %uB",
+                publicIdForNode(dst).c_str(), publicIdForNode(nextHop).c_str(),
+                iface == KINTO_IFACE_LORA ? "lora" : "espnow",
                 (unsigned)hops, (unsigned)len);
+        }
+        return true;
+      }
+      // Выбранный интерфейс не принял пакет — пробуем второй, не дублируя
+      // сразу оба. Если и он недоступен, уходим в flood.
+      kinto_iface_t alt = (iface == KINTO_IFACE_LORA) ? KINTO_IFACE_ESPNOW
+                                                     : KINTO_IFACE_LORA;
+      if (transmitViaIface(buf, len, alt, nextHop)) {
+        static uint32_t lastAltLogMs = 0;
+        if (millis() - lastAltLogMs > 3000UL) {
+          lastAltLogMs = millis();
+          sgLog("[route] fallback dst=%s %s -> %s", publicIdForNode(dst).c_str(),
+                iface == KINTO_IFACE_LORA ? "lora" : "espnow",
+                alt == KINTO_IFACE_LORA ? "lora" : "espnow");
         }
         return true;
       }
       static uint32_t lastUnavailableLogMs = 0;
       if (millis() - lastUnavailableLogMs > 3000UL) {
         lastUnavailableLogMs = millis();
-        sgLog("[route] selected iface unavailable dst=%s -> flood",
+        sgLog("[route] both ifaces unavailable dst=%s -> flood",
               publicIdForNode(dst).c_str());
       }
     }
@@ -2164,6 +2869,37 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
   (void)traffic;
 #endif
   return transmitPacket(buf, len);
+}
+
+/** Path request: ждём MT_ROUTE_REP, затем отправляем отложенный unicast. */
+static void routePendingTick() {
+  if (!gPendingRoute.active) return;
+  const uint32_t now = millis();
+  const uint32_t nextHop = routeLookup(gPendingRoute.dst);
+  if (nextHop) {
+    kinto_iface_t iface = KINTO_IFACE_NONE;
+    uint8_t hops = 0;
+    if (meshV2SelectIface(gPendingRoute.dst, gPendingRoute.traffic, &iface, &hops)) {
+      transmitViaIface(gPendingRoute.buf, gPendingRoute.len, iface, nextHop);
+    } else {
+      transmitViaIface(gPendingRoute.buf, gPendingRoute.len, KINTO_IFACE_ESPNOW, nextHop);
+    }
+    sgLog("[route] pending dst=%s -> next=%s", publicIdForNode(gPendingRoute.dst).c_str(),
+          publicIdForNode(nextHop).c_str());
+    gPendingRoute.active = false;
+    return;
+  }
+  if (now - gPendingRoute.startedMs > 9000UL) {
+    sgLog("[route] path timeout dst=%s -> flood", publicIdForNode(gPendingRoute.dst).c_str());
+    transmitPacket(gPendingRoute.buf, gPendingRoute.len);
+    gPendingRoute.active = false;
+    return;
+  }
+  if (now - gPendingRoute.lastReqMs > 3000UL && gPendingRoute.tries < 3) {
+    gPendingRoute.tries++;
+    gPendingRoute.lastReqMs = now;
+    sendRouteReq(gPendingRoute.dst);
+  }
 }
 
 // meshTransmit с выбором маршрута/транспорта и TTL-нормализацией.
@@ -2262,6 +2998,14 @@ static void appendBeaconFields(String &p) {
     p += String((unsigned long)gBeaconNeighborClusters[i]);
   }
   p += "]";
+  // Канал mesh-сети: нужен нодам для channelDiscover() без ассоциации.
+  p += ",\"ch\":";
+  p += String((unsigned)currentMeshChannel());
+  // Возможности LoRa-моста (реально ли радио готово, а не только в конфиге).
+  p += ",\"cap_lora\":";
+  p += (loraTransportEnabled() && gLoraReady) ? "1" : "0";
+  p += ",\"lora_bridge\":";
+  p += (loraTransportEnabled() && gLoraReady) ? "1" : "0";
 }
 
 static String advertPayload() {
@@ -2291,6 +3035,33 @@ static void sendPresence() {
   p += "}";
   meshTransmit(MT_PRESENCE, MESH_BROADCAST, (const uint8_t *)p.c_str(),
                (uint16_t)p.length(), 2);
+}
+
+/**
+ * LoRa-мост: периодически объявляем кластер по радио (120-300 c).
+ * Позволяет Wi-Fi-only узлам узнать, что рядом есть LoRa-шлюз, а
+ * LoRa-узлам — построить таблицу cluster_id -> nextHop.
+ */
+static void loraBridgeTick() {
+#if SG_USE_LORA
+  if (!loraTransportEnabled() || !gLoraReady) return;
+  static uint32_t lastBridgeAdvertMs = 0;
+  const uint32_t now = millis();
+  if (lastBridgeAdvertMs && now - lastBridgeAdvertMs < 180000UL) return;
+  lastBridgeAdvertMs = now;
+  const uint8_t ch = currentMeshChannel();
+  String p = String("{\"cluster_id\":") + String((unsigned long)gSelfClusterId) +
+             ",\"gw\":" +
+             (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED
+                  ? "1" : "0") +
+             ",\"ch\":" + String((unsigned)ch) +
+             ",\"hw\":\"" + gHardwareId + "\"}";
+  if (transmitLoraBridge(MT_LORA_ADVERT, MESH_BROADCAST,
+                         (const uint8_t *)p.c_str(), (uint16_t)p.length(),
+                         SG_LORA_MAX_HOPS)) {
+    sgLog("[lora] bridge advert cluster=%lu", (unsigned long)gSelfClusterId);
+  }
+#endif
 }
 
 static void sendRouteReq(uint32_t dst) {
@@ -2420,6 +3191,13 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
     case MT_ADVERT: {
       String j = payloadToString(payload, h.payloadLen);
       neighborUpdateAdvert(h.src, rssi, j, fromLora);
+      // ADVERT содержит "ch": сосед сообщает свой mesh-канал. Для ноды без
+      // ассоциации это подтверждение, что канал найден.
+      const long ch = jsonGetInt(j, "ch");
+      if (ch >= 1 && ch <= 13) {
+        gDiscoveredChannel = (uint8_t)ch;
+        gDiscoverSeen = true;
+      }
       break;
     }
     case MT_PRESENCE: {
@@ -2429,21 +3207,97 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
     }
     case MT_ROUTE_REQ: {
       if (h.payloadLen >= 4) {
-        uint32_t target = readLe32(payload);
-        if (target == gNodeId || routeLookup(target)) {
-          uint8_t rep[4];
+        const uint32_t target = readLe32(payload);
+        const uint32_t nextHop = (target == gNodeId) ? gNodeId : routeLookup(target);
+        if (target == gNodeId || nextHop) {
+          uint8_t rep[11];
+          memset(rep, 0, sizeof(rep));
           writeLe32(rep, target);
-          meshTransmitRouted(MT_ROUTE_REP, h.src, rep, 4, SG_LORA_MAX_HOPS,
-                             KINTO_TRAFFIC_TEXT);
+          writeLe32(rep + 4, nextHop ? nextHop : h.src);
+          uint16_t metric = 0;
+          uint8_t hops = 1;
+          for (int i = 0; i < 8; i++) {
+            if (gRoutes[i].used && gRoutes[i].dst == target) {
+              metric = gRoutes[i].metric;
+              hops = gRoutes[i].hops ? gRoutes[i].hops : 1;
+              break;
+            }
+          }
+          rep[8] = (uint8_t)(metric & 0xFF);
+          rep[9] = (uint8_t)(metric >> 8);
+          rep[10] = hops;
+          meshTransmitRouted(MT_ROUTE_REP, h.src, rep, sizeof(rep), SG_LORA_MAX_HOPS,
+                             KINTO_TRAFFIC_TELEMETRY);
         }
       }
       break;
     }
     case MT_ROUTE_REP: {
-      if (h.payloadLen >= 4) {
-        uint32_t target = readLe32(payload);
-        routeLearn(target, h.src);
-        meshV2RouteLearned(target, h.src, fromLora);
+      if (h.payloadLen >= 8) {
+        const uint32_t target = readLe32(payload);
+        const uint32_t nextHop = readLe32(payload + 4);
+        const uint16_t metric = (h.payloadLen >= 10)
+                                    ? (uint16_t)(payload[8] | (payload[9] << 8))
+                                    : 0;
+        const uint8_t hops = (h.payloadLen >= 11 && payload[10]) ? payload[10] : 2;
+        routeLearn(target, nextHop, fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_ESPNOW,
+                   hops, metric);
+        meshV2RouteLearned(target, nextHop, fromLora);
+        sgLog("[route] rep target=%s next=%s hops=%u metric=%u",
+              publicIdForNode(target).c_str(), publicIdForNode(nextHop).c_str(),
+              (unsigned)hops, (unsigned)metric);
+      }
+      break;
+    }
+    case MT_DISCOVER: {
+      // Шлюз — единственный, кто отвечает: сообщаем свой реальный канал
+      // (он следует за STA к роутеру) и cluster_id.
+      if (isGateway()) {
+        const uint8_t ch = currentMeshChannel();
+        String j = String("{\"ch\":") + String((unsigned)ch) +
+                   ",\"cluster_id\":" + String((unsigned long)gSelfClusterId) + "}";
+        meshTransmitRouted(MT_DISCOVER_ACK, h.src, (const uint8_t *)j.c_str(),
+                           (uint16_t)j.length(), 1, KINTO_TRAFFIC_TELEMETRY);
+        sgLog("[channel] discover from %s -> ack ch=%u",
+              publicIdForNode(h.src).c_str(), (unsigned)ch);
+      }
+      break;
+    }
+    case MT_DISCOVER_ACK: {
+      const String j = payloadToString(payload, h.payloadLen);
+      const long ch = jsonGetInt(j, "ch");
+      if (ch >= 1 && ch <= 13) {
+        gDiscoveredChannel = (uint8_t)ch;
+        gDiscoverSeen = true;
+        sgLog("[channel] ack ch=%ld from=%s", ch,
+              publicIdForNode(h.src).c_str());
+      }
+      break;
+    }
+    case MT_LORA_ADVERT: {
+      const String j = payloadToString(payload, h.payloadLen);
+      const uint32_t cid = jsonGetU32(j, "cluster_id");
+      if (cid) {
+        loraClusterRouteUpsert(cid, h.src);
+        sgLog("[lora] bridge advert cluster=%lu via=%08lx", (unsigned long)cid,
+              (unsigned long)h.src);
+      }
+      break;
+    }
+    case MT_LORA_DATA: {
+      if (h.dst == gNodeId || h.dst == MESH_BROADCAST) {
+        if (isWearable()) deliverToClients(FT_DATA_DOWN, payload, h.payloadLen);
+        if (isGateway() && !isWearable()) {
+          queueAdd(payload, h.payloadLen, QK_HUB, h.packetId);
+        }
+      } else {
+        // dst — cluster_id: forward по LoRa через известный next hop.
+        LoraClusterRoute *r = loraClusterRouteFind(h.dst);
+        if (r) {
+          sgLog("[lora] bridge fwd cluster=%lu -> %lu", (unsigned long)h.dst,
+                (unsigned long)r->nextHop);
+          transmitLoraBridge(MT_LORA_DATA, r->nextHop, payload, h.payloadLen, 2);
+        }
       }
       break;
     }
@@ -2462,7 +3316,9 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
   if (meshSeenDuplicate(h.src, h.packetId)) return;
 
   neighborTouch(h.src, rssi, fromLora);
-  routeLearn(h.src, MESH_BROADCAST);   // src достижим через flood
+  // Reverse learning: обратный путь к src идёт через сам src (предыдущий хоп).
+  routeLearn(h.src, h.src, fromLora ? KINTO_IFACE_LORA : KINTO_IFACE_ESPNOW,
+             (uint8_t)(h.hop + 1), rssiToEwma(rssi));
   uint8_t srcQueue = 0;
   for (int i = 0; i < 8; i++) {
     if (gNeighbors[i].used && gNeighbors[i].id == h.src) {
@@ -2485,7 +3341,14 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
 
   // LoRa-фрагменты: собрать; дальнейшая обработка произойдёт после сборки.
   if (h.type == MT_FRAG) {
-    fragmentFeed(h, payload, rssi);
+    fragmentFeed(h, payload, rssi, fromLora);
+  }
+
+  // MT_LORA_DATA с dst=cluster_id — не для нас как узла: обрабатываем
+  // (пересылаем по LoRa) и НЕ флудим по Wi-Fi, иначе пакет уйдёт не туда.
+  if (h.type == MT_LORA_DATA && h.dst != gNodeId && h.dst != MESH_BROADCAST) {
+    handleMeshLocal(h, payload, rssi, fromLora);
+    return;
   }
 
   const bool forMe = (h.dst == gNodeId) || (h.dst == MESH_BROADCAST);
@@ -2969,6 +3832,13 @@ static String buildInfoJson() {
              ",\"handover\":" + String((unsigned)gHandoverState) +
              ",\"neighbors\":" + String((unsigned)neighborCount()) +
              ",\"queue\":" + String((unsigned)queueLoadValue()) +
+             ",\"espnow_load\":" + String((unsigned)gEspNowLoad) +
+             ",\"lora_load\":" + String((unsigned)gLoraLoad) +
+             ",\"lora_queue\":" + String((unsigned)gLoraQueueDepth) +
+             ",\"espnow_queue\":" + String((unsigned)gEspNowQueueDepth) +
+             ",\"allowed\":{\"text\":true,\"search\":true,\"voice\":" +
+                 (gAllowedVoice ? "true" : "false") + ",\"photo\":" +
+                 (gAllowedPhoto ? "true" : "false") + "}" +
              ",\"rssi\":" + String(wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + "}";
   return j;
 }
@@ -3153,6 +4023,157 @@ static void loraPoll() {
 /* ---------------------------------------------------- Wi-Fi mesh (UDP) --- */
 
 #if !SG_USE_ESP_MESH
+/**
+ * Поиск mesh-канала без ассоциации с Wi-Fi.
+ * Нода перебирает каналы 1..13, шлёт MT_DISCOVER broadcast и ждёт
+ * MT_DISCOVER_ACK (шлюз) или ADVERT с полем "ch". ESP-NOW нужен только
+ * канал — WiFi.begin() на wearable не требуется.
+ * Блокирует до ~2 c; вызывать только из setup() или channelDiscoverTick().
+ */
+static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
+  if (isGateway()) {
+    gDiscoveredChannel = currentMeshChannel();
+    return true;
+  }
+#if !SG_USE_ESPNOW
+  (void)timeoutPerChannelMs;
+  return false;
+#else
+  if (!gEspNowReady && !espNowInit()) return false;
+  gLastDiscoverMs = millis();
+  gDiscoverNonce = esp_random();
+  if (!gDiscoverNonce) gDiscoverNonce = 1;
+  const String identity =
+      String("{\"hw\":\"") + gHardwareId + "\",\"role\":\"" + SG_ROLE +
+      "\",\"nonce\":" + String((unsigned long)gDiscoverNonce) + "}";
+
+  // Быстрый путь: скан AP шлюза даёт канал без 13 слепых probe.
+  // Шлюз может быть занят Hub-запросом и не ответить за 140 мс, поэтому
+  // найденный по скану канал проверяем дольше и принимаем как hint.
+  uint8_t hint = 0;
+  {
+    const int found = WiFi.scanNetworks(false, true);
+    int best = -1;
+    int bestRssi = -1000;
+    for (int i = 0; i < found; i++) {
+      if (WiFi.SSID(i) != String(meshSsid())) continue;
+      if (WiFi.RSSI(i) > bestRssi) {
+        bestRssi = WiFi.RSSI(i);
+        best = i;
+      }
+    }
+    if (best >= 0) hint = (uint8_t)WiFi.channel(best);
+    WiFi.scanDelete();
+    if (hint) sgLogE("[channel] scan hint ch=%u rssi=%d", (unsigned)hint, bestRssi);
+  }
+
+  // На STA-only ноде драйвер мог быть не запущен Arduino-ядром.
+  const esp_err_t startErr = esp_wifi_start();
+  if (startErr != ESP_OK) {
+    sgLogE("[channel] esp_wifi_start err=%d", (int)startErr);
+  }
+
+  for (uint8_t idx = 0; idx < 14; idx++) {
+    uint8_t ch = (idx == 0) ? hint : (uint8_t)idx;
+    if (!ch || (idx > 0 && ch == hint)) continue;
+    const esp_err_t chErr = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    delay(15);
+    espNowReinitOnChannel(ch);
+    gDiscoverSeen = false;
+    {
+      uint8_t home = 0;
+      wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+      esp_wifi_get_channel(&home, &second);
+      sgLog("[channel] probe ch=%u home=%u err=%d", (unsigned)ch, (unsigned)home,
+            (int)chErr);
+      ESP_LOGE("kinto", "channel probe ch=%u home=%u set=%d", (unsigned)ch,
+               (unsigned)home, (int)chErr);
+      sgLogE("[channel] probe ch=%u home=%u set=%d", (unsigned)ch,
+             (unsigned)home, (int)chErr);
+    }
+
+    uint8_t frame[sizeof(MeshHeader) + 128];
+    const uint32_t id = nextPacketId();
+    const size_t fn = meshBuild(frame, sizeof(frame), MT_DISCOVER, MESH_BROADCAST,
+                                id, 1, 0, (const uint8_t *)identity.c_str(),
+                                (uint16_t)identity.length());
+    if (fn) {
+      meshMarkOwn(id);
+      for (uint8_t attempt = 0; attempt < 2; attempt++) {
+        espNowSendRaw(frame, fn, 0);   // только ESP-NOW, LoRa не трогаем
+      }
+    }
+
+    const uint32_t waitMs = (ch == hint) ? 700UL : timeoutPerChannelMs;
+    const uint32_t start = millis();
+    while (millis() - start < waitMs) {
+      espNowPoll();   // receive path + handleMeshLocal -> gDiscoverSeen
+      if (gDiscoverSeen) break;
+      delay(5);
+    }
+    if (gDiscoverSeen) {
+      gDiscoveredChannel = ch;
+      gApChannel = ch;
+      gEspNowChannel = ch;
+      sgLog("[channel] discovered ch=%u", (unsigned)ch);
+      ESP_LOGE("kinto", "channel discovered ch=%u", (unsigned)ch);
+      sgLogE("[channel] discovered ch=%u", (unsigned)ch);
+      return true;
+    }
+    if (ch == hint) {
+      // AP шлюза реально виден сканом — доверяем каналу даже без ACK.
+      gDiscoveredChannel = ch;
+      gApChannel = ch;
+      gEspNowChannel = ch;
+      sgLogE("[channel] scan hint accepted ch=%u", (unsigned)ch);
+      return true;
+    }
+  }
+  sgLog("[channel] discover failed");
+  ESP_LOGE("kinto", "channel discover failed");
+  sgLogE("[channel] discover failed");
+  return false;
+#endif
+}
+
+/**
+ * Неблокирующая обёртка: один проход discovery не чаще раза в 60 c,
+ * только пока ESP-NOW не слышит сеть. Если discovery не нашёл шлюз —
+ * fallback на скан SoftAP (только как подсказка канала, без ассоциации).
+ */
+static void channelDiscoverTick() {
+  if (isGateway()) return;
+  if (!gEspNowReady && !espNowInit()) return;
+  const uint32_t now = millis();
+  if (gEspNowRxCount != 0 && gEspNowChannel) return;   // сеть уже слышна
+  if (gLastDiscoverMs && now - gLastDiscoverMs < 60000UL) return;
+
+  if (channelDiscover()) return;
+
+  const int found = WiFi.scanNetworks(false, true);
+  int best = -1;
+  int bestRssi = -1000;
+  for (int i = 0; i < found; i++) {
+    if (WiFi.SSID(i) != String(meshSsid())) continue;
+    if (WiFi.RSSI(i) > bestRssi) {
+      bestRssi = WiFi.RSSI(i);
+      best = i;
+    }
+  }
+  if (best >= 0) {
+    const uint8_t ch = (uint8_t)WiFi.channel(best);
+    if (ch) {
+      esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+      espNowReinitOnChannel(ch);
+      gApChannel = ch;
+      sgLog("[espnow] channel sync ch=%u rssi=%d (scan fallback)", (unsigned)ch,
+            bestRssi);
+    }
+  } else {
+    sgLog("[espnow] mesh AP not found (%d nets)", found);
+  }
+  WiFi.scanDelete();
+}
 // SoftAP не должен «теряться» в режиме AP_STA: если режим сбросился,
 // поднимаем точку доступа заново на текущем канале.
 static void wifiEnsureAp() {  const wifi_mode_t mode = (wifi_mode_t)WiFi.getMode();
@@ -3224,14 +4245,36 @@ static bool wifiJoinBestMesh(bool force) {
 static void ensureWifiLink() {
   const uint32_t now = millis();
 
-  // UDP-сокет мог не открыться на старте (netif ещё не готов) — пробуем снова.
-  if (!gUdpStarted && now - gLastUdpRetryMs > 5000UL) wifiStartUdp();
+#if SG_USE_ESPNOW
+  // ESP-NOW не требует Wi-Fi-ассоциации: достаточно канала AP шлюза.
+  // Не-шлюзовые узлы работают в STA-only (без SoftAP), иначе home-канал
+  // остаётся 11 и esp_now_send падает с "peer channel != home channel".
+  if (!isGateway()) {
+    if (!gEspNowReady) espNowInit();
+    channelDiscoverTick();
+    return;
+  }
+  // ESP-NOW мог не подняться до softAP/netif — повторяем.
+  if (!gEspNowReady) espNowInit();
+#endif
 
   wifiEnsureAp();
 
   if (WiFi.status() == WL_CONNECTED) {
     gStaDownSinceMs = 0;
     const uint8_t ch = (uint8_t)WiFi.channel();
+#if SG_USE_ESPNOW
+    // Канал ESP-NOW обязан совпадать с каналом STA. Делаем это при каждом
+    // подключении/смене канала (после reconnect роутер может дать другой).
+    if (ch && !gStaWasConnected) {
+      gEspNowChannel = 0;   // force: пиры пересоздаются после STA-assoc
+      espNowReinitOnChannel(ch);
+      sgLog("[espnow] sync ch=%u after sta", (unsigned)ch);
+    } else if (ch && ch != gEspNowChannel) {
+      espNowReinitOnChannel(ch);
+      sgLog("[espnow] sync ch=%u after sta", (unsigned)ch);
+    }
+#endif
     if (!gStaWasConnected) {
       gStaWasConnected = true;
       gApChannel = ch;
@@ -3300,15 +4343,92 @@ static void ensureWifiLink() {
   }
 }
 
+#if SG_ESPNOW_ASSOC_BOOTSTRAP
+/**
+ * Аварийный bootstrap (по умолчанию выключен): одна ассоциация с mesh-AP,
+ * чтобы IDF выставил home-канал и гарантированно поднял STA, затем сразу
+ * disconnect. ESP-NOW продолжает работать на выбранном канале.
+ * Включается SG_ESPNOW_ASSOC_BOOTSTRAP=1.
+ */
+static uint8_t espNowAssocBootstrap() {
+  if (isGateway() || !wifiTransportEnabled()) return 0;
+  sgLog("[espnow] assoc bootstrap -> %s", meshSsid());
+  sgLogE("[espnow] assoc bootstrap -> %s", meshSsid());
+  WiFi.begin(meshSsid(), meshPass());
+  const uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 3000UL) {
+    delay(20);
+  }
+  const uint8_t ch = (uint8_t)WiFi.channel();
+  const int st = (int)WiFi.status();
+  WiFi.disconnect(false, false);
+  esp_wifi_disconnect();
+  sgLog("[espnow] assoc bootstrap ch=%u status=%d", (unsigned)ch, st);
+  sgLogE("[espnow] assoc bootstrap ch=%u status=%d", (unsigned)ch, st);
+  return ch;
+}
+#endif
+
 static void setupWifi() {
+  ESP_LOGE("kinto", "setupWifi role=%s gw=%d conn=%s", SG_ROLE, isGateway() ? 1 : 0,
+           SG_CONNECTIVITY);
+  sgLogE("[wifi] setupWifi role=%s gw=%d conn=%s", SG_ROLE, isGateway() ? 1 : 0,
+         SG_CONNECTIVITY);
   if (!wifiTransportEnabled()) {
     sgLog("[wifi] disabled (conn=%s)", SG_CONNECTIVITY);
     return;
   }
   WiFi.persistent(false);
+#if SG_USE_ESPNOW
+  if (!isGateway()) {
+    // Носимые/репитеры: только STA, без SoftAP. Иначе AP фиксирует
+    // home-канал и ESP-NOW не может перейти на канал шлюза.
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(false);
+    espNowConfigurePhy();
+
+    // Arduino core не гарантирует esp_wifi_start() до WiFi.begin(), а нода
+    // STA-only begin() не делает вовсе. Без запущенного интерфейса
+    // esp_wifi_set_channel/ESP-NOW молча не работают.
+    const esp_err_t stErr = esp_wifi_start();
+    {
+      uint8_t home = 0;
+      wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+      esp_wifi_get_channel(&home, &second);
+      sgLog("[espnow] sta start err=%d home=%u mode=%d", (int)stErr,
+            (unsigned)home, (int)WiFi.getMode());
+      sgLogE("[espnow] sta start err=%d home=%u mode=%d", (int)stErr,
+             (unsigned)home, (int)WiFi.getMode());
+    }
+    bool bootstrapped = false;
+#if SG_ESPNOW_ASSOC_BOOTSTRAP
+    {
+      const uint8_t bch = espNowAssocBootstrap();
+      if (bch) {
+        gEspNowChannel = bch;   // канал AP шлюза подтверждён ассоциацией
+        bootstrapped = true;
+      }
+    }
+#endif
+    espNowInit();
+    // Если bootstrap уже дал реальный канал AP — не перебираем 1..13:
+    // слепой sweep уводил gEspNowChannel на 13 при home=12.
+    if (!bootstrapped) channelDiscover();
+    sgLogE("[espnow] setupWifi node done ready=%d ch=%u", gEspNowReady ? 1 : 0,
+           (unsigned)gEspNowChannel);
+    gWifiReady = gEspNowReady;
+    gLastWifiAttemptMs = millis();
+    return;
+  }
+#endif
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
+#if SG_USE_ESPNOW
+  // Важно: до softAP/begin, пока интерфейс ещё можно переконфигурировать.
+  espNowConfigurePhy();
+#endif
 
   meshApConfig();
   const bool apOk = WiFi.softAP(meshSsid(), meshPass(), SG_MESH_CHANNEL,
@@ -3322,16 +4442,27 @@ static void setupWifi() {
     sgLog("[wifi] softAP failed, mode=%d", (int)WiFi.getMode());
   }
 
+#if SG_USE_ESPNOW
+  espNowInit();
+  gWifiReady = apOk || gEspNowReady;
+  // Нода: сразу ищем канал шлюза (setup может блокироваться до ~2 c).
+  if (!isGateway() && gEspNowReady) channelDiscover();
+#else
   if (!wifiStartUdp()) {
     // Всё равно попробуем позже из ensureWifiLink().
     sgLog("[wifi] udp not started yet");
   }
   gWifiReady = apOk || gUdpStarted;
+#endif
   gLastWifiAttemptMs = millis() - 20000UL;   // первая попытка сразу
   ensureWifiLink();
 }
 
 static void wifiPoll() {
+#if SG_USE_ESPNOW
+  espNowPoll();
+  return;
+#else
   if (!gUdpStarted) return;
   int guard = 0;
   int sz = gUdp.parsePacket();
@@ -3354,6 +4485,7 @@ static void wifiPoll() {
     sz = gUdp.parsePacket();
   }
   if (guard >= 32) sgLog("[udp] rx burst cap hit");
+#endif
 }
 #else
 /* Полноценный ESP-WIFI-MESH. Включается SG_USE_ESP_MESH=1.
@@ -3462,12 +4594,62 @@ static void diagPoll() {
   const int sta = wifiTransportEnabled() && gWifiReady && WiFi.status() == WL_CONNECTED ? 1 : 0;
   const int apClients = wifiTransportEnabled() && gWifiReady ? (int)WiFi.softAPgetStationNum() : 0;
   sgLog("[diag] role=%s conn=%s wifi=%d lora=%d sta=%d ch=%d apClients=%d "
-        "udp rx=%lu tx=%lu lora rx=%lu tx=%lu tx=%lu fwd=%lu q=%u",
+        "espnow tx=%lu rx=%lu fail=%lu lora rx=%lu tx=%lu load=%u/%u q=%u fwd=%lu",
         SG_ROLE, SG_CONNECTIVITY, gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
-        sta, ch, apClients, (unsigned long)gUdpRxCount,
-        (unsigned long)gUdpTxCount, (unsigned long)gLoraRxCount,
-        (unsigned long)gLoraTxCount, (unsigned long)gTxCount,
-        (unsigned long)gFwdCount, (unsigned)queueLoadValue());
+        sta, ch, apClients, (unsigned long)gEspNowTxCount,
+        (unsigned long)gEspNowRxCount, (unsigned long)gEspNowTxFail,
+        (unsigned long)gLoraRxCount, (unsigned long)gLoraTxCount,
+        (unsigned)gEspNowLoad, (unsigned)gLoraLoad,
+        (unsigned)queueLoadValue(), (unsigned long)gFwdCount);
+}
+
+/**
+ * EWMA-нагрузка транспортов + политика allowed для клиента.
+ * ESP-NOW: пакеты/с (200 pkt/s = 100%). LoRa: airtime + CAD busy.
+ */
+static void loadTick() {
+  const uint32_t now = millis();
+  if (now - gLoadLastMs < 1000UL) return;
+  const uint32_t dt = now - gLoadLastMs;
+  gLoadLastMs = now;
+
+  const uint32_t packets = gEspNowWindowTx + gEspNowWindowRx;
+  gEspNowWindowTx = 0;
+  gEspNowWindowRx = 0;
+  uint32_t espLoad = dt ? (packets * 1000UL / dt) : 0;
+  espLoad = espLoad > 200UL ? 100UL : espLoad * 100UL / 200UL;
+  gEspNowLoad = (uint8_t)(((uint16_t)gEspNowLoad * 3 + espLoad) / 4);
+
+  uint32_t loraLoad = 0;
+  if (gLoraWindowStartMs && now > gLoraWindowStartMs) {
+    const uint32_t window = now - gLoraWindowStartMs;
+    loraLoad = gLoraTxAirMs * 100UL / (window ? window : 1);
+  }
+  if (gLoraCadTotal) loraLoad += gLoraCadBusy * 100UL / gLoraCadTotal;
+  if (loraLoad > 100UL) loraLoad = 100UL;
+  gLoraLoad = (uint8_t)(((uint16_t)gLoraLoad * 3 + loraLoad) / 4);
+
+  uint16_t meshQ = 0;
+  for (size_t i = 0; i < gQueueCount; i++) {
+    if (gQueue[i].kind == QK_MESH) meshQ++;
+  }
+  gEspNowQueueDepth = meshQ > 255 ? 255 : (uint8_t)meshQ;
+  gLoraQueueDepth = gEspNowQueueDepth;
+
+  const uint8_t loadMax = gEspNowLoad > gLoraLoad ? gEspNowLoad : gLoraLoad;
+  const uint8_t queueMax = gEspNowQueueDepth > gLoraQueueDepth
+                               ? gEspNowQueueDepth
+                               : gLoraQueueDepth;
+  if (loadMax >= 70 || queueMax >= 15) {
+    gAllowedVoice = false;   // HIGH: только текст/поиск
+    gAllowedPhoto = false;
+  } else if (loadMax >= 30 || queueMax >= 5) {
+    gAllowedVoice = true;    // MEDIUM: голос <= 2 КБ проверяет клиент
+    gAllowedPhoto = false;
+  } else {
+    gAllowedVoice = true;
+    gAllowedPhoto = true;
+  }
 }
 
 /* --------------------------------------------------------------- LED ----- */
@@ -3963,7 +5145,15 @@ static void maybeDeepSleep() {
 /* ---------------------------------------------------------------- setup -- */
 
 void setup() {
+  // Скетч может быть собран с CORE_DEBUG_LEVEL=0 (ESP_LOGE -> no-op).
+  // Разрешаем ERROR-уровень для тега и печатаем через esp_log_write().
+  esp_log_level_set("kinto", ESP_LOG_ERROR);
+  ESP_LOGE("kinto", "setup start");
+  // Дублируем через esp_log_write: ESP_LOGE из скетча может быть no-op.
+  sgLogE("[boot] setup start");
   Serial.begin(115200);
+  ESP_LOGE("kinto", "serial ok");
+  sgLogE("[boot] serial ok");
   // Даём USB CDC время на enumeration (для C3/S3); UART всегда готов.
   {
     const uint32_t t0 = millis();
@@ -3973,6 +5163,7 @@ void setup() {
   gBootMs = millis();
 
   initIdentity();
+  ESP_LOGE("kinto", "identity ok");
   // Handshake-строка для клиента; ASCII, чтобы не ломать USB-парсер.
   Serial.printf("SG-INFO {\"hardwareId\":\"%s\",\"publicId\":\"%s\",\"role\":\"%s\"}\n",
                 gHardwareId.c_str(), gPublicId.c_str(), SG_ROLE);
@@ -4009,16 +5200,27 @@ void setup() {
   // и LoRa. Wi-Fi-only wearable должен уметь подключаться к шлюзу по Wi-Fi.
   if (isWearable()) {
     setupBle();
+    ESP_LOGE("kinto", "ble ok");
     if (wifiTransportEnabled()) setupWifi();
+    ESP_LOGE("kinto", "wifi ok");
+    sgLogE("[boot] setupWifi done wifi=%d espnow=%d ch=%u", gWifiReady ? 1 : 0,
+           gEspNowReady ? 1 : 0, (unsigned)gEspNowChannel);
     setupLora();
+    ESP_LOGE("kinto", "lora ok");
   } else {
     setupWifi();
+    sgLogE("[boot] setupWifi done wifi=%d espnow=%d ch=%u", gWifiReady ? 1 : 0,
+           gEspNowReady ? 1 : 0, (unsigned)gEspNowChannel);
     setupLora();
     setupBle();
+    ESP_LOGE("kinto", "gateway setup ok");
   }
   sgLog("[boot] transports wifi=%d lora=%d (wifiReq=%d loraReq=%d)",
         gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
         wifiTransportEnabled() ? 1 : 0, loraTransportEnabled() ? 1 : 0);
+  sgLogE("[boot] transports wifi=%d lora=%d espnow=%d ch=%u",
+         gWifiReady ? 1 : 0, gLoraReady ? 1 : 0, gEspNowReady ? 1 : 0,
+         (unsigned)gEspNowChannel);
   setupOta();
 
 #if SG_MESH_V2
@@ -4061,9 +5263,11 @@ void loop() {
   clusterTick();
   handoverTick();
   diagPoll();
+  loadTick();
   ledPoll();
 
   meshPumpQueue();
+  routePendingTick();
   hubLoop();
 
   const uint32_t now = millis();
@@ -4087,6 +5291,9 @@ void loop() {
     gLastPresenceMs = now;
     sendPresence();
   }
+
+  // LoRa bridge advert раз в ~180 c (внутри есть собственный rate-limit).
+  loraBridgeTick();
 
   // TTL очереди + сброс на диск только при изменении.
   if (now - gLastCleanupMs >= 60000UL) {

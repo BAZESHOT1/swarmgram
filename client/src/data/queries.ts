@@ -230,7 +230,9 @@ export function useSendChatMessage(chatId: string) {
         failed: false,
         asChannel: input.asChannel,
       };
-      const base = Array.isArray(previous) ? previous : [];
+      const base = (Array.isArray(previous) ? previous : []).filter(
+        (m) => m.clientId !== input.clientId && m.id !== input.clientId,
+      );
       const next = [...base, optimistic].sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );

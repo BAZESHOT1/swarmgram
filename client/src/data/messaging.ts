@@ -137,6 +137,64 @@ function atobCompat(s: string): string {
   return out.map((n) => String.fromCharCode(n)).join('');
 }
 
+const MESH_UPLOAD_TIMEOUT_MS = 5_000;
+/** Короткое окно HTTP на старте, пока WebSocket ещё не подтвердил статус. */
+const STARTUP_HTTP_BUDGET_MS = 4_000;
+
+function timeoutError(label: string): Error {
+  const err = new Error(label);
+  (err as Error & { name: string }).name = 'TimeoutError';
+  return err;
+}
+
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(timeoutError('http_timeout')), Math.max(250, ms));
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Загрузка конверта с жёстким лимитом времени. uploader уже умеет AbortSignal,
+ * поэтому таймаут реально прерывает PUT, а не просто бросает гонку.
+ * Пользовательская отмена (opts.signal) пробрасывается отдельно — её нельзя
+ * путать с таймаутом и складывать сообщение в outbox.
+ */
+async function uploadEnvelopeBounded(
+  bytes: Uint8Array,
+  opts: { onProgress?: (progress: number) => void; signal?: AbortSignal },
+  timeoutMs: number,
+): Promise<{ objectId: string; size: number; replicas: number }> {
+  if (opts.signal?.aborted) throw abortError();
+  const controller = new AbortController();
+  let timedOut = false;
+  const onUserAbort = () => controller.abort();
+  opts.signal?.addEventListener('abort', onUserAbort);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await uploadEnvelope(bytes, { ...opts, signal: controller.signal });
+  } catch (error) {
+    if (opts.signal?.aborted) throw abortError();
+    if (timedOut) throw timeoutError('upload_timeout');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onUserAbort);
+  }
+}
+
 /* ---------------------------------------------------------------- отправка */
 
 export async function sendMessage(
@@ -160,13 +218,25 @@ export async function sendMessage(
     return localFallback(chatId, payload, kind, myUsername, 'нет ключей устройства', clientId);
   }
 
+  const transportState = useStore.getState();
+  const online = transportState.transportOnline === true;
+  const meshAvailable = canSendViaMesh();
+  // Транспорт уже точно офлайн — HTTP не пробуем вовсе, сразу mesh/outbox.
+  const skipHttp = transportState.transportKnown === true && !online;
+  const httpStartedAt = Date.now();
+
   // режим чата определяет схему шифрования; без сети сохраняем прежний E2E-режим,
   // если для чата уже есть локальный ключ
   let chat: Chat | null = null;
-  try {
-    chat = await api.api.getChat(chatId);
-  } catch {
-    chat = null;
+  // Если модуль доступен, а сеть ещё не подтверждена / уже потеряна — не ждём
+  // 12-секундный HTTP-таймаут getChat: схему определим по локальному ключу.
+  if (!skipHttp && (online || !meshAvailable)) {
+    try {
+      const request = api.api.getChat(chatId);
+      chat = online ? await request : await withDeadline(request, STARTUP_HTTP_BUDGET_MS).catch(() => null);
+    } catch {
+      chat = null;
+    }
   }
   let encryption: ChatEncryption = chat?.encryption === 'e2e' ? 'e2e' : 'server';
   if (!chat) {
@@ -234,17 +304,22 @@ export async function sendMessage(
   };
 
   try {
-    // Нет интернета, но модуль подключён — не ждём HTTP-таймаут, сразу mesh.
-    if (canSendViaMesh() && !useStore.getState().transportOnline) {
-      throw new Error('offline_mesh');
-    }
-    const uploaded = await uploadEnvelope(bytes, {
-      onProgress: opts.onProgress ? (p) => opts.onProgress?.(Math.max(0, Math.min(1, p))) : undefined,
-      signal: opts.signal,
-    });
+    // Нет транспорта — не ждём HTTP-таймаут, сразу mesh/outbox.
+    if (skipHttp) throw timeoutError('offline_transport');
+    const uploadBudget = online
+      ? MESH_UPLOAD_TIMEOUT_MS
+      : Math.max(1_000, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt));
+    const uploaded = await uploadEnvelopeBounded(
+      bytes,
+      {
+        onProgress: opts.onProgress ? (p) => opts.onProgress?.(Math.max(0, Math.min(1, p))) : undefined,
+        signal: opts.signal,
+      },
+      uploadBudget,
+    );
     item.objectId = uploaded.objectId;
     if (opts.signal?.aborted) throw abortError();
-    const saved = await api.api.sendMessage(chatId, {
+    const registerRequest = api.api.sendMessage(chatId, {
       objectId: uploaded.objectId,
       nonce,
       header: headerObj,
@@ -256,6 +331,12 @@ export async function sendMessage(
       // Короткий предпросмотр для push (только для текста, не для E2E-секретов).
       ...(kind === 'text' ? { pushText: String(payload.text ?? '').slice(0, 300) } : {}),
     } as never);
+    const saved = online
+      ? await registerRequest
+      : await withDeadline(
+          registerRequest,
+          Math.max(1_000, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt)),
+        );
     // Hub обязан вернуть сохранённое сообщение с id/seq. Иначе это не доставка.
     if (!saved || typeof (saved as { id?: unknown }).id !== 'string' || !Number.isFinite(Number((saved as { seq?: unknown }).seq))) {
       throw new Error('message_not_registered');

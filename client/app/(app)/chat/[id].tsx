@@ -89,6 +89,11 @@ function makeClientId(): string {
   return `${LOC_CLIENT_PREFIX}${Math.random().toString(16).slice(2, 10)}-${Date.now()}`;
 }
 
+/** Стабильный ключ строки ленты: не создаём новую функцию на каждый рендер. */
+function chatRowKey(r: Row): string {
+  return r.album ? `album:${r.album.map((m) => m.clientId ?? m.id).join(',')}` : r.m.clientId ?? r.m.id;
+}
+
 /** Максимальная высота многострочного ввода. */
 const INPUT_MAX = 120;
 
@@ -1042,8 +1047,10 @@ export default function ChatScreen() {
 
   async function onSend() {
     const body = text.trim();
-    // Оптимистичный текст не блокируем на время чужой медиа-загрузки.
-    if (!canCompose || !body || (sending && editing)) return;
+    // Текст не блокируем на время чужой медиа-загрузки: оптимистичное
+    // сообщение уходит в кэш сразу, а транспорт решает HTTP/mesh.
+    if (!canCompose || !body) return;
+    if (editing && sending) return;
 
     if (editing) {
       setSending(true);
@@ -1481,127 +1488,14 @@ export default function ChatScreen() {
   }, [chat]);
   const peerPresence = chat?.type === 'direct' && peer ? memberPresence.get(peer.username) : undefined;
 
-  return (
-    <KeyboardAvoidingView
-      style={{
-        flex: 1,
-        backgroundColor: theme.background,
-        // iOS: явно уменьшаем высоту экрана на высоту клавиатуры.
-        // KAV padding в связке с react-native-screens иногда не срабатывает,
-        // поэтому используем проверенный явный отступ.
-        paddingBottom: Platform.OS === 'ios' ? keyboardHeight : 0,
-      }}
-      behavior={undefined}
-      keyboardVerticalOffset={0}
-    >
-      <View
-        ref={dragRootRef}
-        style={{
-          flex: 1,
-          backgroundColor: theme.background,
-          // Акцентная рамка вокруг экрана секретного чата.
-          borderWidth: secret ? 1.5 : 0,
-          borderColor: secret ? theme.accent : 'transparent',
-        }}
-      >
-        <ChatHeader
-          title={title || 'Диалог'}
-          channel={channel}
-          linkMode={linkMode}
-          statusText={connectionPhase ? CONNECTION_LABEL[connectionPhase] : null}
-          secret={secret}
-          typingUsername={typingUsername}
-          scrollY={scrollY}
-          collapse={headerCollapse}
-          onBack={() => router.back()}
-          onMenu={() => setMenuOpen((v) => !v)}
-          onOpenInfo={() => {
-            setMenuOpen(false);
-            router.push(`/chat/${chatId}/info` as never);
-          }}
-          avatarRef={avatarRef}
-          nodeOnline={peerPresence?.nodeOnline}
-          moduleOnline={peerPresence?.moduleOnline}
-          avatar={chat?.type === 'direct' ? peerPresence?.avatar ?? null : chat?.avatar ?? null}
-          chatType={chat?.type}
-          membersCount={chat?.membersCount}
-        />
-
-        {secret ? <SecretBanner /> : null}
-
-        {pinned ? (
-          <PinnedBanner
-            text={pinnedText}
-            username={pinnedUsername}
-            onPress={() => {
-              if (pinnedMessage) scrollToMessage(pinnedMessage.id);
-              else pushToast({ kind: 'info', message: 'Закреплённое сообщение не загружено' });
-            }}
-            onUnpin={() => void pinMessage(null)}
-          />
-        ) : null}
-
-        {searchOpen ? (
-          <ChatSearchBar
-            value={searchQuery}
-            onChange={setSearchQuery}
-            count={matchedRows.length}
-            currentIndex={matchIndex}
-            onPrev={() => goMatch(-1)}
-            onNext={() => goMatch(1)}
-            onClose={() => {
-              setSearchOpen(false);
-              setSearchQuery('');
-            }}
-          />
-        ) : null}
-
-        {error ? (
-          <Text style={{ color: theme.danger, paddingHorizontal: 14, paddingVertical: 6, fontSize: 13 }} numberOfLines={2}>
-            {error}
-          </Text>
-        ) : null}
-        {status ? (
-          <Text style={{ color: theme.warning, paddingHorizontal: 14, paddingVertical: 6, fontSize: 12.5 }} numberOfLines={2}>
-            {status}
-          </Text>
-        ) : null}
-
-        <View style={{ flex: 1 }}>
-          {(chatQuery.isLoading || !chat) && allMessages.length === 0 ? (
-            <SkeletonMessages count={8} />
-          ) : allMessages.length === 0 ? (
-            canCompose ? (
-              <EmptyState title="Пустой чат" subtitle="Сообщений нет — напишите первым" />
-            ) : (
-              <EmptyState
-                title="Ключ чата недоступен"
-                subtitle="История этого чата была зашифрована ключом, которого нет на устройстве. Новые сообщения будут расшифровываться автоматически."
-              />
-            )
-          ) : searchActive && matchedRows.length === 0 ? (
-            <EmptyState title="Ничего не найдено" subtitle={`По запросу «${searchQuery.trim()}» совпадений нет`} />
-          ) : (
-            <FlatList
-              ref={listRef}
-              onLayout={() => setTimeout(initialScrollToRead, 120)}
-              data={visibleRows}
-              keyExtractor={(r) => (r.album ? `album:${r.album.map((m) => m.clientId ?? m.id).join(',')}` : r.m.clientId ?? r.m.id)}
-              ListHeaderComponent={
-                loadingOlder ? (
-                  <View style={styles.olderSpinner} accessibilityLabel="Загружаем историю">
-                    <ActivityIndicator size="small" color={theme.textSecondary} />
-                  </View>
-                ) : null
-              }
-              contentContainerStyle={{
-                padding: wide ? 24 : 10,
-                paddingBottom: 26,
-                maxWidth: 900,
-                width: '100%',
-                alignSelf: 'center',
-              }}
-              renderItem={({ item: row, index }) => (
+  // Стабильные renderItem/keyExtractor: FlatList не пересоздаёт все ячейки
+  // на каждый рендер экрана. Свежие значения читаются через ref.
+  const listExtraData = useMemo(
+    () => ({ flashIds, viewCounts, searchActive, searchQuery, matchIndex, secret, asChannel, canPostAsChannel, isChannel, chatTitle: chat?.title ?? '', myRole, rolesByUsername, memberPresence, theme }),
+    [flashIds, viewCounts, searchActive, searchQuery, matchIndex, secret, asChannel, canPostAsChannel, isChannel, chat?.title, myRole, rolesByUsername, memberPresence, theme],
+  );
+  const renderRowRef = useRef<(info: { item: Row; index: number }) => React.ReactElement | null>(() => null);
+  renderRowRef.current = ({ item: row, index }) => (
                 <View>
                   {row.m.kind === 'system' ? (
                     <SystemMessage
@@ -1714,7 +1608,134 @@ export default function ChatScreen() {
                     />
                   )}
                 </View>
-              )}
+
+  );
+  const renderRow = useCallback(
+    (info: { item: Row; index: number }) => renderRowRef.current(info),
+    [],
+  );
+  return (
+    <KeyboardAvoidingView
+      style={{
+        flex: 1,
+        backgroundColor: theme.background,
+        // iOS: явно уменьшаем высоту экрана на высоту клавиатуры.
+        // KAV padding в связке с react-native-screens иногда не срабатывает,
+        // поэтому используем проверенный явный отступ.
+        paddingBottom: Platform.OS === 'ios' ? keyboardHeight : 0,
+      }}
+      behavior={undefined}
+      keyboardVerticalOffset={0}
+    >
+      <View
+        ref={dragRootRef}
+        style={{
+          flex: 1,
+          backgroundColor: theme.background,
+          // Акцентная рамка вокруг экрана секретного чата.
+          borderWidth: secret ? 1.5 : 0,
+          borderColor: secret ? theme.accent : 'transparent',
+        }}
+      >
+        <ChatHeader
+          title={title || 'Диалог'}
+          channel={channel}
+          linkMode={linkMode}
+          statusText={connectionPhase ? CONNECTION_LABEL[connectionPhase] : null}
+          secret={secret}
+          typingUsername={typingUsername}
+          scrollY={scrollY}
+          collapse={headerCollapse}
+          onBack={() => router.back()}
+          onMenu={() => setMenuOpen((v) => !v)}
+          onOpenInfo={() => {
+            setMenuOpen(false);
+            router.push(`/chat/${chatId}/info` as never);
+          }}
+          avatarRef={avatarRef}
+          nodeOnline={peerPresence?.nodeOnline}
+          moduleOnline={peerPresence?.moduleOnline}
+          avatar={chat?.type === 'direct' ? peerPresence?.avatar ?? null : chat?.avatar ?? null}
+          chatType={chat?.type}
+          membersCount={chat?.membersCount}
+        />
+
+        {secret ? <SecretBanner /> : null}
+
+        {pinned ? (
+          <PinnedBanner
+            text={pinnedText}
+            username={pinnedUsername}
+            onPress={() => {
+              if (pinnedMessage) scrollToMessage(pinnedMessage.id);
+              else pushToast({ kind: 'info', message: 'Закреплённое сообщение не загружено' });
+            }}
+            onUnpin={() => void pinMessage(null)}
+          />
+        ) : null}
+
+        {searchOpen ? (
+          <ChatSearchBar
+            value={searchQuery}
+            onChange={setSearchQuery}
+            count={matchedRows.length}
+            currentIndex={matchIndex}
+            onPrev={() => goMatch(-1)}
+            onNext={() => goMatch(1)}
+            onClose={() => {
+              setSearchOpen(false);
+              setSearchQuery('');
+            }}
+          />
+        ) : null}
+
+        {error ? (
+          <Text style={{ color: theme.danger, paddingHorizontal: 14, paddingVertical: 6, fontSize: 13 }} numberOfLines={2}>
+            {error}
+          </Text>
+        ) : null}
+        {status ? (
+          <Text style={{ color: theme.warning, paddingHorizontal: 14, paddingVertical: 6, fontSize: 12.5 }} numberOfLines={2}>
+            {status}
+          </Text>
+        ) : null}
+
+        <View style={{ flex: 1 }}>
+          {(chatQuery.isLoading || !chat) && allMessages.length === 0 ? (
+            <SkeletonMessages count={8} />
+          ) : allMessages.length === 0 ? (
+            canCompose ? (
+              <EmptyState title="Пустой чат" subtitle="Сообщений нет — напишите первым" />
+            ) : (
+              <EmptyState
+                title="Ключ чата недоступен"
+                subtitle="История этого чата была зашифрована ключом, которого нет на устройстве. Новые сообщения будут расшифровываться автоматически."
+              />
+            )
+          ) : searchActive && matchedRows.length === 0 ? (
+            <EmptyState title="Ничего не найдено" subtitle={`По запросу «${searchQuery.trim()}» совпадений нет`} />
+          ) : (
+            <FlatList
+              ref={listRef}
+              onLayout={() => setTimeout(initialScrollToRead, 120)}
+              data={visibleRows}
+              keyExtractor={chatRowKey}
+              ListHeaderComponent={
+                loadingOlder ? (
+                  <View style={styles.olderSpinner} accessibilityLabel="Загружаем историю">
+                    <ActivityIndicator size="small" color={theme.textSecondary} />
+                  </View>
+                ) : null
+              }
+              contentContainerStyle={{
+                padding: wide ? 24 : 10,
+                paddingBottom: 26,
+                maxWidth: 900,
+                width: '100%',
+                alignSelf: 'center',
+              }}
+              extraData={listExtraData}
+              renderItem={renderRow}
               onScroll={onScroll}
               scrollEventThrottle={16}
               onViewableItemsChanged={onViewableItemsChanged}

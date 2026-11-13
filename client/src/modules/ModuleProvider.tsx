@@ -148,6 +148,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       setInfo(null);
     }
     if (current) await current.close().catch(() => undefined);
+    useStore.getState().setMeshIncomingActive(false);
   }, []);
 
   const refreshLists = useCallback(() => {
@@ -202,6 +203,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         unsubInfoRef.current = null;
         setMeshSender(null);
         setMeshCapabilities({ connected: false, gateway: false, queue: 0, neighbors: 0 });
+        useStore.getState().setMeshIncomingActive(false);
         if (mountedRef.current) {
           setConnection(null);
           setInfo(null);
@@ -223,6 +225,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       unsubEnvelopeRef.current?.();
       unsubEnvelopeRef.current = transport.onEnvelope((message) => {
         if (!message || typeof message.chatId !== 'string' || !message.envelope) return;
+        // Входящий mesh-трафик: отмечаем активность до любых веток обработки.
+        useStore.getState().setMeshIncomingActive(true);
         const env = message.envelope as Record<string, any>;
         if (message.chatId === '__presence__' && env?.kind === 'presence') {
           setMeshPeer({
@@ -232,6 +236,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           });
           return;
         }
+        // Отдаём конверт всем слушателям без фильтра по chatId. Через этот же
+        // путь идут KMT http_resp (chatId '__http__'), поэтому guard здесь недопустим.
         emitMeshEnvelope(message.envelope as never);
       });
       // Пока модуль подключён, messaging может отправлять через mesh.

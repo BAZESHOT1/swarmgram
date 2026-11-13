@@ -245,6 +245,10 @@ const FILTERS: { key: SearchFilter; label: string; icon: keyof typeof Ionicons.g
   { key: 'messages', label: 'Сообщения', icon: 'chatbox-ellipses' },
 ];
 
+/** Стабильный ключ основного списка чатов. */
+function chatListKey(r: ChatListRow, i: number): string {
+  return r.kind === 'section' ? `s${i}-${r.title}` : r.chat.id;
+}
 const rowKey = (r: SearchRow): string => {
   if (r.kind === 'section') return `s:${r.title}`;
   if (r.kind === 'chat') return `c:${r.chat.id}`;
@@ -1418,6 +1422,86 @@ export default function ChatsScreen() {
 
   /* ------------------------------------------------------------------ рендер */
 
+  // Стабильный renderItem: строки не пересоздаются на каждый рендер экрана.
+  const chatListExtraData = useMemo(
+    () => ({ wide, selecting, selected, openRowId, pinned, mutedSet, myUsername, theme, reduced }),
+    [wide, selecting, selected, openRowId, pinned, mutedSet, myUsername, theme, reduced],
+  );
+  const renderChatRowRef = useRef<(info: { item: ChatListRow; index: number }) => React.ReactElement | null>(() => null);
+  renderChatRowRef.current = ({ item, index }) => {
+              if (item.kind === 'section') {
+                return (
+                  <MotiView
+                    from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 6 }}
+                    animate={{ opacity: 1, translateY: 0 }}
+                    transition={
+                      reduced
+                        ? { type: 'timing', duration: 0 }
+                        : { ...motion.softSpring, delay: Math.min(index, 8) * motion.staggerStepMs }
+                    }
+                  >
+                    <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>{item.title}</Text>
+                  </MotiView>
+                );
+              }
+              const chat = item.chat;
+              const content = wide || selecting ? (
+                <View style={styles.staticRow}>
+                  <ChatRow
+                    chat={chat}
+                    title={titleOf(chat, myUsername)}
+                    myUsername={myUsername}
+                    unread={chat.unread}
+                    pinned={isPinned(chat.id)}
+                    muted={mutedSet.has(chat.id)}
+                    selecting={selecting}
+                    selected={selected.has(chat.id)}
+                    onToggleSelect={() => toggleSelect(chat.id)}
+                    onMenu={() => setMenuChat(chat)}
+                    onOpen={() => {
+                      if (selecting) toggleSelect(chat.id);
+                      else void onPressChatRow(item);
+                    }}
+                  />
+                </View>
+              ) : (
+                <SwipeChatRow
+                  chat={chat}
+                  title={titleOf(chat, myUsername)}
+                  myUsername={myUsername}
+                  unread={chat.unread}
+                  pinned={isPinned(chat.id)}
+                  muted={mutedSet.has(chat.id)}
+                  open={openRowId === chat.id}
+                  onOpenChange={setOpenRowId}
+                  onTogglePin={() => togglePin(chat.id)}
+                  onToggleMute={() => toggleMuted(chat.id)}
+                  onDelete={() => requestDelete([chat], titleOf(chat, myUsername))}
+                  onOpen={() => void onPressChatRow(item)}
+                  onMenu={() => setMenuChat(chat)}
+                  onSwipeStart={onSwipeStartRow}
+                  onSwipeEnd={onSwipeEndRow}
+                />
+              );
+
+              return (
+                <MotiView
+                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10 }}
+                  animate={{ opacity: 1, translateY: 0 }}
+                  transition={
+                    reduced
+                      ? { type: 'timing', duration: 0 }
+                      : { ...motion.softSpring, delay: Math.min(index, 12) * motion.staggerStepMs }
+                  }
+                >
+                  {content}
+                </MotiView>
+              );
+  };
+  const renderChatRow = useCallback(
+    (info: { item: ChatListRow; index: number }) => renderChatRowRef.current(info),
+    [],
+  );
   return (
     <View style={{ flex: 1 }} onTouchStart={onScreenTouch}>
       <View style={styles.header}>
@@ -1622,7 +1706,7 @@ export default function ChatsScreen() {
         <>
           <FlatList
             data={chatRows}
-            keyExtractor={(r, i) => (r.kind === 'section' ? `s${i}-${r.title}` : r.chat.id)}
+            keyExtractor={chatListKey}
             onEndReached={() => setChatPage((n) => n + 30)}
             onEndReachedThreshold={0.6}
             keyboardShouldPersistTaps="handled"
@@ -1659,76 +1743,9 @@ export default function ChatsScreen() {
                 />
               ) : null
             }
-            renderItem={({ item, index }) => {
-              if (item.kind === 'section') {
-                return (
-                  <MotiView
-                    from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 6 }}
-                    animate={{ opacity: 1, translateY: 0 }}
-                    transition={
-                      reduced
-                        ? { type: 'timing', duration: 0 }
-                        : { ...motion.softSpring, delay: Math.min(index, 8) * motion.staggerStepMs }
-                    }
-                  >
-                    <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>{item.title}</Text>
-                  </MotiView>
-                );
-              }
-              const chat = item.chat;
-              const content = wide || selecting ? (
-                <View style={styles.staticRow}>
-                  <ChatRow
-                    chat={chat}
-                    title={titleOf(chat, myUsername)}
-                    myUsername={myUsername}
-                    unread={chat.unread}
-                    pinned={isPinned(chat.id)}
-                    muted={mutedSet.has(chat.id)}
-                    selecting={selecting}
-                    selected={selected.has(chat.id)}
-                    onToggleSelect={() => toggleSelect(chat.id)}
-                    onMenu={() => setMenuChat(chat)}
-                    onOpen={() => {
-                      if (selecting) toggleSelect(chat.id);
-                      else void onPressChatRow(item);
-                    }}
-                  />
-                </View>
-              ) : (
-                <SwipeChatRow
-                  chat={chat}
-                  title={titleOf(chat, myUsername)}
-                  myUsername={myUsername}
-                  unread={chat.unread}
-                  pinned={isPinned(chat.id)}
-                  muted={mutedSet.has(chat.id)}
-                  open={openRowId === chat.id}
-                  onOpenChange={setOpenRowId}
-                  onTogglePin={() => togglePin(chat.id)}
-                  onToggleMute={() => toggleMuted(chat.id)}
-                  onDelete={() => requestDelete([chat], titleOf(chat, myUsername))}
-                  onOpen={() => void onPressChatRow(item)}
-                  onMenu={() => setMenuChat(chat)}
-                  onSwipeStart={onSwipeStartRow}
-                  onSwipeEnd={onSwipeEndRow}
-                />
-              );
+            extraData={chatListExtraData}
+            renderItem={renderChatRow}
 
-              return (
-                <MotiView
-                  from={reduced ? { opacity: 0 } : { opacity: 0, translateY: 10 }}
-                  animate={{ opacity: 1, translateY: 0 }}
-                  transition={
-                    reduced
-                      ? { type: 'timing', duration: 0 }
-                      : { ...motion.softSpring, delay: Math.min(index, 12) * motion.staggerStepMs }
-                  }
-                >
-                  {content}
-                </MotiView>
-              );
-            }}
           />
         </>
       )}

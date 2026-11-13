@@ -129,33 +129,41 @@ unsigned kinto_elect_border_nodes(
     uint32_t now_ms,
     kinto_border_candidate_t out[KINTO_BORDER_MAX]) {
   unsigned found = 0;
-  for (unsigned i = 0; i < count && found < KINTO_BORDER_MAX; i++) {
+  for (unsigned i = 0; i < count; i++) {
     const kinto_cluster_neighbor_t *a = &neighbors[i];
     if (a->rssi < KINTO_BORDER_MIN_RSSI || a->queue_depth > KINTO_BORDER_MAX_QUEUE) continue;
+    if (a->streaks < 3) continue;   // кандидат должен стабильно видеть эфир
     if (now_ms - a->last_seen_ms > 12000u) continue;
-    for (unsigned j = i + 1; j < count && found < KINTO_BORDER_MAX; j++) {
+    for (unsigned j = i + 1; j < count; j++) {
       const kinto_cluster_neighbor_t *b = &neighbors[j];
       if (b->cluster_id == a->cluster_id) continue;
       if (b->rssi < KINTO_BORDER_MIN_RSSI || b->queue_depth > KINTO_BORDER_MAX_QUEUE) continue;
+      if (b->streaks < 3) continue;
       if (now_ms - b->last_seen_ms > 12000u) continue;
-      int rssi = a->rssi < b->rssi ? a->rssi : b->rssi;
-      int queue = a->queue_depth > b->queue_depth ? a->queue_depth : b->queue_depth;
-      int battery = a->battery < b->battery ? a->battery : b->battery;
-      // score = w_rssi*rssi + w_batt*battery + w_queue*(1-load)
-      int16_t score = (int16_t)(rssi + battery - queue * 8);
+      const int rssi = a->rssi < b->rssi ? a->rssi : b->rssi;
+      const int queue = a->queue_depth > b->queue_depth ? a->queue_depth : b->queue_depth;
+      // score = min(rssi_A, rssi_B) - queue_depth * 4
+      const int16_t score = (int16_t)(rssi - queue * 4);
       bool duplicate = false;
       for (unsigned k = 0; k < found; k++) {
         if (memcmp(out[k].mesh_addr, a->mesh_addr, KINTO_MESH_ADDR_LEN) == 0) duplicate = true;
       }
       if (duplicate) continue;
-      kinto_border_candidate_t *slot = &out[found];
-      memcpy(slot->mesh_addr, a->mesh_addr, KINTO_MESH_ADDR_LEN);
-      slot->cluster_a = a->cluster_id;
-      slot->cluster_b = b->cluster_id;
-      slot->score = score;
-      slot->primary = (found == 0);
-      found++;
+      // Держим до двух кандидатов, отсортированных по score (лучший первым).
+      unsigned pos = found;
+      while (pos > 0 && score > out[pos - 1].score) pos--;
+      if (pos >= KINTO_BORDER_MAX) continue;
+      for (unsigned k = (found < KINTO_BORDER_MAX ? found : KINTO_BORDER_MAX - 1); k > pos; k--) {
+        out[k] = out[k - 1];
+      }
+      memcpy(out[pos].mesh_addr, a->mesh_addr, KINTO_MESH_ADDR_LEN);
+      out[pos].cluster_a = a->cluster_id;
+      out[pos].cluster_b = b->cluster_id;
+      out[pos].score = score;
+      if (found < KINTO_BORDER_MAX) found++;
+      break;   // для узла a достаточно лучшей пары b
     }
   }
+  for (unsigned k = 0; k < found; k++) out[k].primary = (k == 0);
   return found;
 }

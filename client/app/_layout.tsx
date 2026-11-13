@@ -330,6 +330,7 @@ function RealtimeBridge() {
       socket = ws;
       ws.onopen = () => {
         reconnectAttempt = 0;
+        useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(true);
         // Р”РѕРіРѕРЅ РїРѕСЃР»Рµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёСЏ: РїРѕРєР° СЃРІСЏР·Рё РЅРµ Р±С‹Р»Рѕ, СЃРѕР±С‹С‚РёСЏ РјРѕРіР»Рё РїРѕС‚РµСЂСЏС‚СЊСЃСЏ.
         if (!firstConnect) catchUp();
@@ -341,9 +342,13 @@ function RealtimeBridge() {
           })
           .catch(() => undefined);
       };
-      ws.onerror = () => useStore.getState().setTransportOnline(false);
+      ws.onerror = () => {
+        useStore.getState().setTransportKnown(true);
+        useStore.getState().setTransportOnline(false);
+      };
       ws.onclose = () => {
         if (socket === ws) socket = null;
+        useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(false);
         scheduleReconnect();
       };
@@ -513,6 +518,7 @@ function RealtimeBridge() {
         /* ignore */
       }
       socket = null;
+      useStore.getState().setTransportKnown(true);
       useStore.getState().setTransportOnline(false);
     };
     const onPageShow = () => reconnectNow();
@@ -550,6 +556,7 @@ function RealtimeBridge() {
           /* ignore */
         }
         socket = null;
+        useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(false);
         scheduleReconnect();
       }
@@ -616,7 +623,22 @@ function RealtimeBridge() {
             (a, b) => new Date(a?.createdAt ?? 0).getTime() - new Date(b?.createdAt ?? 0).getTime(),
           );
         });
+        // Список чатов обновляем всегда, даже если этот чат не открыт:
+        // иначе превью/время/непрочитанные остаются старыми до refetch.
         void queryClient.invalidateQueries({ queryKey: ['chats'] });
+        const meId = getSession()?.userId;
+        if (!item.senderUserId || item.senderUserId !== meId) {
+          const previewText = String(message.text ?? '').trim();
+          if (previewText || message.kind !== 'text') {
+            useStore.getState().setChatPreview(chatId, {
+              id: typeof message.id === 'string' ? message.id : item.clientId || `mesh-${Date.now()}`,
+              text: previewText,
+              kind: message.kind,
+              mine: false,
+              at: message.createdAt,
+            });
+          }
+        }
 
         // Mesh/BLE-конверт пришёл, пока приложение в фоне: показываем
         // локальное уведомление. В foreground оставляем прежнее поведение,

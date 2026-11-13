@@ -45,6 +45,16 @@ interface AppState {
   setLocale: (locale: string) => void;
   transportOnline: boolean;
   setTransportOnline: (v: boolean) => void;
+  /**
+   * Известно ли реальное состояние WebSocket. В первые секунды после запуска
+   * до открытия/ошибки сокета транспорт «неизвестен» — тогда отправка даёт
+   * HTTP короткое окно и уходит в mesh, а не висит 12 с.
+   */
+  transportKnown: boolean;
+  setTransportKnown: (v: boolean) => void;
+  /** Пришли ли входящие данные через mesh хотя бы раз за сессию. */
+  meshIncomingActive: boolean;
+  setMeshIncomingActive: (v: boolean) => void;
   transportDirectPeer: boolean;
   setTransportDirectPeer: (v: boolean) => void;
   transportModule: { gateway: boolean; model: string } | null;
@@ -114,6 +124,10 @@ export const useStore = create<AppState>((set, get) => ({
   },
   transportOnline: false,
   setTransportOnline: (transportOnline) => set({ transportOnline }),
+  transportKnown: false,
+  setTransportKnown: (transportKnown) => set({ transportKnown }),
+  meshIncomingActive: false,
+  setMeshIncomingActive: (meshIncomingActive) => set({ meshIncomingActive }),
   transportDirectPeer: false,
   setTransportDirectPeer: (transportDirectPeer) => set({ transportDirectPeer }),
   transportModule: null,

@@ -1,174 +1,329 @@
 # Kinto Mesh Protocol v2
 
-Статус: **core / simulation**. Прошивочная интеграция выполняется поэтапно;
-аппаратные критерии требуют стенда с ESP32 + LoRa.
+Протокол обмена между модулями (ESP32) и модуля → Hub. Описывает
+фактический формат пакетов прошивки `swarm_module.ino`; архитектура и
+выбор транспорта — в `docs/module-mesh-architecture.md`.
+
+Прикладной слой (API телефона через mesh) — **KMT v1**, см. `docs/KMT.md`.
 
 ## 1. Адресация
 
-- `mesh_addr` — 8 байт, стабильный идентификатор модуля, не зависит от радио.
-  Для ESP32: `esp32-<MAC>` → BLAKE2b/FNV-64 → 8 байт. Один адрес для Wi-Fi и LoRa.
-- `cluster_id` — 4 байта, `FNV1a32(sorted(anchor_mesh_addr[]))`.
-  Якоря: gateway и стационарные repeater (питание от сети).
-- `msg_id` — UUID v4.
-- `sequence_number` — uint32 на отправителя, увеличивается на каждый mesh-пакет.
+| Идентификатор | Размер | Как получается |
+|---|---|---|
+| `mesh_addr` | 6 байт | заводской MAC Wi-Fi STA (`esp_read_mac`, `ESP_MAC_WIFI_STA`) |
+| `hardwareId` | строка | `esp32-<12 hex>` из того же MAC, кэш в NVS `swarm/hw_id` |
+| `nodeId` | u32 | FNV-1a 32 от `hardwareId` |
+| `cluster_id` | u32 | CRC32 по отсортированным строкам якорей через `\|`; `0` = кластера нет |
+| `packetId` | u32 | случайный (`esp_random`), уникален в пределах отправителя |
+| `publicId` | строка | `nodeId % 10^8`, 8 цифр — только для логов/UI |
 
-## 2. Beacon
+`mesh_addr` один и тот же для Wi-Fi и LoRa. BLE MAC — алиас, в
+маршрутизации не участвует.
 
-```text
-Beacon {
-  version: u8 = 2
-  type: u8 = BEACON
-  mesh_addr: bytes[8]
-  cluster_id: u32
-  border: bool
-  neighbor_clusters: u32[]
-  rssi_hint: i8
-  queue_depth: u8
-  ttl: u8
-  flags: u16  // gateway, anchor, wearable, lora, wifi
-  seq: u32
-}
+Для таблиц маршрутов и поля `addr` в ADVERT используется 8-байтная проекция
+`kinto_mesh_addr_from_u32(nodeId)`, а на проводе в `srcMac`/`dstMac` — реальные
+6 байт MAC. Это разные представления одного узла, не два разных адреса.
+
+## 2. MeshHeader (36 байт)
+
+```c
+#pragma pack(push, 1)
+struct MeshHeader {
+  uint8_t  magic0;      // 0x53 'S'
+  uint8_t  magic1;      // 0x47 'G'
+  uint8_t  ver;         // 1
+  uint8_t  type;        // MeshType
+  uint8_t  flags;       // зарезервировано, сейчас 0
+  uint8_t  ttl;         // уменьшается на каждом хопе
+  uint8_t  hop;         // счётчик хопов, у отправителя 0
+  uint8_t  reserved;    // выравнивание
+  uint16_t payloadLen;  // LE, <= 1024
+  uint32_t src;         // LE, nodeId отправителя
+  uint32_t dst;         // LE, nodeId | MESH_BROADCAST (0xFFFFFFFF)
+  uint32_t packetId;    // LE, для ACK и dedup
+  uint8_t  srcMac[6];   // mesh_addr отправителя
+  uint8_t  dstMac[6];   // mesh_addr получателя, FF..FF = broadcast
+  uint16_t crc;         // LE, CRC16-CCITT
+};
+#pragma pack(pop)
+static_assert(sizeof(MeshHeader) == 36);
 ```
 
-Beacon отправляется каждые `BEACON_INTERVAL_MS` (по умолчанию 3000).
-Border Node добавляет `border=true` и до 4 `neighbor_clusters`.
+- CRC16-CCITT (poly `0x1021`, init `0xFFFF`) считается по заголовку с
+  `crc = 0` плюс payload. Пакет с неверным CRC отбрасывается.
+- `dstMac` заполняется по таблице соседей; для неизвестного узла — нули,
+  доставка идёт по `dst`.
+- Лимиты payload: ESP-NOW v1 кадр ≤ 240 байт, LoRa ≤ 180 байт, общий
+  предел `SG_MAX_PAYLOAD = 1024`. Крупное режется `MT_FRAG`.
 
-## 3. Cluster Manager
+## 3. Типы пакетов
 
-`cluster_id = fnv1a32(join(sorted(anchor_ids), "|"))`.
-Если набор якорей меняется, cluster_id пересчитывается; старый ID живёт
-`CLUSTER_GRACE_MS` (30 с), чтобы не рвать маршруты мгновенно.
-
-Border election (`elect_border_node`):
-
-```text
-score = min(rssi_a, rssi_b) - queue_depth * 4 - battery_penalty
+```c
+enum MeshType {
+  MT_ADVERT       = 1,
+  MT_DATA         = 2,
+  MT_ACK          = 3,
+  MT_ROUTE_REQ    = 4,
+  MT_ROUTE_REP    = 5,
+  MT_PRESENCE     = 6,
+  MT_FRAG         = 7,
+  MT_DISCOVER     = 8,
+  MT_DISCOVER_ACK = 9,
+  MT_LORA_ADVERT  = 10,
+  MT_LORA_DATA    = 11,
+};
 ```
 
-- Кандидат обязан видеть оба кластера минимум 3 beacon-интервала.
-- Выбираются до 2 узлов: лучший и резервный.
-- Порог: `min_rssi >= -95`, `max_queue_depth <= 8`.
-- Переизбрание не чаще `BORDER_ELECTION_COOLDOWN_MS` (60 с).
-
-## 4. Handover
-
-Пороги:
-
-- `HANDOVER_THRESHOLD = -85 dBm` — текущий кластер слабый.
-- `HANDOVER_TARGET = -75 dBm` — целевой кластер сильный.
-- `HANDOVER_HYSTERESIS = 3` beacon-интервала.
-- `HANDOVER_RETRY_DELAY_MS = 15000`.
-
-Состояния Wearable:
-
-```text
-IN_CLUSTER -> PENDING -> TRANSITIONAL -> COMPLETE
-                    \-> RETRY -> PENDING
-```
-
-Пакеты:
-
-```text
-HANDOVER_REQUEST { mesh_addr, from_cluster, to_cluster, seq }
-HANDOVER_ACCEPT  { mesh_addr, border_mesh_addr, route_id, ttl }
-HANDOVER_COMPLETE{ mesh_addr, cluster_id }
-HANDOVER_RETRY   { mesh_addr, cluster_id, delay_ms }
-```
-
-Во время `TRANSITIONAL`:
-
-- сообщения помечаются `cluster_agnostic=true`;
-- отправляются в старый и новый кластер параллельно;
-- удаляются из очереди после ACK сервера/получателя;
-- при потере Border Node — возврат в старый кластер и retry.
-
-## 5. Hybrid routing
-
-Route entry:
-
-```text
-destination_mesh_addr | next_hop_mesh_addr | interface | metric | expiry
-```
-
-- `metric` — EWMA задержки ACK в миллисекундах + штраф за hops.
-- Wi-Fi предпочтителен при `metric < WIFI_PREFERRED_THRESHOLD` (120 мс).
-- LoRa выбирается для текста/статуса, если Wi-Fi metric высокий или недоступен.
-- Медиа и OTA — только Wi-Fi.
-- TTL: Wi-Fi 16, LoRa 8. При Wi-Fi→LoRa `ttl = floor(ttl/2)`.
-- Duplicate detection: кольцевой буфер 256 записей по
-  `hash(src_mesh_addr, seq)`, TTL записи 60 с.
-
-`select_route(destination, traffic_class)`:
-
-1. Если media/ota и есть Wi-Fi — Wi-Fi.
-2. Если Wi-Fi metric < threshold — Wi-Fi.
-3. Если LoRa доступен и queue_depth < 3 — LoRa.
-4. Иначе лучший по metric.
-5. Нет маршрута — `ROUTE_NONE` (пакет в outbox).
-
-## 6. Traffic classes
-
-| Класс | Приоритет | Интерфейс | Сжатие |
+| Type | Имя | Payload | Транспорт |
 |---|---|---|---|
-| telemetry | low | LoRa | binary |
-| ota | low/chunked | Wi-Fi only | 4 KiB chunks |
-| telemetry_request | medium | any | none |
-| search | medium | LoRa if no Wi-Fi | JSON < 1 KiB |
-| text | high | any | optional protobuf |
-| media | best-effort | Wi-Fi; LoRa thumb <2 KiB | WebP q20, 320px |
+| 1 | `MT_ADVERT` | JSON beacon (раздел 4.1) | broadcast, ESP-NOW + LoRa |
+| 2 | `MT_DATA` | JSON KMT / handover / HTTP-туннель | unicast или broadcast |
+| 3 | `MT_ACK` | `[ackedPacketId u32]` | unicast |
+| 4 | `MT_ROUTE_REQ` | `[target u32]` | broadcast |
+| 5 | `MT_ROUTE_REP` | `[target u32][nextHop u32][metric u16][hops u8]` | unicast |
+| 6 | `MT_PRESENCE` | JSON (раздел 4.2) | broadcast |
+| 7 | `MT_FRAG` | `[origId u32][index u8][total u8][chunk ≤150]` | ESP-NOW или LoRa |
+| 8 | `MT_DISCOVER` | JSON (раздел 4.3) | broadcast, только ESP-NOW |
+| 9 | `MT_DISCOVER_ACK` | `{"ch":N,"cluster_id":N}` | unicast |
+| 10 | `MT_LORA_ADVERT` | JSON (раздел 4.4) | broadcast, только LoRa |
+| 11 | `MT_LORA_DATA` | произвольный payload | `dst = cluster_id` |
 
-Media по LoRa: только thumbnail ≤ 2 КБ и `lora_queue_depth < 3`, иначе
-`media_dropped_due_to_lora_congestion`.
+Порядок байт полей payload — little-endian (`readLe32`/`writeLe32`).
 
-## 7. Offline mode
+### 3.1 MT_FRAG
 
-ESK — Ed25519, генерируется при входе в Autonomous Mode.
-Приватный ключ хранится в Keychain/Keystore, публичный — в каждом пакете.
+Фрагментация одинакова для ESP-NOW и LoRa:
+
+```text
+payload = origId u32 | index u8 | total u8 | chunk (<= 150 байт)
+```
+
+- `total <= 16` (`SG_MAX_FRAGMENTS`), сборка в 2 слотах.
+- `packetId` фрагмента = `origId ^ ((index + 1) << 24)`.
+- После сборки пакет проходит обычный путь `handleMeshPacket` (локальная
+  обработка + пересылка). Лог: `[frag] reassembled …`.
+
+## 4. JSON payload
+
+### 4.1 ADVERT
+
+Отправляется каждые 8 с первые 2 минуты, затем каждые 30 с.
 
 ```json
 {
-  "msg_id": "uuid",
-  "chat_id": "hashed_chat_id",
-  "sender_ephemeral_pubkey": "base64",
-  "payload_ciphertext": "base64",
-  "signature": "base64(ed25519(msg_id|chat_id|payload_ciphertext))",
-  "timestamp": 0,
-  "cluster_id": "hex8",
-  "ttl_hops": 8
+  "id": 123456789,
+  "role": "gateway",
+  "gw": 1,
+  "batt": 87,
+  "q": 3,
+  "n": 5,
+  "addr": "a1b2c3d4e5f60718",
+  "cluster_id": 305419896,
+  "border": 0,
+  "hw": "esp32-aabbccddeeff",
+  "mesh_addr": "aabbccddeeff",
+  "ble_mac": "aa:bb:cc:dd:ee:ff",
+  "is_anchor": 1,
+  "hues": ["wifi", "lora", "ble"],
+  "load": 0.01,
+  "neighbor_clusters": [305419897],
+  "ch": 6,
+  "cap_lora": 1,
+  "lora_bridge": 1
 }
 ```
 
-Outbox flush: батчи по 20, ACK → удалить и уничтожить ESK.
-Если устройство сменилось до flush: запись получает
-`unverifiable_after_device_change=true`; сообщение не переподписывается,
-UI показывает «отправлено офлайн, подлинность подтверждена сетью».
+| Поле | Смысл |
+|---|---|
+| `id` | `nodeId` отправителя |
+| `role` | `gateway` / `repeater` / `wearable` |
+| `gw` | 1, если есть рабочий uplink в Hub (у шлюза) или виден шлюз |
+| `batt` | заряд, % |
+| `q` | глубина mesh-очереди, записей |
+| `n` | число видимых соседей |
+| `addr` | 8-байтный mesh-адрес в hex (проекция `nodeId`) |
+| `cluster_id` | текущий кластер |
+| `border` | 1 — узел объявил себя border |
+| `hw` | канонический `hardwareId` |
+| `mesh_addr` | MAC без префикса `esp32-` |
+| `ble_mac` | BLE-алиас |
+| `is_anchor` | 1 для gateway и repeater (входит в `cluster_id`) |
+| `hues` | доступные транспорты |
+| `load` | `q / 255`, 0..1 |
+| `neighbor_clusters` | до 2 чужих `cluster_id` |
+| `ch` | текущий mesh-канал 1..13; по нему работает `channelDiscover` |
+| `cap_lora` | 1, если LoRa включён в конфиге **и** радио инициализировано |
+| `lora_bridge` | 1, если узел готов пересылать `MT_LORA_DATA` |
 
-## 8. Presence
+### 4.2 PRESENCE
 
-- `ONLINE_SERVER`: есть интернет/шлюз, heartbeat < 5 с.
-- `ONLINE_MESH`: сервера нет, но есть ACK прямого получателя.
-- `OFFLINE_QUEUED`: сообщение в outbox, получатель не подтверждён.
+Каждые 15 с; не отправляется при `q > 120`.
 
-При `ONLINE_MESH → ONLINE_SERVER` вызывается `outbox.flush()`; статусы
-меняются с `mesh` на `delivered` после ACK.
+```json
+{"id":123456789,"batt":87,"addr":"a1b2c3d4e5f60718","cluster_id":305419896,
+ "border":0,"hw":"esp32-aabbccddeeff","mesh_addr":"aabbccddeeff",
+ "ble_mac":"aa:bb:cc:dd:ee:ff","is_anchor":0,"hues":["wifi","ble"],
+ "load":0.0,"neighbor_clusters":[],"ch":6,"cap_lora":0,"lora_bridge":0}
+```
 
-## 9. Telemetry / OTA
+Набор полей тот же, что у ADVERT (общая функция `appendBeaconFields`), но без
+`role`, `gw`, `q`, `n`.
 
-Telemetry request:
+### 4.3 DISCOVER / DISCOVER_ACK
+
+```json
+// MT_DISCOVER (broadcast, от узла)
+{"hw":"esp32-aabbccddeeff","role":"wearable","nonce":274839201}
+
+// MT_DISCOVER_ACK (unicast, только от шлюза)
+{"ch":6,"cluster_id":305419896}
+```
+
+### 4.4 LORA_ADVERT
+
+```json
+{"cluster_id":305419896,"gw":1,"ch":6,"hw":"esp32-aabbccddeeff"}
+```
+
+### 4.5 Handover
+
+Передаётся как `MT_DATA` с `"kind":"handover"`:
+
+```json
+{"kind":"handover","op":"request","from":123456789,"to":987654321,
+ "cluster":305419897,"role":"wearable"}
+```
+
+| `op` | Кто шлёт | Смысл |
+|---|---|---|
+| `request` | wearable | просит перевод в `cluster` |
+| `accept` | border | подтверждает, временный маршрут через border |
+| `complete` | wearable | 3 стабильных beacon, кластер закреплён |
+| `retry` | wearable | повтор после 3 с (до 3 попыток) |
+| `reject` | узел | не border / чужой кластер |
+| `abort` | обе стороны | таймаут 10 с, возврат в исходный кластер |
+
+Параметры и состояния — `docs/module-mesh-architecture.md`, раздел 3.
+
+## 5. channelDiscover
+
+Узел не ассоциируется с Wi-Fi: ему нужен только канал шлюза.
+
+```text
+wearable/repeater                     gateway (AP + STA к роутеру)
+      |                                        |
+      | ch = 1                                 | канал = канал роутера
+      |-- MT_DISCOVER (bcast, x2) ------------>|
+      |         (140 мс ожидания)              |
+      |                                        |
+      |<-- MT_DISCOVER_ACK {"ch":6} -----------|
+      |    или ADVERT с "ch":6                 |
+      |                                        |
+   gEspNowChannel = 6                          |
+   espNowReinitOnChannel(6)                    |
+      |-- ADVERT/PRESENCE -------------------->|
+```
+
+Критерии:
+
+| Условие | Значение |
+|---|---|
+| Диапазон | 1..13 |
+| Таймаут на канал | 140 мс |
+| Повторов DISCOVER на канал | 2 |
+| Типичное время до успеха | ≈1.8 с (13 × 140 мс), критерий < 2 с |
+| Повтор поиска | не чаще 1 раза в 60 с, пока `espnow rx == 0` |
+| Ответчик | только `gateway` |
+| Fallback | скан SoftAP `SG-MESH`, канал найденного AP без ассоциации |
+
+Успех фиксируется логом `[channel] discovered ch=N`; канал попадает в
+`gApChannel`, `gEspNowChannel`, `gDiscoveredChannel`.
+
+## 6. LoRa-мост
+
+Правило пересылки: `dst` в `MT_LORA_DATA` — это **cluster_id**.
+
+```text
+if dst == gNodeId || dst == 0xFFFFFFFF:
+    доставить локально (wearable -> BLE, gateway -> очередь Hub)
+else:
+    r = loraClusterRouteFind(dst)      // cluster_id -> nextHop, TTL 10 мин
+    if r != null: transmitLoraBridge(MT_LORA_DATA, r->nextHop, payload, ttl=2)
+    else: drop
+```
+
+- Таблица `cluster_id -> nextHop` наполняется из `MT_LORA_ADVERT`
+  (каждые ~180 с).
+- Пакет с `dst = cluster_id` не флудится по Wi-Fi.
+- Лимит одного кадра — 180 байт; больше — `MT_FRAG`.
+- Медиа/OTA через LoRa запрещены на уровне `select_route`.
+
+## 7. Маршрутизация (кратко)
+
+| Параметр | ESP-NOW | LoRa |
+|---|---|---|
+| TTL | 16 | 8 в маршруте, до 12 у broadcast |
+| Expiry маршрута | 300 с | 900 с |
+| Порог предпочтения | 120 | 400 |
+
+```text
+metric = ewma_ms + hops * 35 + queue_depth * 8
+```
+
+- Reverse learning: `routeLearn(src, src, iface, hop+1, ewma)`.
+- Path request: `MT_ROUTE_REQ`, повтор каждые 3 с (до 3 раз), через 9 с —
+  flood.
+- Dedup: `hash(src, packetId)`, кольцо 256 записей, TTL 60 с.
+- Медиа и OTA — только ESP-NOW.
+
+## 8. KMT v1
+
+Kinto Mesh Transport инкапсулирует HTTP API приложения в `MT_DATA`:
+AES-256-GCM blob, `chatId="__http__"`, `kind:"http"` / `"http_resp"` /
+`"http_resend"`, чанки по 280 байт, id идемпотентности, повторная отправка
+потерянных чанков. Полное описание, ключи и ограничения — `docs/KMT.md`.
+
+Клиент ходит в mesh только при `transportOnline == false` и живом модуле
+(`client/src/data/api.ts` → `meshHttpAvailable()` в
+`client/src/modules/meshHttp.ts`). Запросы вне allowlist
+(`/v1/admin`, `/v1/auth`, `/v1/objects`, `/v1/uploads`) через mesh не
+проксируются.
+
+## 9. Traffic classes
+
+| Класс | Приоритет | Интерфейс | Примечание |
+|---|---|---|---|
+| `text` | high | любой | основной трафик KMT |
+| `telemetry` | low | LoRa | ADVERT/PRESENCE, ACK |
+| `search` | medium | LoRa при недоступном Wi-Fi | JSON < 1 КБ |
+| `ota` | chunked | только ESP-NOW | 4 КБ чанки |
+| `media` | best-effort | только ESP-NOW | по LoRa не отправляется |
+
+Определение класса — по префиксу JSON `"kind"` в первых 160 байтах
+(`meshV2TrafficFor`).
+
+## 10. Presence и offline
+
+- `ONLINE_SERVER` — есть интернет/шлюз, heartbeat < 5 с.
+- `ONLINE_MESH` — сервера нет, но есть ACK получателя по mesh.
+- `OFFLINE_QUEUED` — запись в outbox, ACK нет.
+
+Очередь модуля (`/queue.log`, LittleFS) хранит до 200 записей с TTL 72 ч.
+Uplink: `QK_HUB` — запись уходит в Hub; downlink: broadcast `MT_DATA` с
+повтором, дубли отсекаются по `packetId`. При handover записи шлются дважды
+(cluster-agnostic).
+
+## 11. Telemetry / OTA (серверный уровень)
 
 ```text
 TELEMETRY_REQUEST { target_mesh_addr, metrics[], request_id }
 TELEMETRY_REPORT  { request_id, target_mesh_addr, values{}, ts }
 ```
 
-Rate limit: 1 запрос на модуль / 30 с, иначе 429 на шлюзе.
-
-Cluster OTA:
+Rate limit: 1 запрос на модуль / 30 с. Cluster OTA — только ESP-NOW:
 
 ```text
-OTA_ANNOUNCE { firmware_hash, total_chunks, chunk_size }
+OTA_ANNOUNCE      { firmware_hash, total_chunks, chunk_size }
 OTA_CHUNK_REQUEST { firmware_hash, chunk_index }
-OTA_CHUNK { firmware_hash, index, data[4 KiB] }
+OTA_CHUNK         { firmware_hash, index, data[4 KiB] }
 ```
-
-Только Wi-Fi. Chunk requester использует случайную задержку 50–500 мс.

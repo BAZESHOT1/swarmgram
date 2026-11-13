@@ -81,13 +81,14 @@ kinto_route_t kinto_select_route(const uint8_t dst[KINTO_MESH_ADDR_LEN], kinto_t
     }
     if (memcmp(r->dst, dst, KINTO_MESH_ADDR_LEN) != 0) continue;
     uint16_t metric = kinto_route_metric(r);
-    if (r->iface == KINTO_IFACE_WIFI && (!wifi || metric < kinto_route_metric(wifi))) wifi = r;
+    if (r->iface == KINTO_IFACE_ESPNOW && (!wifi || metric < kinto_route_metric(wifi))) wifi = r;
     if (r->iface == KINTO_IFACE_LORA && (!lora || metric < kinto_route_metric(lora))) lora = r;
     if (!best || metric < kinto_route_metric(best)) best = r;
   }
 
+  // Медиа/OTA не отправляем в LoRa: только ESP-NOW LR.
   if (traffic == KINTO_TRAFFIC_MEDIA || traffic == KINTO_TRAFFIC_OTA) return wifi ? *wifi : none;
-  if (wifi && kinto_route_metric(wifi) < KINTO_WIFI_PREFERRED) return *wifi;
+  if (wifi && kinto_route_metric(wifi) < KINTO_ESPNOW_PREFERRED) return *wifi;
   if (lora && lora->queue_depth < 3 && kinto_route_metric(lora) < KINTO_LORA_PREFERRED) return *lora;
   if (best) return *best;
   return none;
