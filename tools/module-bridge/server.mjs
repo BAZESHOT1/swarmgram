@@ -239,6 +239,7 @@ function cors(res) {
 }
 
 function json(res, code, value) {
+  if (res.headersSent || res.writableEnded) return;
   cors(res);
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
@@ -311,8 +312,20 @@ const server = http.createServer(async (req, res) => {
     }
     return json(res, 404, { error: 'not_found' });
   } catch (error) {
+    if (res.headersSent) {
+      try { res.end(); } catch { /* ignore */ }
+      return;
+    }
     return json(res, 500, { error: error instanceof Error ? error.message : String(error) });
   }
+});
+
+// Монитор порта не должен ронять весь bridge из-за обрыва SSE-клиента.
+process.on('uncaughtException', (error) => {
+  console.error('[kinto-bridge] uncaught', error);
+});
+process.on('unhandledRejection', (error) => {
+  console.error('[kinto-bridge] rejection', error);
 });
 
 server.listen(HTTP_PORT, '127.0.0.1', () => {
