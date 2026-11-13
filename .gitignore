@@ -45,3 +45,6 @@ release/native/
 
 # local test bundles
 client/.tmp/
+
+# release build artifacts (stored in GitHub Releases)
+release/*.zip
