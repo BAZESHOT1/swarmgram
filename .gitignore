@@ -40,3 +40,5 @@ services/firmware-builder/.data/
 *.log
 .DS_Store
 Thumbs.db
+# native release artifacts (публикуются в GitHub Releases)
+release/native/
