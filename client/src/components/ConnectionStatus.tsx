@@ -5,13 +5,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/useTheme';
 import { useStore } from '../state/useStore';
 
-export type ConnectionPhase = 'connecting' | 'updating' | null;
+export type ConnectionPhase = 'connecting' | 'updating' | 'mesh' | null;
 
 // Глобально между экранами: открытие чата не должно снова показывать «Обновление».
 let lastOnline: boolean | null = null;
 
 export function useConnectionPhase(): ConnectionPhase {
   const online = useStore((s) => s.transportOnline);
+  const mesh = useStore((s) => s.transportModule);
   const [updating, setUpdating] = React.useState(false);
 
   React.useEffect(() => {
@@ -30,14 +31,16 @@ export function useConnectionPhase(): ConnectionPhase {
     return undefined;
   }, [online]);
 
-  if (!online) return 'connecting';
+  // Модуль подключён — канал mesh валиден, даже если интернета нет.
+  if (!online) return mesh ? 'mesh' : 'connecting';
   if (updating) return 'updating';
   return null;
 }
 
-export const CONNECTION_LABEL: Record<'connecting' | 'updating', string> = {
+export const CONNECTION_LABEL: Record<'connecting' | 'updating' | 'mesh', string> = {
   connecting: 'Соединение',
   updating: 'Обновление',
+  mesh: 'Mesh',
 };
 
 export function ConnectionPill({ phase }: { phase: ConnectionPhase }) {
@@ -56,7 +59,7 @@ export function ConnectionPill({ phase }: { phase: ConnectionPhase }) {
       }}
     >
       <Ionicons
-        name={phase === 'connecting' ? 'cloud-offline-outline' : 'sync-outline'}
+        name={phase === 'connecting' ? 'cloud-offline-outline' : phase === 'mesh' ? 'radio-outline' : 'sync-outline'}
         size={12}
         color={phase === 'connecting' ? theme.warning : theme.accent}
       />

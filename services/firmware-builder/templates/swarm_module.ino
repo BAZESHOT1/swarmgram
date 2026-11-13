@@ -2271,11 +2271,23 @@ static void handleHttpRelay(const String &raw, uint32_t src) {
   const char *rblob = rd["blob"] | "";
   if (!strlen(rblob)) return;
 
-  String out = String("{\"chatId\":\"__http__\",\"envelope\":{\"kind\":\"http_resp\",\"id\":\"") +
-               jsonEsc(String(reqId)) + "\",\"blob\":\"" + rblob + "\"}}";
-  meshTransmitRouted(MT_DATA, src, (const uint8_t *)out.c_str(),
-                     (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
-  sgLog("[http] relay ok %u bytes", (unsigned)out.length());
+  // Ответ API может быть больше одного mesh-кадра (Wi-Fi SG_MAX_PAYLOAD).
+  // Режем blob на части; клиент собирает по id/part/total.
+  const uint16_t chunkSize = 280;
+  const uint16_t total = (uint16_t)((strlen(rblob) + chunkSize - 1) / chunkSize);
+  const String blobStr = String(rblob);
+  for (uint16_t part = 0; part < total; part++) {
+    const int off = (int)part * chunkSize;
+    const String chunk = blobStr.substring(off, off + chunkSize);
+    String out = String("{\"chatId\":\"__http__\",\"envelope\":{\"kind\":\"http_resp\",\"id\":\"") +
+                 jsonEsc(String(reqId)) + "\",\"part\":" + String((unsigned)part) +
+                 ",\"total\":" + String((unsigned)total) +
+                 ",\"chunk\":\"" + chunk + "\"}}";
+    meshTransmitRouted(MT_DATA, src, (const uint8_t *)out.c_str(),
+                       (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
+    delay(3);
+  }
+  sgLog("[http] relay ok %u bytes in %u chunks", (unsigned)strlen(rblob), (unsigned)total);
 }
 
 static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t rssi,

@@ -7,7 +7,7 @@
  */
 import { ApiError, getSession } from '../data/api';
 import { decryptJson, encryptJson, fromB64, toB64, utf8Encode } from '../crypto/core';
-import { onMeshEnvelope, sendViaMesh } from './meshLink';
+import { onMeshEnvelope, sendViaMesh, canSendViaMesh } from './meshLink';
 
 interface Pending {
   resolve: (value: MeshHttpResponse) => void;
@@ -21,6 +21,7 @@ export interface MeshHttpResponse {
 }
 
 const pending = new Map<string, Pending>();
+const assemblies = new Map<string, { total: number; parts: Map<number, string> }>();
 let wired = false;
 
 function wire(): void {
@@ -31,13 +32,36 @@ function wire(): void {
     if (env?.kind !== 'http_resp' || typeof env.id !== 'string') return;
     const item = pending.get(env.id);
     if (!item) return;
+
+    // Ответ приходит частями (mesh-кадр <= 280 байт base64-blob).
+    let packedText = typeof env.blob === 'string' ? String(env.blob) : '';
+    if (!packedText && typeof env.chunk === 'string') {
+      const total = Math.max(1, Number(env.total) || 1);
+      const part = Math.max(0, Number(env.part) || 0);
+      let assembly = assemblies.get(env.id);
+      if (!assembly || assembly.total !== total) {
+        assembly = { total, parts: new Map() };
+        assemblies.set(env.id, assembly);
+      }
+      assembly.parts.set(part, env.chunk);
+      if (assembly.parts.size < total) return;
+      const ordered: string[] = [];
+      for (let i = 0; i < total; i += 1) {
+        const chunk = assembly.parts.get(i);
+        if (chunk == null) return;
+        ordered.push(chunk);
+      }
+      assemblies.delete(env.id);
+      packedText = ordered.join('');
+    }
+    if (!packedText) return;
     pending.delete(env.id);
     clearTimeout(item.timer);
     void (async () => {
       try {
         const session = getSession();
         if (!session?.meshRelayKey) throw new Error('no relay key');
-        const packed = JSON.parse(utf8Decode(fromB64(String(env.blob || ''))));
+        const packed = JSON.parse(utf8Decode(fromB64(packedText)));
         const data = await decryptJson<{ status: number; body: unknown }>(
           fromB64(session.meshRelayKey),
           String(packed.ciphertext || ''),
@@ -64,7 +88,7 @@ function utf8Decode(bytes: Uint8Array): string {
 
 /** Доступен ли туннель: есть ключ и подключённый модуль с шлюзом. */
 export function meshHttpAvailable(): boolean {
-  return Boolean(getSession()?.meshRelayKey);
+  return Boolean(getSession()?.meshRelayKey && canSendViaMesh());
 }
 
 /**
@@ -99,8 +123,9 @@ export async function meshHttpFetch(
   const result = await new Promise<MeshHttpResponse | null>((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
+      assemblies.delete(id);
       resolve(null);
-    }, 15_000);
+    }, 30_000);
     pending.set(id, {
       resolve,
       reject: () => resolve(null),
