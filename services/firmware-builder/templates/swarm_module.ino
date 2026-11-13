@@ -331,6 +331,7 @@ struct NeighborInfo {
   uint32_t clusterId;     // cluster_id из ADVERT/PRESENCE (0 = неизвестен)
   bool     border;        // сосед объявил себя border-нодой
   bool     anchor;        // сосед — якорь кластера (gateway/repeater)
+  uint8_t  neigh;         // сколько соседей видит сам этот узел (beacon n)
   uint32_t lastMs;
   char     role[10];
   char     hw[24];        // заводской MAC соседа (esp32-xxxxxxxxxxxx)
@@ -1086,6 +1087,7 @@ static void neighborUpdateAdvert(uint32_t id, int16_t rssi, const String &json,
       gNeighbors[i].clusterId = jsonGetU32(json, "cluster_id");
       gNeighbors[i].border = jsonGetInt(json, "border") != 0;
       gNeighbors[i].anchor = jsonGetInt(json, "is_anchor") != 0;
+      gNeighbors[i].neigh = (uint8_t)jsonGetInt(json, "n");
       String r = jsonGetString(json, "role");
       if (r.length()) snprintf(gNeighbors[i].role, sizeof(gNeighbors[i].role), "%s", r.c_str());
       String hw = jsonGetString(json, "hw");
@@ -3501,7 +3503,12 @@ static String neighborsJson() {
     first = false;
     out += String("{\"publicId\":\"") + publicIdForNode(gNeighbors[i].id) +
            "\",\"hardwareId\":\"" + String(gNeighbors[i].hw) +
-           "\",\"rssi\":" + String(gNeighbors[i].rssi) + "}";
+           "\",\"role\":\"" + String(gNeighbors[i].role) +
+           "\",\"clusterId\":" + String((unsigned long)gNeighbors[i].clusterId) +
+           "\",\"neighbors\":" + String((unsigned)gNeighbors[i].neigh) +
+           ",\"battery\":" + String((unsigned)gNeighbors[i].batt) +
+           ",\"anchor\":" + String(gNeighbors[i].anchor ? 1 : 0) +
+           ",\"rssi\":" + String(gNeighbors[i].rssi) + "}";
   }
   out += "]";
   return out;
@@ -3619,7 +3626,7 @@ static void hubRelayQueue() {
     if (k) body += ",";
     body += String("{\"chatId\":\"") + jsonEsc(chatId) +
             "\",\"packetId\":" + String((unsigned long)e->id) +
-            ",\"envelope\":\"" + jsonEsc(envelope) + "\"}";
+            ",\"envelope\":" + envelope + "}";
   }
   body += "]}";
 

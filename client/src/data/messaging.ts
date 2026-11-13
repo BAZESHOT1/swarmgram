@@ -459,7 +459,9 @@ async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUserna
   if (!rawKey) {
     return { ...common, text: '', delivered: true, failed: true, pending: false };
   }
-  const bytes = await downloadObject(env.objectId);
+  const bytes = env.envelopeB64
+    ? fromB64u(env.envelopeB64)
+    : await downloadObject(env.objectId);
   // внимание: decryptPayload ожидает стандартный base64 (toB64), не base64url —
   // иначе fromB64 отбрасывает '-'/'_' и шифротекст повреждается.
   const payload = bytes ? await decryptPayload(rawKey, toB64(bytes), env.nonce) : null;

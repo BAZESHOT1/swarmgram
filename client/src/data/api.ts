@@ -618,6 +618,8 @@ export interface Envelope {
   sizeBytes?: number;
   nonce: string;
   header: unknown;
+  /** Шифротекст inline для mesh-доставки без интернета (base64url). */
+  envelopeB64?: string;
   replyTo: string | null;
   scheme?: 'server' | 'e2e';
   keyVersion?: number;

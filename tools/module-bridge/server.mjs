@@ -130,12 +130,9 @@ async function openPort(path, baud = 115200) {
     logLine(path, `[bridge] port error: ${err.message}`);
     broadcastStatus(path);
   });
-  // Сбрасываем плату, чтобы получить SG-INFO с MAC/ролью.
-  try {
-    port.set({ dtr: false, rts: true });
-    await sleep(150);
-    port.set({ dtr: false, rts: false });
-  } catch { /* ignore */ }
+  // ВАЖНО: не дёргаем DTR/RTS при открытии. У ESP32-C3/S3 с USB-JTAG этот
+  // импульс переводит чип в download mode, и модуль «пропадает» из mesh,
+  // хотя физически исправен. Сброс — только явной кнопкой /api/reset.
   broadcastStatus(path);
   return statusOf(session);
 }
@@ -263,6 +260,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (path === '/api/health') return json(res, 200, { ok: true, python: existsSync(PYTHON), pythonPath: PYTHON });
+    if (path === '/api/fscheck') {
+      const p = url.searchParams.get('path') ?? '';
+      return json(res, 200, { path: p, exists: existsSync(p), cwd: process.cwd(), platform: process.platform });
+    }
     if (path === '/api/ports') return json(res, 200, { ports: await listPorts(), sessions: [...sessions.values()].map(statusOf) });
     if (path === '/api/open' && req.method === 'POST') {
       const body = await readBody(req);

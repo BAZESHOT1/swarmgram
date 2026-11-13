@@ -24,6 +24,8 @@ import { createReadStream } from 'node:fs';
 import { stat, unlink } from 'node:fs/promises';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
+import { Readable } from 'node:stream';
+import { storeEncrypted } from '../storageRelay.js';
 import { signToken, verifyToken, sha256, uuid } from '../crypto.js';
 import { one, query, tx } from '../db.js';
 import { ensurePublicId, isPublicId, publicIdFromHardware } from '../meshId.js';
@@ -43,6 +45,7 @@ import {
   unauthorized,
 } from '../util.js';
 import { getMeshConfig, meshPublicConfig } from './network.js';
+import { getFragment } from '../nodes.js';
 
 type ModuleRole = 'gateway' | 'repeater' | 'wearable';
 type ModuleTransport = 'wifi' | 'lora' | 'ble' | 'usb';
@@ -747,20 +750,41 @@ async function persistRelayMessage(
   envelope: Record<string, unknown>,
 ): Promise<boolean> {
   const env = envelope as MessageEnvelopeFields;
-  const objectId = String(env.objectId ?? '');
+  let objectId = String(env.objectId ?? '');
   const initialHeader: Record<string, unknown> =
     env.header && typeof env.header === 'object' && !Array.isArray(env.header)
       ? { ...(env.header as Record<string, unknown>) }
       : {};
   // nonce может лежать как в самом конверте, так и в header.
   const nonce = String(env.nonce ?? initialHeader.nonce ?? '');
-  if (!UUID_RE.test(objectId) || !nonce) return false;
+  if (!nonce) return false;
 
-  const obj = await one<{ id: string; owner_id: string }>(
-    `SELECT id, owner_id FROM objects WHERE id = $1 AND state = 'active'`,
-    [objectId],
-  );
-  if (!obj || obj.owner_id !== ownerId) return false;
+  let obj = UUID_RE.test(objectId)
+    ? await one<{ id: string; owner_id: string }>(
+        `SELECT id, owner_id FROM objects WHERE id = $1 AND state = 'active'`,
+        [objectId],
+      )
+    : null;
+
+  // Офлайн-сообщение из mesh: объекта ещё нет (upload не удался), но есть
+  // ciphertext в envelopeB64. Сохраняем его на сервере от имени владельца.
+  const inline = typeof (env as { envelopeB64?: unknown }).envelopeB64 === 'string'
+    ? String((env as { envelopeB64?: string }).envelopeB64)
+    : '';
+  if ((!obj || obj.owner_id !== ownerId) && inline) {
+    try {
+      const normalized = inline.replace(/-/g, '+').replace(/_/g, '/');
+      const bytes = Buffer.from(normalized, 'base64');
+      if (bytes.length) {
+        const stored = await storeEncrypted(ownerId, Readable.from(bytes), 8 * 1024 * 1024, config.replicas);
+        objectId = stored.objectId;
+        obj = { id: stored.objectId, owner_id: ownerId };
+      }
+    } catch {
+      /* ниже вернём false */
+    }
+  }
+  if (!obj || obj.owner_id !== ownerId || !UUID_RE.test(objectId)) return false;
 
   const clientId = String(env.clientId ?? packetId ?? '').slice(0, 128);
   if (clientId) {
@@ -1558,7 +1582,16 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       battery?: number;
       attached?: boolean;
       gateway?: boolean;
-      neighbors?: { publicId?: string; hardwareId?: string; rssi?: number }[];      claimToken?: string;
+      neighbors?: {
+        publicId?: string;
+        hardwareId?: string;
+        role?: string;
+        clusterId?: string | number;
+        neighbors?: number;
+        battery?: number;
+        rssi?: number;
+      }[];
+      claimToken?: string;
       rssi?: number;
       uptime?: number;
       cluster_id?: string | number;
@@ -1701,25 +1734,42 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       const pid = String(n.publicId ?? '').trim();
       const hwRaw = String(n.hardwareId ?? '').trim().toLowerCase();
       const hw = hwRaw ? canonicalHardwareId(hwRaw) : null;
+      const rev = hw ? reversedHardwareId(hw) : null;
       if (!hw && !isPublicId(pid)) continue;
-      await query(
+      const rssiN = Number(n.rssi ?? 0) | 0;
+      const peerNeighbors = Math.max(0, Number(n.neighbors ?? 0) | 0);
+      const peerCluster = String(n.clusterId ?? '').slice(0, 24);
+      const peerBattery = Math.max(0, Math.min(100, Number(n.battery ?? 0) | 0));
+      const updatedPeer = await query<{ id: string }>(
         `UPDATE modules SET last_seen_at = now(), status = 'online',
-                rssi = CASE WHEN $2 <> 0 THEN $2 ELSE rssi END, updated_at = now()
+                rssi = CASE WHEN $2 <> 0 THEN $2 ELSE rssi END,
+                neighbors = CASE WHEN $4 > 0 THEN $4 ELSE GREATEST(neighbors, 1) END,
+                cluster_id = CASE WHEN $5 <> '' THEN $5 WHEN $8 <> '' THEN $8 ELSE cluster_id END,
+                transports = CASE WHEN transports = '{}' THEN $9::text[] ELSE transports END,
+                battery = CASE WHEN $6 > 0 THEN $6 ELSE battery END,
+                updated_at = now()
           WHERE blocked = false AND (
             ($1::text IS NOT NULL AND lower(hardware_id) = $1)
+            OR ($7::text IS NOT NULL AND lower(hardware_id) = $7)
             OR ($3::text <> '' AND public_id = $3)
-          )`,
-        [hw, Number(n.rssi ?? 0) | 0, pid],
-      ).catch(() => undefined);
+          )
+          RETURNING id`,
+        [hw, rssiN, pid, peerNeighbors, peerCluster, peerBattery, rev, clusterId, ['wifi']],
+      ).catch(() => []);
       await query(
         `INSERT INTO mesh_devices
            (mesh_addr, hardware_id, public_id, role, transport, kind, cluster_id,
             border, transports, neighbors, last_rssi, firmware, status, last_seen_at)
-         SELECT hardware_id, hardware_id, public_id, role, transport, kind, cluster_id,
-                border, transports, neighbors, $2, firmware, 'online', now()
+         SELECT hardware_id, hardware_id, public_id, role, transport, kind,
+                CASE WHEN $5 <> '' THEN $5 WHEN $7 <> '' THEN $7 ELSE cluster_id END,
+                border,
+                CASE WHEN transports = '{}' THEN $8::text[] ELSE transports END,
+                CASE WHEN $4 > 0 THEN $4 ELSE GREATEST(neighbors, 1) END,
+                $2, firmware, 'online', now()
            FROM modules
           WHERE blocked = false AND (
             ($1::text IS NOT NULL AND lower(hardware_id) = $1)
+            OR ($6::text IS NOT NULL AND lower(hardware_id) = $6)
             OR ($3::text <> '' AND public_id = $3)
           )
           LIMIT 1
@@ -1732,8 +1782,32 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
            transports = CASE WHEN EXCLUDED.transports = '{}' THEN mesh_devices.transports ELSE EXCLUDED.transports END,
            neighbors = EXCLUDED.neighbors,
            status = 'online', last_rssi = EXCLUDED.last_rssi, last_seen_at = now(), updated_at = now()`,
-        [hw, Number(n.rssi ?? 0) | 0, pid],
+        [hw, rssiN, pid, peerNeighbors, peerCluster, rev, clusterId, ['wifi']],
       ).catch(() => undefined);
+      // Карточка peer-модуля: показываем шлюз как его соседа.
+      const peerId = updatedPeer[0]?.id;
+      if (peerId) {
+        await query('DELETE FROM module_neighbors WHERE module_id = $1', [peerId]).catch(() => undefined);
+        await query(
+          `INSERT INTO module_neighbors (module_id, neighbor_uuid, rssi, channel, has_gateway)
+           VALUES ($1,$2,$3,'wifi',true)`,
+          [peerId, hardwareId, rssiN],
+        ).catch(() => undefined);
+      }
+    }
+
+    // Соседи самого шлюза — чтобы и его карточка показывала живые данные.
+    if (neighbors.length) {
+      await query('DELETE FROM module_neighbors WHERE module_id = $1', [moduleId]).catch(() => undefined);
+      for (const n of neighbors.slice(0, 50)) {
+        const neighborUuid = String(n.hardwareId ?? n.publicId ?? '').slice(0, 64);
+        if (!neighborUuid) continue;
+        await query(
+          `INSERT INTO module_neighbors (module_id, neighbor_uuid, rssi, channel, has_gateway)
+           VALUES ($1,$2,$3,'wifi',true)`,
+          [moduleId, neighborUuid, Number(n.rssi ?? 0) | 0],
+        ).catch(() => undefined);
+      }
     }
 
     // TELEMETRY_REPORT: register/checkin уже содержит кластер, соседей и
@@ -2025,13 +2099,15 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       sender_device_id: string | null;
       created_at: string;
       client_id: string | null;
+      size_bytes: number | null;
     }>(
       `SELECT m.id, m.chat_id, m.seq, m.kind, m.header, m.object_id, m.reply_to, m.as_channel,
               m.sender_user_id, u.username AS sender_username, m.sender_device_id,
-              m.created_at, m.client_id
+              m.created_at, m.client_id, COALESCE(o.size_bytes, 0) AS size_bytes
          FROM messages m
          JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = $1
          JOIN users u ON u.id = m.sender_user_id
+         LEFT JOIN objects o ON o.id = m.object_id
         WHERE m.sender_user_id <> $1
           AND ($2::timestamptz IS NULL OR m.created_at > $2::timestamptz)
           AND ($3::bigint IS NULL OR m.seq > $3::bigint)
@@ -2040,28 +2116,69 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       [mod.ownerId, since, cursor],
     );
 
-    const items = rows.reverse().map((row) => ({
-      id: row.id,
-      chatId: row.chat_id,
-      seq: row.seq,
-      createdAt: row.created_at,
-      envelope: {
+    const ordered = rows.reverse();
+    const items = [];
+    for (const row of ordered) {
+      // Для небольших текстовых сообщений отдаём шифротекст прямо в envelope:
+      // получатель без интернета не может скачать object с узлов.
+      let envelopeB64: string | undefined;
+      if (row.object_id && (row.size_bytes ?? 0) > 0 && (row.size_bytes ?? 0) <= 4096) {
+        try {
+          const frag = await one<{ index: number; node_id: string; public_url: string; ticket_secret: string }>(
+            `SELECT f.index, n.id AS node_id, n.public_url, n.ticket_secret
+               FROM fragments f JOIN nodes n ON n.id = f.node_id
+              WHERE f.object_id = $1 AND f.state = 'ok' AND n.status <> 'banned'
+              ORDER BY (n.status = 'online') DESC, n.reputation DESC
+              LIMIT 1`,
+            [row.object_id],
+          );
+          if (frag) {
+            const stream = await getFragment(
+              { id: frag.node_id, public_url: frag.public_url, ticket_secret: frag.ticket_secret },
+              row.object_id,
+              frag.index,
+              mod.ownerId,
+            );
+            const chunks: Buffer[] = [];
+            let total = 0;
+            for await (const chunk of stream) {
+              const buf = chunk as Buffer;
+              total += buf.length;
+              if (total > 4096) break;
+              chunks.push(buf);
+            }
+            if (total > 0 && total <= 4096) {
+              envelopeB64 = Buffer.concat(chunks).toString('base64url');
+            }
+          }
+        } catch {
+          /* нет узла/фрагмента — клиент попробует скачать object позже */
+        }
+      }
+      items.push({
         id: row.id,
-        seq: row.seq,
         chatId: row.chat_id,
-        kind: row.kind,
-        objectId: row.object_id,
-        nonce: extractNonce(row.header),
-        header: row.header,
-        replyTo: row.reply_to,
-        asChannel: row.as_channel,
-        senderUserId: row.sender_user_id,
-        senderUsername: row.sender_username,
-        senderDeviceId: row.sender_device_id,
+        seq: row.seq,
         createdAt: row.created_at,
-        clientId: row.client_id,
-      },
-    }));
+        envelope: {
+          id: row.id,
+          seq: row.seq,
+          chatId: row.chat_id,
+          kind: row.kind,
+          objectId: row.object_id,
+          nonce: extractNonce(row.header),
+          header: row.header,
+          replyTo: row.reply_to,
+          asChannel: row.as_channel,
+          senderUserId: row.sender_user_id,
+          senderUsername: row.sender_username,
+          senderDeviceId: row.sender_device_id,
+          createdAt: row.created_at,
+          clientId: row.client_id,
+          ...(envelopeB64 ? { envelopeB64 } : {}),
+        },
+      });
+    }
     return reply.send({ ok: true, items, cursor: rows.length ? rows[rows.length - 1].seq : cursor });
   });
 
