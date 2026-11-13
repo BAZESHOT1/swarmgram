@@ -80,6 +80,24 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
   });
 
   app.setErrorHandler(errorHandler);
+  // Парсер JSON с диагностикой: показываем URL и начало тела, если прошивка
+  // или клиент прислали невалидный JSON (частая причина 500 на /modules/relay).
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    const text = typeof body === 'string' ? body : String(body ?? '');
+    if (!text.trim()) return done(null, {});
+    try {
+      done(null, JSON.parse(text));
+    } catch (error) {
+      log('warn', 'invalid_json', {
+        url: req.url,
+        ip: req.ip,
+        length: text.length,
+        sample: text.slice(0, 240),
+      });
+      done(error as Error);
+    }
+  });
   app.setNotFoundHandler(async (req, reply) => {
     void reply.status(404).send({ error: 'not_found', path: req.url });
   });

@@ -724,6 +724,8 @@ interface RelayEnvelopeItem {
   chatId?: string;
   packetId?: string;
   envelope?: unknown;
+  /** Base64 от JSON-конверта: устойчиво к кавычкам/юникоду на прошивке. */
+  envelopeB64?: string;
 }
 
 interface MessageEnvelopeFields {
@@ -1968,10 +1970,23 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     for (const item of items.slice(0, 100)) {
       const chatId = String(item?.chatId ?? '');
       const packetId = String(item?.packetId ?? '').slice(0, 128);
-      const envelope =
+      let envelope: Record<string, unknown> =
         item?.envelope && typeof item.envelope === 'object' && !Array.isArray(item.envelope)
           ? (item.envelope as Record<string, unknown>)
           : {};
+      // Новая прошивка присылает envelopeB64 (base64 от JSON): так тело
+      // relay всегда валидный JSON, без проблем с экранированием.
+      if (!Object.keys(envelope).length && typeof item?.envelopeB64 === 'string' && item.envelopeB64) {
+        try {
+          const decoded = Buffer.from(item.envelopeB64, 'base64').toString('utf8');
+          const parsed = JSON.parse(decoded) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            envelope = parsed as Record<string, unknown>;
+          }
+        } catch {
+          /* останется пустым → уйдёт в failed */
+        }
+      }
 
       // chat_id в mesh_inbox — uuid без FK; невалидный пишем как NULL.
       const chatUuid = UUID_RE.test(chatId) ? chatId : null;

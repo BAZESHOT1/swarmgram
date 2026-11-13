@@ -532,6 +532,7 @@ export class NativeBleTransport implements ModuleConnection {
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,
       meshRole: typeof raw.meshRole === 'string' ? raw.meshRole : this.info.meshRole,
+      gateway: typeof raw.gateway === 'boolean' ? raw.gateway : this.info.gateway,
       firmware: typeof raw.firmware === 'string' ? raw.firmware : this.info.firmware,
     };
   }

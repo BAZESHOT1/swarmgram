@@ -655,6 +655,25 @@ static String publicIdForNode(uint32_t id) {
   return String(pub);
 }
 
+/** Base64 (RFC 4648) для безопасной передачи JSON через relay-API. */
+static String b64Encode(const String &in) {
+  static const char *tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String out;
+  out.reserve(((in.length() + 2) / 3) * 4);
+  const uint8_t *p = (const uint8_t *)in.c_str();
+  for (size_t i = 0; i < in.length(); i += 3) {
+    const uint8_t a = p[i];
+    const uint8_t b = i + 1 < in.length() ? p[i + 1] : 0;
+    const uint8_t c = i + 2 < in.length() ? p[i + 2] : 0;
+    const uint32_t v = ((uint32_t)a << 16) | ((uint32_t)b << 8) | c;
+    out += tab[(v >> 18) & 63];
+    out += tab[(v >> 12) & 63];
+    out += i + 1 < in.length() ? tab[(v >> 6) & 63] : '=';
+    out += i + 2 < in.length() ? tab[v & 63] : '=';
+  }
+  return out;
+}
+
 static String jsonEsc(const String &s) {
   String out;
   out.reserve(s.length() + 8);
@@ -3626,7 +3645,7 @@ static void hubRelayQueue() {
     if (k) body += ",";
     body += String("{\"chatId\":\"") + jsonEsc(chatId) +
             "\",\"packetId\":" + String((unsigned long)e->id) +
-            ",\"envelope\":" + envelope + "}";
+            ",\"envelopeB64\":\"" + b64Encode(envelope) + "\"}";
   }
   body += "]}";
 

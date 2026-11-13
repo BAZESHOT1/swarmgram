@@ -267,7 +267,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       lastRecordRef.current = record;
       await writeLastModule(kv, record);
 
-      setTransportModule({ gateway: nextInfo.role === 'gateway', model: nextInfo.role });
+      setTransportModule({ gateway: Boolean(nextInfo.gateway), model: nextInfo.role });
       setTransportGateway(Boolean(nextInfo.gateway));
       setMeshCapabilities({
         connected: true,
@@ -563,24 +563,24 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [session?.userId, session]);
 
-  // Первичное восстановление и возврат из фона. На экране логина сессии нет — не сканируем.
+  // Первичное восстановление и возврат из фона. Соединение с последним
+  // модулем восстанавливаем сразу при запуске приложения, не дожидаясь,
+  // пока пользователь откроет раздел «Модули».
   useEffect(() => {
-    if (!session || !moduleScreenActive) return undefined;
-    // BLE запускаем только когда открыт раздел модулей: на главном экране
-    // iOS-скан после выдачи разрешения приводил к зависанию.
-    const timer = setTimeout(() => void prepareBle().then(() => restore()), 1200);
+    if (!session || Platform.OS === 'web') return undefined;
+    const timer = setTimeout(() => void prepareBle().then(() => restore()), 900);
     let activeTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
       if (activeTimer) clearTimeout(activeTimer);
-      activeTimer = setTimeout(() => void restore(), 3000);
+      activeTimer = setTimeout(() => void restore(), 1200);
     });
     return () => {
       clearTimeout(timer);
       if (activeTimer) clearTimeout(activeTimer);
       sub.remove();
     };
-  }, [session?.userId, restore, session, moduleScreenActive]);
+  }, [session?.userId, restore, session]);
 
   // Переход в фон не должен рвать BLE: соединение и активное сканирование
   // продолжают жить (iOS — bluetooth-central, Android — foreground service).
@@ -592,24 +592,24 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       if (!current) return;
       if (current.isOpen) return;
       // Транспорт считает себя закрытым — честно снимаем состояние и
-      // пробуем восстановить последний модуль, если открыт раздел модулей.
+      // пробуем восстановить последний модуль.
       void detachCurrent();
-      if (moduleScreenActive) setTimeout(() => void restore(), 1200);
+      setTimeout(() => void restore(), 1200);
     });
     return () => sub.remove();
-  }, [detachCurrent, restore, moduleScreenActive]);
+  }, [detachCurrent, restore]);
 
   // Пока приложение открыто на смартфоне — периодически ищем носимый модуль
   // и подключаемся к ранее привязанному. В фоне не сканируем (экономия батареи).
   useEffect(() => {
-    if (!session || Platform.OS === 'web' || !moduleScreenActive) return undefined;
+    if (!session || Platform.OS === 'web') return undefined;
     const timer = setInterval(() => {
       if (AppState.currentState !== 'active') return;
       if (connectionRef.current || inFlightRef.current) return;
       void restore();
-    }, 35_000);
+    }, 30_000);
     return () => clearInterval(timer);
-  }, [session, restore, moduleScreenActive]);
+  }, [session, restore]);
 
   // Периодически обновляем нагрузку mesh для политики трафика.
   useEffect(() => {
@@ -622,9 +622,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         gateway: Boolean(currentInfo.gateway),
         queue: Number(currentInfo.queue ?? 0),
       });
-    }, 15_000);
+      // Статус gateway может появиться/пропасть уже после adopt — обновляем
+      // индикатор канала, чтобы UI не висел в «соединении».
+      setTransportModule({ gateway: Boolean(currentInfo.gateway), model: String(currentInfo.role ?? '') });
+      setTransportGateway(Boolean(currentInfo.gateway));
+    }, 5_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [setTransportGateway, setTransportModule]);
 
   // При выходе из аккаунта закрываем модуль, чтобы не висеть с чужой привязкой.
   useEffect(() => {

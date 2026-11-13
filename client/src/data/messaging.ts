@@ -234,6 +234,10 @@ export async function sendMessage(
   };
 
   try {
+    // Нет интернета, но модуль подключён — не ждём HTTP-таймаут, сразу mesh.
+    if (canSendViaMesh() && !useStore.getState().transportOnline) {
+      throw new Error('offline_mesh');
+    }
     const uploaded = await uploadEnvelope(bytes, {
       onProgress: opts.onProgress ? (p) => opts.onProgress?.(Math.max(0, Math.min(1, p))) : undefined,
       signal: opts.signal,

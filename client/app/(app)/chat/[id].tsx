@@ -608,7 +608,10 @@ export default function ChatScreen() {
   const channel: ChatChannel = useMemo(() => {
     if (transportOnline) return 'internet';
     if (transportDirect) return 'directLink';
-    if (transportModule?.gateway) return 'module';
+    // Любой подключённый модуль — валидный mesh-канал (с шлюзом или
+    // peer-to-peer). Раньше требовался именно gateway, и UI вечно висел
+    // в «соединении», даже когда сообщения могли идти через mesh.
+    if (transportModule) return 'module';
     return 'waiting';
   }, [transportOnline, transportDirect, transportModule]);
 
