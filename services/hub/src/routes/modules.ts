@@ -2647,6 +2647,57 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     );
     return reply.send(rows);
   });
+
+  // Дренаж mesh_inbox: сообщения, принятые от шлюза, но не сохранённые
+  // (например, старый конверт без objectId), периодически пробуем дописать.
+  const drainQueuedRelay = async () => {
+    const queued = await query<{
+      id: string;
+      owner_id: string;
+      module_id: string;
+      chat_id: string;
+      packet_id: string;
+      envelope: unknown;
+    }>(
+      `SELECT id, owner_id, module_id, chat_id, packet_id, envelope
+         FROM mesh_inbox
+        WHERE status = 'queued' AND chat_id IS NOT NULL
+          AND created_at > now() - interval '7 days'
+        ORDER BY created_at ASC LIMIT 20`,
+    );
+    for (const row of queued) {
+      let envelope: Record<string, unknown> = {};
+      try {
+        envelope =
+          typeof row.envelope === 'string'
+            ? (JSON.parse(row.envelope) as Record<string, unknown>)
+            : (row.envelope as Record<string, unknown>);
+      } catch {
+        continue;
+      }
+      const ok = await persistRelayMessage(
+        row.owner_id,
+        row.module_id,
+        row.chat_id,
+        row.packet_id,
+        envelope ?? {},
+      ).catch(() => false);
+      if (ok) {
+        await query(
+          "UPDATE mesh_inbox SET status = 'processed', processed_at = now() WHERE id = $1",
+          [row.id],
+        ).catch(() => undefined);
+      }
+    }
+  };
+  const drainTimer = setInterval(() => void drainQueuedRelay().catch(() => undefined), 30_000);
+  drainTimer.unref?.();
+  const drainStart = setTimeout(() => void drainQueuedRelay().catch(() => undefined), 5_000);
+  drainStart.unref?.();
+  app.addHook('onClose', async () => {
+    clearInterval(drainTimer);
+    clearTimeout(drainStart);
+  });
 };
 
 /** nonce из header конверта (для pending-очереди шлюза). */

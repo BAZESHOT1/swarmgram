@@ -33,6 +33,16 @@ import {
 
 const AUTO_RETRY_MS = 30_000;
 
+/** Оба порядка байт MAC: прошивки разных версий могли форматировать eFuse
+ *  в прямом и обратном порядке. Сравниваем по обоим, чтобы reconnect не
+ *  зависел от версии прошивки. */
+function macVariants(value: string): string[] {
+  const hex = value.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+  if (hex.length !== 12) return [value.toLowerCase()];
+  const reversed = hex.match(/.{2}/g)?.reverse().join('') ?? hex;
+  return [hex, reversed, `esp32-${hex}`, `esp32-${reversed}`];
+}
+
 export type AutoModulePhase = 'found' | 'connecting' | 'connected' | 'failed';
 export interface AutoModuleState {
   key: string;
@@ -84,8 +94,7 @@ function moduleIdOf(row: { id?: string } | null | undefined): string | undefined
 
 export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const moduleScreenActive =
-    pathname.startsWith('/modules') || pathname.startsWith('/firmware') || pathname.startsWith('/nodes');
+  void pathname;
   const qc = useQueryClient();
   const session = useStore((s) => s.session);
   const setMeshPeer = useStore((s) => s.setMeshPeer);
@@ -446,15 +455,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
         setNearbyModules(nearby);
         const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
-        const mineKey = String(last?.publicId ?? last?.hardwareId ?? '')
-          .toLowerCase()
-          .replace(/^esp32-/, '');
-        const mine = mineKey
-          ? available.find(
-              (device) =>
-                device.name.toLowerCase().includes(mineKey) || device.id.toLowerCase().includes(mineKey),
-            ) ?? null
-          : null;
+        const mineVariants = macVariants(String(last?.hardwareId ?? last?.publicId ?? ''));
+        const mine = available.find((device) => {
+          const haystack = `${device.name.toLowerCase()} ${device.id.toLowerCase()}`;
+          return mineVariants.some((variant) => variant && haystack.includes(variant));
+        }) ?? null;
         const candidate = available[0] ?? null;
 
         if (!last?.hardwareId) {

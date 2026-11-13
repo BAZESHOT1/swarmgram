@@ -383,10 +383,18 @@ export class NativeBleTransport implements ModuleConnection {
       return 0;
     };
     const ordered = [...devices].sort((a, b) => score(b) - score(a));
+    const expectedHex = expected.replace(/^esp32-/, '');
+    const reversedHex = expectedHex.length === 12
+      ? expectedHex.match(/.{2}/g)?.reverse().join('') ?? ''
+      : '';
     for (const device of ordered.slice(0, expected ? 4 : 1)) {
       try {
         const info = await this.openDevice(device.id);
-        if (!expected || info.hardwareId.toLowerCase() === expected) return info;
+        const got = info.hardwareId.toLowerCase();
+        const matches = !expected
+          || got === expected
+          || got === `esp32-${reversedHex}`;
+        if (matches) return info;
         await this.close();
       } catch {
         await this.close().catch(() => undefined);
