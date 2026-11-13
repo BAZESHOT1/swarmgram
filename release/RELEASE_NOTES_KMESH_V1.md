@@ -1,6 +1,6 @@
 # Klinto 1.5.0 — KMesh_v1
 
-Дата: 14 ноября 2026 года.
+Дата: 14 ноября 2026 года. Версия прошивки модулей: **1.1**.
 
 ## Главное
 
@@ -11,9 +11,15 @@
   `ReferenceError: Cannot access 'Bn' before initialization`.
 - **Релизные артефакты:** web-сборка, ядро прошивки, миграции Hub.
 
-## Изменения протокола
+## Версии прошивок
 
-| Было | Стало |
+Версия прошивки теперь понятная: **1.1**, **1.2**, ... Источник истины —
+`firmware/klinto_core/VERSION`. Builder подставляет её в `config.h` как
+`KL_FIRMWARE_VERSION` и возвращает в ответе `/build`; Hub и UI показывают
+`v1.1`. Увеличение: `node scripts/bump-firmware-version.mjs` (1.1 → 1.2)
+или `node scripts/bump-firmware-version.mjs 1.5`.
+
+## Изменения протокола| Было | Стало |
 | --- | --- |
 | `/v1/mesh/v3/*` | `/v1/kmesh/v1/*` |
 | `mesh_v3_*` (БД) | `kmesh_v1_*` (миграция 036) |

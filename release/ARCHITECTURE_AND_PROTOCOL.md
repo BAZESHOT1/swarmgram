@@ -610,6 +610,10 @@ cd services/hub && npm run typecheck
 
 Сборка прошивки: в конфиге билдера выставить `kmesh.v1 = true`. Builder скопирует `firmware/klinto_core/{src,include}` в скетч и соберёт `klinto_module_kmesh_v1.ino` через arduino-cli.
 
+Версия прошивки задаётся файлом `firmware/klinto_core/VERSION` в формате
+`1.1`, `1.2`, ... Builder подставляет её как `KL_FIRMWARE_VERSION`; Hub и UI
+показывают её как `v1.1`. Инкремент: `node scripts/bump-firmware-version.mjs`.
+
 ### 11.1 Результаты проверки
 
 | Проверка | Результат |
