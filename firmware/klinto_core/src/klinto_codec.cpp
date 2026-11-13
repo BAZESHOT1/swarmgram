@@ -125,6 +125,275 @@ bool kl_codec_peek(const uint8_t *payload, size_t len, uint8_t *op, uint8_t *rpc
   return true;
 }
 
+/* Текст с однобайтовым префиксом: bit7 = Unishox2, младшие 7 бит = длина. */
+static size_t put_text(uint8_t *out, size_t cap, const char *text, size_t len) {
+  if (!out || !text || cap < 1) return 0;
+  if (len > 127) len = 127;
+  char packed[160];
+  int n = unishox2_compress(text, (int)len, packed, (int)sizeof(packed), USX_PSET_DFLT);
+  if (n > 0 && (size_t)n < len && (size_t)n + 1 <= cap) {
+    out[0] = (uint8_t)(0x80 | (uint8_t)n);
+    memcpy(out + 1, packed, (size_t)n);
+    return (size_t)n + 1;
+  }
+  if (len + 1 > cap) return 0;
+  out[0] = (uint8_t)len;
+  memcpy(out + 1, text, len);
+  return len + 1;
+}
+
+static bool get_text(const uint8_t *in, size_t len, size_t *used, char *out, size_t cap) {
+  if (!in || !out || len < 1 || cap < 1) return false;
+  const uint8_t head = in[0];
+  const size_t n = head & 0x7F;
+  if (len < 1 + n) return false;
+  if (used) *used = 1 + n;
+  if (head & 0x80) {
+    int d = unishox2_decompress((const char *)in + 1, (int)n, out, (int)cap - 1, USX_PSET_DFLT);
+    if (d < 0) return false;
+    out[d] = '\0';
+    return true;
+  }
+  if (n >= cap) return false;
+  memcpy(out, in + 1, n);
+  out[n] = '\0';
+  return true;
+}
+
+size_t kl_codec_encode_search_req(uint8_t *out, size_t cap, uint16_t chat_ref,
+                                  const kl_search_request_t *req) {
+  if (!req) return 0;
+  const size_t head = put_prefix(out, cap, KL_RPC_SEARCH_REQ, 0, chat_ref);
+  if (!head || cap < head + 3) return 0;
+  kl_write_le16(out + head, req->req_id);
+  out[head + 2] = req->search_type;
+  const size_t n = put_text(out + head + 3, cap - head - 3, req->query, strlen(req->query));
+  return n ? head + 3 + n : 0;
+}
+
+bool kl_codec_decode_search_req(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                                kl_search_request_t *out) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!out || !kl_codec_peek(payload, len, &op, &flags, &chat)) return false;
+  if (op != KL_RPC_SEARCH_REQ || len < KL_RPC_HEADER_SIZE + 3) return false;
+  out->req_id = (uint16_t)(payload[4] | ((uint16_t)payload[5] << 8));
+  out->search_type = payload[6];
+  size_t used = 0;
+  if (!get_text(payload + 7, len - 7, &used, out->query, sizeof(out->query))) return false;
+  if (chat_ref) *chat_ref = chat;
+  return true;
+}
+
+size_t kl_codec_encode_search_resp(uint8_t *out, size_t cap, uint16_t chat_ref, uint16_t req_id,
+                                   const kl_search_result_t *items, uint8_t count, bool more) {
+  if (!out || (!items && count)) return 0;
+  const size_t head = put_prefix(out, cap, KL_RPC_SEARCH_RESP,
+                                 more ? KL_RPC_FLAG_MORE : 0, chat_ref);
+  if (!head || cap < head + 3) return 0;
+  kl_write_le16(out + head, req_id);
+  out[head + 2] = 0;
+  size_t offset = head + 3;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < count && i < KL_SEARCH_MAX_RESULTS; ++i) {
+    if (cap - offset < 6) break;
+    out[offset++] = (uint8_t)(items[i].entity_id);
+    out[offset++] = (uint8_t)(items[i].entity_id >> 8);
+    out[offset++] = (uint8_t)(items[i].entity_id >> 16);
+    out[offset++] = (uint8_t)(items[i].entity_id >> 24);
+    out[offset++] = items[i].entity_type;
+    const size_t n = put_text(out + offset, cap - offset, items[i].name, strlen(items[i].name));
+    if (!n) break;
+    offset += n;
+    written++;
+  }
+  out[head + 2] = written;
+  return offset;
+}
+
+bool kl_codec_decode_search_resp(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                                 uint16_t *req_id, kl_search_result_t *items, uint8_t max_items,
+                                 uint8_t *count, bool *more) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!payload || !items || len < KL_RPC_HEADER_SIZE + 3) return false;
+  if (!kl_codec_peek(payload, len, &op, &flags, &chat) || op != KL_RPC_SEARCH_RESP) return false;
+  if (chat_ref) *chat_ref = chat;
+  if (req_id) *req_id = (uint16_t)(payload[4] | ((uint16_t)payload[5] << 8));
+  if (more) *more = (flags & KL_RPC_FLAG_MORE) != 0;
+  const uint8_t total = payload[6];
+  size_t offset = 7;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < total && written < max_items; ++i) {
+    if (offset + 5 > len) break;
+    kl_search_result_t &r = items[written];
+    r.entity_id = (uint32_t)payload[offset] | ((uint32_t)payload[offset + 1] << 8) |
+                  ((uint32_t)payload[offset + 2] << 16) | ((uint32_t)payload[offset + 3] << 24);
+    r.entity_type = payload[offset + 4];
+    offset += 5;
+    size_t used = 0;
+    if (!get_text(payload + offset, len - offset, &used, r.name, sizeof(r.name))) break;
+    offset += used;
+    written++;
+  }
+  if (count) *count = written;
+  return true;
+}
+
+size_t kl_codec_encode_feed_req(uint8_t *out, size_t cap, uint16_t chat_ref,
+                                uint32_t last_sync_ts) {
+  const size_t head = put_prefix(out, cap, KL_RPC_FEED_SYNC_REQ, 0, chat_ref);
+  if (!head || cap < head + 4) return 0;
+  kl_write_le32(out + head, last_sync_ts);
+  return head + 4;
+}
+
+bool kl_codec_decode_feed_req(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                              uint32_t *last_sync_ts) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!kl_codec_peek(payload, len, &op, &flags, &chat) || op != KL_RPC_FEED_SYNC_REQ) return false;
+  if (len < KL_RPC_HEADER_SIZE + 4) return false;
+  if (last_sync_ts) *last_sync_ts = kl_read_le32(payload + 4);
+  if (chat_ref) *chat_ref = chat;
+  return true;
+}
+
+size_t kl_codec_encode_feed_resp(uint8_t *out, size_t cap, uint16_t chat_ref,
+                                 const kl_feed_entry_t *items, uint8_t count, bool more) {
+  if (!out || (!items && count)) return 0;
+  const size_t head = put_prefix(out, cap, KL_RPC_FEED_SYNC_RESP,
+                                 more ? KL_RPC_FLAG_MORE : 0, chat_ref);
+  if (!head || cap < head + 3) return 0;
+  out[head] = 0;
+  out[head + 1] = 0;
+  out[head + 2] = 0;
+  size_t offset = head + 3;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < count && i < KL_FEED_MAX_ENTRIES; ++i) {
+    if (offset + 17 > cap) break;
+    kl_write_le16(out + offset, items[i].chat_ref);
+    kl_write_le16(out + offset + 2, items[i].unread_count);
+    kl_write_le64(out + offset + 4, items[i].last_msg_uuid);
+    kl_write_le32(out + offset + 12, items[i].timestamp);
+    const size_t n = put_text(out + offset + 16, cap - offset - 16, items[i].preview,
+                              strlen(items[i].preview));
+    if (!n) break;
+    offset += 16 + n;
+    written++;
+  }
+  out[head + 2] = written;
+  return offset;
+}
+
+bool kl_codec_decode_feed_resp(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                               kl_feed_entry_t *items, uint8_t max_items, uint8_t *count,
+                               bool *more) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!payload || !items || len < KL_RPC_HEADER_SIZE + 3) return false;
+  if (!kl_codec_peek(payload, len, &op, &flags, &chat) || op != KL_RPC_FEED_SYNC_RESP) return false;
+  if (chat_ref) *chat_ref = chat;
+  if (more) *more = (flags & KL_RPC_FLAG_MORE) != 0;
+  const uint8_t total = payload[6];
+  size_t offset = 7;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < total && written < max_items; ++i) {
+    if (offset + 17 > len) break;
+    kl_feed_entry_t &e = items[written];
+    e.chat_ref = (uint16_t)(payload[offset] | ((uint16_t)payload[offset + 1] << 8));
+    e.unread_count = (uint16_t)(payload[offset + 2] | ((uint16_t)payload[offset + 3] << 8));
+    e.last_msg_uuid = kl_read_le64(payload + offset + 4);
+    e.timestamp = kl_read_le32(payload + offset + 12);
+    offset += 16;
+    size_t used = 0;
+    if (!get_text(payload + offset, len - offset, &used, e.preview, sizeof(e.preview))) break;
+    offset += used;
+    written++;
+  }
+  if (count) *count = written;
+  return true;
+}
+
+size_t kl_codec_encode_history_req(uint8_t *out, size_t cap, uint16_t chat_ref,
+                                   uint64_t before_uuid, uint8_t limit) {
+  const size_t head = put_prefix(out, cap, KL_RPC_CHAT_HISTORY_REQ, 0, chat_ref);
+  if (!head || cap < head + 9) return 0;
+  kl_write_le64(out + head, before_uuid);
+  out[head + 8] = limit;
+  return head + 9;
+}
+
+bool kl_codec_decode_history_req(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                                 uint64_t *before_uuid, uint8_t *limit) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!kl_codec_peek(payload, len, &op, &flags, &chat) || op != KL_RPC_CHAT_HISTORY_REQ) return false;
+  if (len < KL_RPC_HEADER_SIZE + 9) return false;
+  if (before_uuid) *before_uuid = kl_read_le64(payload + 4);
+  if (limit) *limit = payload[12];
+  if (chat_ref) *chat_ref = chat;
+  return true;
+}
+
+size_t kl_codec_encode_history_resp(uint8_t *out, size_t cap, uint16_t chat_ref,
+                                    const kl_chat_message_t *items, uint8_t count, bool more) {
+  if (!out || (!items && count)) return 0;
+  const size_t head = put_prefix(out, cap, KL_RPC_CHAT_HISTORY_RESP,
+                                 more ? KL_RPC_FLAG_MORE : 0, chat_ref);
+  if (!head || cap < head + 1) return 0;
+  out[head] = 0;
+  size_t offset = head + 1;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < count && i < KL_HISTORY_MAX_MESSAGES; ++i) {
+    if (offset + 17 > cap) break;
+    kl_write_le64(out + offset, items[i].msg_uuid);
+    kl_write_le32(out + offset + 8, items[i].sender_id);
+    kl_write_le32(out + offset + 12, items[i].timestamp);
+    const size_t n = put_text(out + offset + 16, cap - offset - 16, items[i].text,
+                              strlen(items[i].text));
+    if (!n) break;
+    offset += 16 + n;
+    written++;
+  }
+  out[head] = written;
+  return offset;
+}
+
+bool kl_codec_decode_history_resp(const uint8_t *payload, size_t len, uint16_t *chat_ref,
+                                  kl_chat_message_t *items, uint8_t max_items, uint8_t *count,
+                                  bool *more) {
+  uint8_t op = 0, flags = 0;
+  uint16_t chat = 0;
+  if (!payload || !items || len < KL_RPC_HEADER_SIZE + 1) return false;
+  if (!kl_codec_peek(payload, len, &op, &flags, &chat) || op != KL_RPC_CHAT_HISTORY_RESP) return false;
+  if (chat_ref) *chat_ref = chat;
+  if (more) *more = (flags & KL_RPC_FLAG_MORE) != 0;
+  const uint8_t total = payload[4];
+  size_t offset = 5;
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < total && written < max_items; ++i) {
+    if (offset + 17 > len) break;
+    kl_chat_message_t &m = items[written];
+    m.msg_uuid = kl_read_le64(payload + offset);
+    m.sender_id = kl_read_le32(payload + offset + 8);
+    m.timestamp = kl_read_le32(payload + offset + 12);
+    offset += 16;
+    size_t used = 0;
+    if (!get_text(payload + offset, len - offset, &used, m.text, sizeof(m.text))) break;
+    offset += used;
+    written++;
+  }
+  if (count) *count = written;
+  return true;
+}
+
+uint8_t kl_rpc_priority_hint(const uint8_t *payload, size_t len) {
+  if (!payload || len < 1) return 1;
+  const uint8_t op = payload[0];
+  return (op >= KL_RPC_SEARCH_REQ && op <= KL_RPC_CHAT_HISTORY_RESP) ? 2 : 1;
+}
+
 const char *kl_delivery_status_name(uint8_t status) {
   switch (status) {
     case KL_STATUS_QUEUED: return "QUEUED";

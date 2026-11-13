@@ -42,3 +42,6 @@ services/firmware-builder/.data/
 Thumbs.db
 # native release artifacts (публикуются в GitHub Releases)
 release/native/
+
+# local test bundles
+client/.tmp/

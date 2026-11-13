@@ -1641,6 +1641,72 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ messageUuids }),
     }),
+
+  kmeshV1MobileArchive: (body: { gateway_id: number; msg_uuid: string; packet_b64: string }) =>
+    req<{ ok: true; msg_uuid: string; status: string }>('/v1/kmesh/v1/mobile/archive', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  kmeshV1NodeBind: (nodeId: number) =>
+    req<{ ok: true; nodeId: number }>('/v1/kmesh/v1/node/bind', {
+      method: 'POST',
+      body: JSON.stringify({ node_id: nodeId }),
+    }),
+
+  kmeshV1MobilePresence: (body: {
+    gateway_id: number;
+    node_id: number;
+    rssi: number;
+    hops: number;
+    battery?: number;
+    role?: number;
+  }) =>
+    req<{ ok: true }>('/v1/kmesh/v1/mobile/presence', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  kmeshV1Search: (q: string, type: 'all' | 'users' | 'groups' | 'channels' = 'all') =>
+    req<{
+      ok: true;
+      query: string;
+      results: Array<{ entityId: number; type: string; name: string; username?: string }>;
+    }>(`/v1/kmesh/v1/search?q=${encodeURIComponent(q)}&type=${type}`),
+
+  kmeshV1Feed: (since = 0) =>
+    req<{
+      ok: true;
+      items: Array<{
+        entityId: number;
+        chatId: string;
+        type: string;
+        title: string;
+        unreadCount: number;
+        lastMsgUuid: string;
+        timestamp: number;
+        preview: string;
+      }>;
+    }>(`/v1/kmesh/v1/feed?since=${since}`),
+
+  kmeshV1History: (chatId: string, before = 0, limit = 10) =>
+    req<{
+      ok: true;
+      chatId: string;
+      items: Array<{
+        msgUuid: string;
+        senderNodeId: number;
+        ciphertextB64: string;
+        nonce: string;
+        header: Record<string, unknown>;
+        timestamp: number;
+      }>;
+    }>(`/v1/kmesh/v1/history?chatId=${encodeURIComponent(chatId)}&before=${before}&limit=${limit}`),
+
+  kmeshV1ChannelGateways: (chatId: string) =>
+    req<{ ok: true; chatId: string; gateways: Array<{ gatewayId: number; members: number }> }>(
+      `/v1/kmesh/v1/channel/gateways?chatId=${encodeURIComponent(chatId)}`,
+    ),
 };
 
 export { toB64u };

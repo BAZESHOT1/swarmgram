@@ -666,7 +666,7 @@ static void test_bridge_e2e(void) {
   rb.init(&cfg2, &sb);
 
   KlintoClientBridge ba, bb;
-  kl_bridge_sink_t sink = {nullptr, nullptr, nullptr};
+  kl_bridge_sink_t sink = {nullptr, nullptr, nullptr, nullptr};
   ba.init(&ra, &cfg, &la, &qa, &sink);
   bb.init(&rb, &cfg2, &lb, &qb, &sink);
   bwa.bridge_ctx.bridge = &ba;
@@ -945,6 +945,156 @@ static void test_cell_manager(void) {
   CHECK(gw_host.applied == 9);
 }
 
+/* --------------------------------------------------- сервисные RPC ------- */
+
+static void test_rpc_services(void) {
+  uint8_t buf[KL_MAX_PAYLOAD];
+  kl_search_request_t sreq;
+  sreq.req_id = 4242;
+  sreq.search_type = KL_SEARCH_USERS;
+  strcpy(sreq.query, "алиса");
+  size_t n = kl_codec_encode_search_req(buf, sizeof(buf), 7, &sreq);
+  CHECK(n > 0);
+  uint16_t chat = 0;
+  kl_search_request_t sout;
+  CHECK(kl_codec_decode_search_req(buf, n, &chat, &sout));
+  CHECK(chat == 7);
+  CHECK(sout.req_id == 4242);
+  CHECK(!strcmp(sout.query, "алиса"));
+
+  kl_search_result_t results[2];
+  results[0].entity_id = 1001;
+  results[0].entity_type = KL_SEARCH_USERS;
+  strcpy(results[0].name, "alice");
+  results[1].entity_id = 1002;
+  results[1].entity_type = KL_SEARCH_CHANNELS;
+  strcpy(results[1].name, "новости");
+  n = kl_codec_encode_search_resp(buf, sizeof(buf), 7, 4242, results, 2, false);
+  CHECK(n > 0);
+  kl_search_result_t decoded[KL_SEARCH_MAX_RESULTS];
+  uint16_t req = 0;
+  uint8_t count = 0;
+  bool more = true;
+  CHECK(kl_codec_decode_search_resp(buf, n, &chat, &req, decoded, KL_SEARCH_MAX_RESULTS, &count,
+                                    &more));
+  CHECK(req == 4242);
+  CHECK(count == 2);
+  CHECK(!more);
+  CHECK(!strcmp(decoded[1].name, "новости"));
+
+  n = kl_codec_encode_feed_req(buf, sizeof(buf), 0xFFFF, 1700000000u);
+  uint32_t ts = 0;
+  CHECK(kl_codec_decode_feed_req(buf, n, &chat, &ts));
+  CHECK(ts == 1700000000u);
+
+  kl_feed_entry_t feed[2];
+  memset(feed, 0, sizeof(feed));
+  feed[0].chat_ref = 5;
+  feed[0].unread_count = 3;
+  feed[0].last_msg_uuid = 0x1122334455667788ULL;
+  feed[0].timestamp = 1700000100;
+  strcpy(feed[0].preview, "привет, как дела");
+  feed[1].chat_ref = 6;
+  feed[1].unread_count = 0;
+  strcpy(feed[1].preview, "канал: новости");
+  n = kl_codec_encode_feed_resp(buf, sizeof(buf), 0xFFFF, feed, 2, false);
+  CHECK(n > 0);
+  kl_feed_entry_t fout[KL_FEED_MAX_ENTRIES];
+  CHECK(kl_codec_decode_feed_resp(buf, n, &chat, fout, KL_FEED_MAX_ENTRIES, &count, &more));
+  CHECK(count == 2);
+  CHECK(fout[0].unread_count == 3);
+  CHECK(fout[0].last_msg_uuid == 0x1122334455667788ULL);
+  CHECK(!strcmp(fout[0].preview, "привет, как дела"));
+
+  n = kl_codec_encode_history_req(buf, sizeof(buf), 5, 0xAABBCCDDEEFF0011ULL, 10);
+  uint64_t before = 0;
+  uint8_t limit = 0;
+  CHECK(kl_codec_decode_history_req(buf, n, &chat, &before, &limit));
+  CHECK(before == 0xAABBCCDDEEFF0011ULL);
+  CHECK(limit == 10);
+
+  kl_chat_message_t msgs[2];
+  memset(msgs, 0, sizeof(msgs));
+  msgs[0].msg_uuid = 0x0102030405060708ULL;
+  msgs[0].sender_id = 42;
+  msgs[0].timestamp = 1700000200;
+  strcpy(msgs[0].text, "сообщение один");
+  msgs[1].msg_uuid = 0x0102030405060709ULL;
+  msgs[1].sender_id = 43;
+  strcpy(msgs[1].text, "второе");
+  n = kl_codec_encode_history_resp(buf, sizeof(buf), 5, msgs, 2, false);
+  CHECK(n > 0);
+  kl_chat_message_t mout[KL_HISTORY_MAX_MESSAGES];
+  CHECK(kl_codec_decode_history_resp(buf, n, &chat, mout, KL_HISTORY_MAX_MESSAGES, &count, &more));
+  CHECK(count == 2);
+  CHECK(mout[0].sender_id == 42);
+  CHECK(!strcmp(mout[0].text, "сообщение один"));
+
+  CHECK(kl_rpc_priority_hint(buf, n) == KL_PRIO_LOW);
+  uint8_t text_rpc[32];
+  const size_t text_len = kl_codec_encode_text(text_rpc, sizeof(text_rpc), 1, "ok", 2, 0);
+  CHECK(kl_rpc_priority_hint(text_rpc, text_len) == KL_PRIO_MEDIUM);
+}
+
+/* ------------------------------------------------------ гибридный режим --- */
+
+static void test_hybrid_mode(void) {
+  kl_config_t cfg;
+  kl_config_defaults(&cfg);
+  cfg.node_id = 77;
+  cfg.role = KL_ROLE_CLIENT;
+  cfg.espnow_enabled = true;
+  cfg.lora_present = false;
+
+  FakeWorld world;
+  memset(&world, 0, sizeof(world));
+  kl_router_sink_t sink = {&world, fake_send, fake_deliver, fake_status, fake_archive, NULL, NULL};
+  KlintoRouter r;
+  r.init(&cfg, &sink);
+
+  CHECK(r.relay_enabled());
+  CHECK(r.relay_penalty_ms(KL_IFACE_ESPNOW) == 60);
+  CHECK(r.relay_penalty_ms(KL_IFACE_LORA) == 250);
+  CHECK(!r.mobile_gateway_active());
+
+  r.set_battery(19, -60);
+  CHECK(r.battery_guard_active());
+  CHECK(!r.relay_enabled());
+  r.set_charging(true);
+  CHECK(!r.battery_guard_active());
+  CHECK(r.relay_enabled());
+  r.set_charging(false);
+  r.set_battery(19, -60);
+  CHECK(!r.relay_enabled());
+  r.set_battery(26, -60);
+  CHECK(r.relay_enabled());
+
+  r.set_internet_status(true, 80, true);
+  CHECK(r.mobile_gateway_active());
+  const int before = world.sent_count;
+  r.tick(1000);
+  bool beacon = false;
+  for (int i = before; i < world.sent_count; ++i) {
+    if (world.sent[i].type == KL_TYPE_GW_BEACON) {
+      beacon = true;
+      CHECK(world.sent[i].hop_count == cfg.mobile_gw_hops);
+    }
+  }
+  CHECK(beacon);
+
+  r.set_battery(15, -60);
+  CHECK(!r.mobile_gateway_active());
+  r.set_internet_status(false, 0, true);
+  CHECK(!r.mobile_gateway_active());
+
+  kl_config_t rc = cfg;
+  rc.role = KL_ROLE_ROUTER;
+  KlintoRouter router;
+  router.init(&rc, &sink);
+  CHECK(router.relay_penalty_ms(KL_IFACE_ESPNOW) == 0);
+  CHECK(router.relay_penalty_ms(KL_IFACE_LORA) == 0);
+}
+
 int main(void) {
   setbuf(stdout, NULL);
   printf("Klinto mesh core tests\n");
@@ -962,6 +1112,8 @@ int main(void) {
   test_gateway();
   test_channel_plan();
   test_cell_manager();
+  test_rpc_services();
+  test_hybrid_mode();
   printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

@@ -14,7 +14,16 @@ void kl_config_defaults(kl_config_t *cfg) {
   cfg->gateway_id = KL_INVALID_ID;
   cfg->espnow_enabled = true;
   cfg->wifi_channel = 11;
-  cfg->allow_transit_for_client = false;
+  cfg->allow_transit_for_client = true;
+  cfg->hybrid_portable = true;
+  cfg->relay_allowed = true;
+  cfg->relay_battery_min = 20;
+  cfg->relay_battery_resume = 25;
+  cfg->mobile_gw_beacon_ms = 25000;
+  cfg->mobile_gw_ttl_ms = 60000;
+  cfg->mobile_gw_hops = 2;
+  cfg->relay_penalty_espnow_ms = 60;
+  cfg->relay_penalty_lora_ms = 250;
   cfg->lora_present = false;
 
   cfg->lora.present = false;
@@ -60,6 +69,14 @@ bool kl_config_validate(kl_config_t *cfg) {
   if (cfg->gw_max_hops == 0) cfg->gw_max_hops = KL_DEFAULT_GW_HOPS;
   if (cfg->gw_max_hops > 16) cfg->gw_max_hops = 16;
   if (cfg->ack_retries > 5) cfg->ack_retries = 5;
+  if (cfg->relay_battery_min < 5) cfg->relay_battery_min = 20;
+  if (cfg->relay_battery_resume <= cfg->relay_battery_min) {
+    cfg->relay_battery_resume = (uint8_t)(cfg->relay_battery_min + 5);
+  }
+  if (cfg->mobile_gw_beacon_ms < 5000) cfg->mobile_gw_beacon_ms = 25000;
+  if (cfg->mobile_gw_ttl_ms < cfg->mobile_gw_beacon_ms) cfg->mobile_gw_ttl_ms = 60000;
+  if (cfg->mobile_gw_hops < 1 || cfg->mobile_gw_hops > 4) cfg->mobile_gw_hops = 2;
+  if (cfg->relay_penalty_lora_ms < cfg->relay_penalty_espnow_ms) cfg->relay_penalty_lora_ms = 250;
   if (cfg->ack_timeout_ms < 300) cfg->ack_timeout_ms = 300;
   if (cfg->presence_interval_ms < 30000) cfg->presence_interval_ms = 30000;
   if (cfg->gw_beacon_interval_ms < 30000) cfg->gw_beacon_interval_ms = 30000;
@@ -199,6 +216,15 @@ bool kl_config_from_json(kl_config_t *cfg, const char *json) {
   if (kl_json_get_uint(json, "wifi_channel", &u)) cfg->wifi_channel = (uint8_t)u;
   if (kl_json_get_bool(json, "espnow", &b)) cfg->espnow_enabled = b;
   if (kl_json_get_bool(json, "allow_transit_for_client", &b)) cfg->allow_transit_for_client = b;
+  if (kl_json_get_bool(json, "hybrid_portable", &b)) cfg->hybrid_portable = b;
+  if (kl_json_get_bool(json, "relay_allowed", &b)) cfg->relay_allowed = b;
+  if (kl_json_get_uint(json, "relay_battery_min", &u)) cfg->relay_battery_min = (uint8_t)u;
+  if (kl_json_get_uint(json, "relay_battery_resume", &u)) cfg->relay_battery_resume = (uint8_t)u;
+  if (kl_json_get_uint(json, "mobile_gw_beacon_ms", &u)) cfg->mobile_gw_beacon_ms = (uint16_t)u;
+  if (kl_json_get_uint(json, "mobile_gw_ttl_ms", &u)) cfg->mobile_gw_ttl_ms = (uint16_t)u;
+  if (kl_json_get_uint(json, "mobile_gw_hops", &u)) cfg->mobile_gw_hops = (uint8_t)u;
+  if (kl_json_get_uint(json, "relay_penalty_espnow_ms", &u)) cfg->relay_penalty_espnow_ms = (uint16_t)u;
+  if (kl_json_get_uint(json, "relay_penalty_lora_ms", &u)) cfg->relay_penalty_lora_ms = (uint16_t)u;
   if (kl_json_get_uint(json, "ttl", &u)) cfg->ttl = (uint8_t)u;
   if (kl_json_get_uint(json, "gw_max_hops", &u)) cfg->gw_max_hops = (uint8_t)u;
   if (kl_json_get_uint(json, "presence_interval_ms", &u)) cfg->presence_interval_ms = u;
@@ -264,7 +290,11 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
   int n = snprintf(
       out, cap,
       "{\"role\":\"%s\",\"node_id\":%lu,\"hardware_id\":\"%s\",\"wifi_channel\":%u,"
-      "\"espnow\":%s,\"allow_transit_for_client\":%s,\"ttl\":%u,\"gw_max_hops\":%u,"
+      "\"espnow\":%s,\"allow_transit_for_client\":%s,\"hybrid_portable\":%s,"
+      "\"relay_allowed\":%s,\"relay_battery_min\":%u,\"relay_battery_resume\":%u,"
+      "\"mobile_gw_beacon_ms\":%u,\"mobile_gw_ttl_ms\":%u,\"mobile_gw_hops\":%u,"
+      "\"relay_penalty_espnow_ms\":%u,\"relay_penalty_lora_ms\":%u,"
+      "\"ttl\":%u,\"gw_max_hops\":%u,"
       "\"presence_interval_ms\":%lu,\"gw_beacon_interval_ms\":%lu,\"route_expiry_ms\":%lu,"
       "\"ack_timeout_ms\":%lu,\"ack_retries\":%u,\"lora_low_watermark\":%u,"
       "\"temp_mesh_key\":\"%s\",\"hub_url\":\"%s\",\"module_token\":\"%s\","
@@ -273,6 +303,11 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
       "\"sf\":%u,\"bw\":%.1f,\"cr\":%u,\"power\":%d}}",
       role, (unsigned long)cfg->node_id, cfg->hardware_id, (unsigned)cfg->wifi_channel,
       cfg->espnow_enabled ? "true" : "false", cfg->allow_transit_for_client ? "true" : "false",
+      cfg->hybrid_portable ? "true" : "false", cfg->relay_allowed ? "true" : "false",
+      (unsigned)cfg->relay_battery_min, (unsigned)cfg->relay_battery_resume,
+      (unsigned)cfg->mobile_gw_beacon_ms, (unsigned)cfg->mobile_gw_ttl_ms,
+      (unsigned)cfg->mobile_gw_hops, (unsigned)cfg->relay_penalty_espnow_ms,
+      (unsigned)cfg->relay_penalty_lora_ms,
       (unsigned)cfg->ttl, (unsigned)cfg->gw_max_hops, (unsigned long)cfg->presence_interval_ms,
       (unsigned long)cfg->gw_beacon_interval_ms, (unsigned long)cfg->route_expiry_ms,
       (unsigned long)cfg->ack_timeout_ms, (unsigned)cfg->ack_retries,

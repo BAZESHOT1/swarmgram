@@ -13,9 +13,16 @@ KlintoRouter::KlintoRouter()
       battery_(100),
       last_rssi_(-70),
       capabilities_(0x03),
+      charging_(false),
+      battery_low_(false),
+      relay_allowed_(true),
+      inet_has_(false),
+      mobile_gateway_(false),
+      inet_rtt_ms_(0),
       last_presence_ms_(0),
       last_presence_gw_hop_(0xFF),
       last_beacon_ms_(0),
+      last_mobile_beacon_ms_(0),
       boot_ms_(0) {
   memset(&routes_, 0, sizeof(routes_));
   memset(neighbors_, 0, sizeof(neighbors_));
@@ -45,9 +52,16 @@ void KlintoRouter::init(const kl_config_t *cfg, const kl_router_sink_t *sink) {
   battery_ = 100;
   last_rssi_ = -70;
   capabilities_ = 0x03;
+  charging_ = false;
+  battery_low_ = false;
+  relay_allowed_ = cfg_.relay_allowed;
+  inet_has_ = false;
+  mobile_gateway_ = false;
+  inet_rtt_ms_ = 0;
   last_presence_ms_ = 0;
   last_presence_gw_hop_ = 0xFF;
   last_beacon_ms_ = 0;
+  last_mobile_beacon_ms_ = 0;
   boot_ms_ = kl_uptime_ms();
   dedup_.reset();
 }
@@ -295,7 +309,7 @@ bool KlintoRouter::send(kl_packet_t *pkt, uint32_t now_ms, uint8_t iface_hint, b
         return true;
       }
     }
-    if (is_gateway()) {
+    if (gateway_like()) {
       /* A gateway is itself the destination. */
       if (sink_.deliver) sink_.deliver(sink_.ctx, pkt, 0, iface_hint);
       return true;
@@ -367,7 +381,7 @@ void KlintoRouter::handle_beacon(const kl_packet_t *pkt, uint8_t iface, int16_t 
   const uint8_t load = pkt->payload[8];
   const uint8_t caps = pkt->payload[9];
   (void)load;
-  (void)caps;
+  const bool mobile = (caps & KL_CAP_MOBILE_GW) != 0;
   if (pkt->hop_count > cfg_.gw_max_hops) return;
 
   learn_neighbor(relay_id, iface, rssi, now_ms, pkt->hop_count, true);
@@ -383,7 +397,9 @@ void KlintoRouter::handle_beacon(const kl_packet_t *pkt, uint8_t iface, int16_t 
     gw_.hops = hops;
     gw_.rssi = rssi;
     gw_.last_seen_ms = now_ms;
-    gw_.expires_ms = now_ms + cfg_.gw_beacon_interval_ms * 3;
+    gw_.mobile = mobile;
+    gw_.expires_ms = now_ms + (mobile ? cfg_.mobile_gw_ttl_ms
+                                      : (uint32_t)cfg_.gw_beacon_interval_ms * 3);
     upsert_route(gateway_id, relay_id, iface, hops + 1, rssi, now_ms, true);
     flush_pending(KL_ANY_GATEWAY_ID, now_ms);
   }
@@ -466,7 +482,7 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
   /* Дешёвый фильтр next_hop. Радиодрайверы делают это до копирования
    * кадра; здесь — дополнительная защита от USB/loopback-инъекций. */
   if (pkt->next_hop_id != KL_BROADCAST_ID && pkt->next_hop_id != cfg_.node_id &&
-      !(is_gateway() && pkt->next_hop_id == KL_ANY_GATEWAY_ID)) {
+      !(gateway_like() && pkt->next_hop_id == KL_ANY_GATEWAY_ID)) {
     stats_.dropped_policy++;
     return;
   }
@@ -494,8 +510,8 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
   /* Шлюз копирует любой услышанный DATA с NEED_CLOUD_ARCHIVE, даже если
    * кадр адресован другому узлу. Кадры самому шлюзу архивирует uplink-путь,
    * поэтому дубликата публикации нет. */
-  const bool for_me = kl_packet_is_for(pkt, cfg_.node_id, is_gateway());
-  if (!for_me && is_gateway() && pkt->msg_uuid != 0 &&
+  const bool for_me = kl_packet_is_for(pkt, cfg_.node_id, gateway_like());
+  if (!for_me && gateway_like() && pkt->msg_uuid != 0 &&
       (pkt->flags & KL_FLAG_NEED_CLOUD_ARCHIVE) &&
       (pkt->type == KL_TYPE_DATA || pkt->type == KL_TYPE_SYNC_ARCHIVE)) {
     if (sink_.archive) sink_.archive(sink_.ctx, pkt);
@@ -528,7 +544,7 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
         handle_rrep(const_cast<kl_packet_t *>(pkt), iface, rssi, now_ms);
         return;
       case KL_TYPE_NODE_PRESENCE:
-        if (is_gateway() && sink_.presence) sink_.presence(sink_.ctx, pkt, rssi, iface);
+        if (gateway_like() && sink_.presence) sink_.presence(sink_.ctx, pkt, rssi, iface);
         if (pkt->flags & KL_FLAG_NEED_ACK) send_ack(pkt, iface, now_ms);
         if (sink_.deliver) sink_.deliver(sink_.ctx, pkt, rssi, iface);
         return;
@@ -548,13 +564,10 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
 
   /* Транзит. Носимые узлы экономят батарею: ретранслируют uplink только
    * когда фактически находятся рядом со шлюзом. */
-  if (cfg_.role == KL_ROLE_CLIENT && !cfg_.allow_transit_for_client &&
-      pkt->type != KL_TYPE_GW_BEACON && pkt->type != KL_TYPE_RREQ) {
-    const bool helpful = (pkt->flags & KL_FLAG_TO_INTERNET) && gw_.valid && gw_.hops <= 2;
-    if (!helpful) {
-      stats_.dropped_policy++;
-      return;
-    }
+  if (!relay_enabled() && pkt->type != KL_TYPE_GW_BEACON &&
+      pkt->type != KL_TYPE_RREQ) {
+    stats_.dropped_policy++;
+    return;
   }
   if ((uint8_t)(pkt->hop_count + 1) >= pkt->ttl) {
     stats_.dropped_ttl++;
@@ -564,14 +577,14 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
   if (pkt->type == KL_TYPE_RREQ || pkt->type == KL_TYPE_GW_BEACON) {
     if (pkt->type == KL_TYPE_RREQ) learn_reverse_route(pkt, iface, rssi, now_ms);
     if (pkt->type == KL_TYPE_GW_BEACON && pkt->hop_count + 1 >= cfg_.gw_max_hops) return;
-    schedule_broadcast(pkt, rssi, now_ms);
+    schedule_broadcast(pkt, rssi, now_ms, iface);
     return;
   }
   if (pkt->type == KL_TYPE_RREP) {
     learn_reverse_route(pkt, iface, rssi, now_ms);
   }
   if (pkt->dst_id == KL_BROADCAST_ID) {
-    schedule_broadcast(pkt, rssi, now_ms);
+    schedule_broadcast(pkt, rssi, now_ms, iface);
     return;
   }
   if (pkt->dst_id == KL_ANY_GATEWAY_ID) {
@@ -604,8 +617,12 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
 
 /* -------------------------------------------------------------- timers --- */
 
-uint32_t KlintoRouter::backoff_delay_ms(int16_t rssi, uint32_t salt) {
-  int32_t d;
+uint16_t KlintoRouter::relay_penalty_ms(uint8_t iface) const {
+  if (cfg_.role != KL_ROLE_CLIENT || !cfg_.hybrid_portable) return 0;
+  return iface == KL_IFACE_LORA ? cfg_.relay_penalty_lora_ms : cfg_.relay_penalty_espnow_ms;
+}
+
+uint32_t KlintoRouter::backoff_delay_ms(int16_t rssi, uint32_t salt) {  int32_t d;
   if (rssi >= -30) {
     d = 150;
   } else if (rssi <= -115) {
@@ -619,7 +636,8 @@ uint32_t KlintoRouter::backoff_delay_ms(int16_t rssi, uint32_t salt) {
   return (uint32_t)d;
 }
 
-void KlintoRouter::schedule_broadcast(const kl_packet_t *pkt, int16_t rssi, uint32_t now_ms) {
+void KlintoRouter::schedule_broadcast(const kl_packet_t *pkt, int16_t rssi, uint32_t now_ms,
+                                      uint8_t iface) {
   kl_bcast_slot_t *slot = nullptr;
   for (uint16_t i = 0; i < KL_BCAST_QUEUE; ++i) {
     if (!bcasts_[i].used) {
@@ -640,7 +658,8 @@ void KlintoRouter::schedule_broadcast(const kl_packet_t *pkt, int16_t rssi, uint
   if (!slot) return;
   slot->used = true;
   slot->packet_id = pkt->packet_id;
-  slot->due_ms = now_ms + backoff_delay_ms(rssi, pkt->packet_id);
+  uint32_t penalty = relay_penalty_ms(iface);
+  slot->due_ms = now_ms + backoff_delay_ms(rssi, pkt->packet_id) + penalty;
   slot->pkt = *pkt;
 }
 
@@ -745,6 +764,12 @@ void KlintoRouter::tick(uint32_t now_ms) {
     kl_packet_set_payload(&beacon, payload, sizeof(payload));
     if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
   }
+
+  if (mobile_gateway_active() &&
+      (last_mobile_beacon_ms_ == 0 ||
+       now_ms - last_mobile_beacon_ms_ >= cfg_.mobile_gw_beacon_ms)) {
+    emit_mobile_beacon(now_ms);
+  }
 }
 
 void KlintoRouter::on_channel_changed(uint8_t wifi_channel) {
@@ -778,8 +803,23 @@ void KlintoRouter::emit_gateway_beacon(uint32_t now_ms) {
   if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
 }
 
+void KlintoRouter::emit_mobile_beacon(uint32_t now_ms) {
+  last_mobile_beacon_ms_ = now_ms;
+  kl_packet_t beacon;
+  kl_packet_init(&beacon, KL_TYPE_GW_BEACON, cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
+  beacon.ttl = cfg_.gw_max_hops;
+  beacon.hop_count = cfg_.mobile_gw_hops;
+  uint8_t payload[10];
+  kl_write_le32(payload, cfg_.node_id);
+  kl_write_le32(payload + 4, cfg_.node_id);
+  payload[8] = 0;
+  payload[9] = (uint8_t)(capabilities_ | KL_CAP_MOBILE_GW | KL_CAP_HYBRID_PORTABLE);
+  kl_packet_set_payload(&beacon, payload, sizeof(payload));
+  if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
+}
+
 void KlintoRouter::maybe_presence(uint32_t now_ms) {
-  if (is_gateway()) return;
+  if (gateway_like()) return;
   const bool gw_changed = gw_.valid && gw_.hops != last_presence_gw_hop_;
   const bool due = last_presence_ms_ == 0 || now_ms - last_presence_ms_ >= cfg_.presence_interval_ms;
   if (!due && !gw_changed) return;
@@ -807,6 +847,51 @@ void KlintoRouter::set_battery(uint8_t percent, int8_t rssi) {
   KlintoGuard guard(lock_);
   battery_ = percent > 100 ? 100 : percent;
   last_rssi_ = rssi;
+  if (cfg_.role != KL_ROLE_CLIENT || charging_) {
+    battery_low_ = false;
+  } else if (battery_ < cfg_.relay_battery_min) {
+    battery_low_ = true;
+  } else if (battery_ > cfg_.relay_battery_resume) {
+    battery_low_ = false;
+  }
+}
+
+void KlintoRouter::set_charging(bool charging) {
+  KlintoGuard guard(lock_);
+  charging_ = charging;
+  if (charging) battery_low_ = false;
+}
+
+void KlintoRouter::set_relay_allowed(bool allowed) {
+  KlintoGuard guard(lock_);
+  relay_allowed_ = allowed;
+}
+
+void KlintoRouter::set_internet_status(bool has_internet, uint16_t rtt_ms, bool allow_relay) {
+  KlintoGuard guard(lock_);
+  inet_has_ = has_internet;
+  inet_rtt_ms_ = rtt_ms;
+  relay_allowed_ = allow_relay;
+  const bool active = has_internet && allow_relay && cfg_.role == KL_ROLE_CLIENT &&
+                      cfg_.hybrid_portable && !battery_low_;
+  if (active != mobile_gateway_) {
+    mobile_gateway_ = active;
+    last_mobile_beacon_ms_ = 0;
+  }
+}
+
+bool KlintoRouter::relay_enabled() const {
+  if (cfg_.role != KL_ROLE_CLIENT) return true;
+  return cfg_.hybrid_portable && relay_allowed_ && !battery_low_;
+}
+
+bool KlintoRouter::mobile_gateway_active() const {
+  return cfg_.role == KL_ROLE_CLIENT && cfg_.hybrid_portable && mobile_gateway_ &&
+         inet_has_ && relay_allowed_ && !battery_low_;
+}
+
+bool KlintoRouter::gateway_like() const {
+  return cfg_.role == KL_ROLE_GATEWAY || mobile_gateway_active();
 }
 
 void KlintoRouter::notify_status(uint64_t msg_uuid, uint32_t packet_id, uint8_t status) {

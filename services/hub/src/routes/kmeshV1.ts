@@ -78,6 +78,59 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+async function storeArchive(body: Record<string, unknown>, gatewayId: number) {
+  const uuid = String(body.msg_uuid ?? '').toLowerCase();
+  const packetB64 = String(body.packet_b64 ?? '');
+  if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+  if (!UUID64_RE.test(uuid)) throw badRequest('invalid_msg_uuid');
+  if (!packetB64 || packetB64.length > MAX_ARCHIVE_B64) throw badRequest('invalid_packet');
+
+  let packet: Buffer;
+  try {
+    packet = Buffer.from(packetB64, 'base64');
+  } catch {
+    throw badRequest('invalid_packet');
+  }
+  if (packet.length < 37 || packet[0] !== 0xa7 || packet[1] !== 3) throw badRequest('invalid_packet');
+  const wireUuid = packet.subarray(6, 14).reverse().toString('hex');
+  if (wireUuid !== uuid) throw badRequest('msg_uuid_mismatch');
+
+  const src = packet.readUInt32LE(14);
+  const dst = packet.readUInt32LE(18);
+  const packetId = packet.readUInt32LE(2);
+  const packetType = packet[30];
+  const packetFlags = packet[31];
+  const hopCount = packet[33];
+
+  const result = await query<{ status: string }>(
+    `INSERT INTO kmesh_v1_archive
+       (msg_uuid, gateway_id, src_id, dst_id, packet_id, packet_type, packet_flags,
+        chat_ref, rpc_op, rssi, iface, hop_count, packet_b64, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')
+     ON CONFLICT (msg_uuid) DO UPDATE SET
+       gateway_id = EXCLUDED.gateway_id,
+       rssi = GREATEST(kmesh_v1_archive.rssi, EXCLUDED.rssi),
+       updated_at = now()
+     RETURNING status`,
+    [uuid, gatewayId, src, dst, packetId, packetType, packetFlags,
+     body.chat_ref == null ? null : num(body.chat_ref),
+     body.rpc_op == null ? null : num(body.rpc_op), num(body.rssi), num(body.iface),
+     hopCount, packetB64],
+  );
+  return { uuid, status: result[0]?.status ?? 'pending' };
+}
+
+async function mapEntity(entityType: string, entityUuid: string): Promise<number> {
+  const rows = await query<{ entity_id: string }>(
+    `INSERT INTO kmesh_v1_entity_map (entity_type, entity_uuid)
+     VALUES ($1,$2)
+     ON CONFLICT (entity_type, entity_uuid) DO UPDATE SET entity_type = EXCLUDED.entity_type
+     RETURNING entity_id`,
+    [entityType, entityUuid],
+  );
+  return Number(rows[0]?.entity_id ?? 0) >>> 0;
+}
+
 const kmeshV1Routes: FastifyPluginAsync = async (app) => {
   /* --------------------------------------------------------- gateway ---- */
 
@@ -165,6 +218,197 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       msg_uuid: uuid,
       status: result[0]?.status ?? 'pending',
       note: result[0]?.status === 'permanent' ? 'already_permanent' : 'shadow_stored',
+    });
+  });
+
+  /* ------------------------------------- мобильный шлюз (телефон) ------- */
+  app.post('/kmesh/v1/mobile/archive', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const gatewayId = num(body.gateway_id);
+    const result = await storeArchive(body, gatewayId);
+    return reply.code(202).send({ ok: true, msg_uuid: result.uuid, status: result.status });
+  });
+
+  app.post('/kmesh/v1/mobile/presence', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const gatewayId = num(body.gateway_id);
+    const nodeId = num(body.node_id);
+    if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+    if (!Number.isInteger(nodeId) || nodeId <= 1) throw badRequest('node_id_required');
+    await query(
+      `INSERT INTO kmesh_v1_presence
+         (node_id, gateway_id, user_id, rssi, hops, iface, battery, role, last_seen_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now(), now() + interval '5 minutes')
+       ON CONFLICT (node_id) DO UPDATE SET
+         gateway_id = EXCLUDED.gateway_id,
+         user_id = EXCLUDED.user_id,
+         rssi = EXCLUDED.rssi,
+         hops = EXCLUDED.hops,
+         battery = EXCLUDED.battery,
+         role = EXCLUDED.role,
+         last_seen_at = now(),
+         expires_at = EXCLUDED.expires_at`,
+      [nodeId, gatewayId, auth.userId, num(body.rssi), num(body.hops), num(body.iface),
+       num(body.battery), num(body.role)],
+    );
+    return reply.send({ ok: true, nodeId, gatewayId });
+  });
+
+  app.post('/kmesh/v1/node/bind', { onRequest: [requireAuth()] }, async (req, reply) => {    const auth = req.auth!;
+    const nodeId = num((req.body as Record<string, unknown>)?.node_id);
+    if (!Number.isInteger(nodeId) || nodeId <= 1) throw badRequest('invalid_node_id');
+    await query(
+      `INSERT INTO kmesh_v1_node_bindings (node_id, user_id, updated_at)
+       VALUES ($1,$2, now())
+       ON CONFLICT (node_id) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()`,
+      [nodeId, auth.userId],
+    );
+    await query(
+      `UPDATE kmesh_v1_presence SET user_id = $2 WHERE node_id = $1`,
+      [nodeId, auth.userId],
+    );
+    return reply.send({ ok: true, nodeId, userId: auth.userId });
+  });
+
+  /* ------------------------------------------------------- поиск -------- */
+  app.get('/kmesh/v1/search', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const q = String((req.query as { q?: string }).q ?? '').trim();
+    const type = String((req.query as { type?: string }).type ?? 'all');
+    if (q.length < 2) throw badRequest('query_too_short');
+    const pattern = `%${q.replace(/[%_]/g, '\\$&')}%`;
+    const out: Array<{ entityId: number; type: string; name: string; username?: string }> = [];
+
+    if (type === 'all' || type === 'users') {
+      const users = await query<{ id: string; username: string; display_name: string }>(
+        `SELECT id, username, display_name FROM users
+          WHERE status = 'active' AND (username ILIKE $1 OR display_name ILIKE $1)
+          ORDER BY last_seen_at DESC NULLS LAST LIMIT 3`,
+        [pattern],
+      );
+      for (const u of users) {
+        out.push({
+          entityId: await mapEntity('user', u.id),
+          type: 'user',
+          name: u.display_name || u.username,
+          username: u.username,
+        });
+        if (out.length >= 5) break;
+      }
+    }
+    if (out.length < 5 && (type === 'all' || type === 'groups' || type === 'channels')) {
+      const allowed = type === 'groups' ? ['group'] : type === 'channels' ? ['channel'] : ['group', 'channel'];
+      const chats = await query<{ id: string; title: string; type: string }>(
+        `SELECT id, title, type FROM chats
+          WHERE type = ANY($1::text[]) AND visibility <> 'private' AND title ILIKE $2
+          ORDER BY updated_at DESC LIMIT $3`,
+        [allowed, pattern, 5 - out.length],
+      );
+      for (const c of chats) {
+        out.push({ entityId: await mapEntity(c.type, c.id), type: c.type, name: c.title });
+      }
+    }
+    return reply.send({ ok: true, query: q, results: out.slice(0, 5) });
+  });
+
+  /* -------------------------------------------------------- лента ------- */
+  app.get('/kmesh/v1/feed', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const sinceMs = Number((req.query as { since?: string }).since ?? 0) || 0;
+    const rows = await query<{
+      id: string; title: string; type: string; unread: string; last_uuid: string | null;
+      ts: string | null; preview: string | null;
+    }>(
+      `SELECT c.id, c.title, c.type,
+              (SELECT count(*) FROM messages m
+                WHERE m.chat_id = c.id AND m.seq > cm.last_read_seq) AS unread,
+              (SELECT m.msg_uuid FROM messages m WHERE m.chat_id = c.id
+                ORDER BY m.seq DESC LIMIT 1) AS last_uuid,
+              (SELECT m.created_at FROM messages m WHERE m.chat_id = c.id
+                ORDER BY m.seq DESC LIMIT 1) AS ts,
+              (SELECT m.header->>'preview' FROM messages m WHERE m.chat_id = c.id
+                ORDER BY m.seq DESC LIMIT 1) AS preview
+         FROM chats c
+         JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $1
+        WHERE $2 = 0 OR c.updated_at > to_timestamp($2 / 1000.0)
+        ORDER BY c.updated_at DESC LIMIT 5`,
+      [auth.userId, sinceMs],
+    );
+    const items = [];
+    for (const r of rows) {
+      items.push({
+        entityId: await mapEntity('chat', r.id),
+        chatId: r.id,
+        type: r.type,
+        title: r.title,
+        unreadCount: Number(r.unread) || 0,
+        lastMsgUuid: r.last_uuid ?? '',
+        timestamp: r.ts ? new Date(r.ts).getTime() : 0,
+        preview: r.preview ?? '',
+      });
+    }
+    return reply.send({ ok: true, items });
+  });
+
+  /* --------------------------------------------- история чата ----------- */
+  app.get('/kmesh/v1/history', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const q = req.query as { chatId?: string; before?: string; limit?: string };
+    const chatId = String(q.chatId ?? '');
+    if (!UUID_RE.test(chatId)) throw badRequest('invalid_chat_id');
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
+      [chatId, auth.userId]);
+    if (!member) throw forbidden('not_a_member');
+    const before = Number(q.before) || 0;
+    const limit = Math.min(Math.max(Number(q.limit) || 10, 1), 20);
+    const rows = await query<{
+      msg_uuid: string; sender_node_id: string; ciphertext_b64: string; nonce: string;
+      header: unknown; synced_at: string;
+    }>(
+      `SELECT msg_uuid, sender_node_id, ciphertext_b64, nonce, header, synced_at
+         FROM kmesh_v1_messages
+        WHERE chat_id = $1 AND ($2 = 0 OR synced_at < to_timestamp($2 / 1000.0))
+        ORDER BY synced_at DESC LIMIT $3`,
+      [chatId, before, limit],
+    );
+    return reply.send({
+      ok: true,
+      chatId,
+      items: rows.map((r) => ({
+        msgUuid: r.msg_uuid,
+        senderNodeId: Number(r.sender_node_id),
+        ciphertextB64: r.ciphertext_b64,
+        nonce: r.nonce,
+        header: r.header,
+        timestamp: new Date(r.synced_at).getTime(),
+      })),
+    });
+  });
+
+  /* ------------------------------------ шлюзы для downlink канала ------- */
+  app.get('/kmesh/v1/channel/gateways', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const chatId = String((req.query as { chatId?: string }).chatId ?? '');
+    if (!UUID_RE.test(chatId)) throw badRequest('invalid_chat_id');
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
+      [chatId, auth.userId]);
+    if (!member) throw forbidden('not_a_member');
+    const rows = await query<{ gateway_id: string; members: string }>(
+      `SELECT p.gateway_id, count(DISTINCT cm.user_id)::text AS members
+         FROM kmesh_v1_presence p
+         JOIN chat_members cm
+           ON cm.user_id = COALESCE(p.user_id,
+                (SELECT b.user_id FROM kmesh_v1_node_bindings b WHERE b.node_id = p.node_id))
+        WHERE cm.chat_id = $1 AND p.expires_at > now() AND p.gateway_id > 1
+        GROUP BY p.gateway_id
+        ORDER BY count(DISTINCT cm.user_id) DESC`,
+      [chatId],
+    );
+    return reply.send({
+      ok: true,
+      chatId,
+      gateways: rows.map((r) => ({ gatewayId: Number(r.gateway_id), members: Number(r.members) })),
     });
   });
 

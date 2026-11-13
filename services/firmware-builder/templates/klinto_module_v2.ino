@@ -55,7 +55,7 @@
 /* ------------------------------------------------------- дефолты конфига -- */
 
 #ifndef KL_FIRMWARE_VERSION
-#define KL_FIRMWARE_VERSION "1.1"
+#define KL_FIRMWARE_VERSION "1.2"
 #endif
 #ifndef KL_BOARD
 #define KL_BOARD "esp32"

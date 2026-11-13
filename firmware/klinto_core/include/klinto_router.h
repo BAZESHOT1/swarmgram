@@ -22,6 +22,8 @@
 #define KL_BCAST_QUEUE 8
 #define KL_RREQ_RETRY_MS 2500u
 #define KL_RREQ_MAX_TRIES 3
+#define KL_CAP_MOBILE_GW 0x04
+#define KL_CAP_HYBRID_PORTABLE 0x08
 
 struct kl_route_entry_t {
   uint32_t dst_id;
@@ -47,6 +49,7 @@ struct kl_neighbor_t {
 
 struct kl_gw_route_t {
   bool valid;
+  bool mobile;
   uint32_t gateway_id;
   uint32_t next_hop_id;
   uint8_t iface;
@@ -136,9 +139,18 @@ class KlintoRouter {
   /** Timers: retries, suppression, beacons, presence, route expiry. */
   void tick(uint32_t now_ms);
 
-  /** Periodically called by the runtime while the client bridge is connected. */
+  /** Периодически вызывается runtime; процент АКБ и зарядка. */
   void set_battery(uint8_t percent, int8_t rssi);
+  void set_charging(bool charging);
+  void set_relay_allowed(bool allowed);
+  void set_internet_status(bool has_internet, uint16_t rtt_ms, bool allow_relay);
   void set_capabilities(uint8_t caps) { capabilities_ = caps; }
+
+  bool relay_enabled() const;
+  bool mobile_gateway_active() const;
+  bool battery_guard_active() const { return battery_low_; }
+  uint8_t battery_percent() const { return battery_; }
+  uint16_t internet_rtt_ms() const { return inet_rtt_ms_; }
 
   const kl_route_entry_t *route(uint32_t dst_id) const;
   const kl_gw_route_t *gateway_route() const { return &gw_; }
@@ -169,6 +181,8 @@ class KlintoRouter {
 
   /** Delay in ms for RSSI-based broadcast suppression (weak = fast). */
   static uint32_t backoff_delay_ms(int16_t rssi, uint32_t salt = 0);
+  /** Штраф носимого ретранслятора поверх RSSI-backoff. */
+  uint16_t relay_penalty_ms(uint8_t iface) const;
 
   const kl_router_stats_t *stats() const { return &stats_; }
   uint16_t pending_count() const;
@@ -187,7 +201,7 @@ class KlintoRouter {
   void handle_rrep(kl_packet_t *pkt, uint8_t iface, int16_t rssi, uint32_t now_ms);
   void send_ack(const kl_packet_t *original, uint8_t iface, uint32_t now_ms);
   bool send_rreq(uint32_t target, uint8_t iface_hint, uint32_t now_ms);
-  void schedule_broadcast(const kl_packet_t *pkt, int16_t rssi, uint32_t now_ms);
+  void schedule_broadcast(const kl_packet_t *pkt, int16_t rssi, uint32_t now_ms, uint8_t iface);
   void cancel_broadcast(uint32_t packet_id);
   bool transmit(const kl_packet_t *pkt, uint8_t iface, uint32_t next_hop, uint32_t now_ms);
   bool transmit_on_all(const kl_packet_t *pkt, uint32_t now_ms);
@@ -195,6 +209,8 @@ class KlintoRouter {
   void flush_pending(uint32_t dst_id, uint32_t now_ms);
   void register_ack(const kl_packet_t *pkt, bool via_gateway, uint32_t now_ms);
   bool is_gateway() const { return cfg_.role == KL_ROLE_GATEWAY; }
+  bool gateway_like() const;
+  void emit_mobile_beacon(uint32_t now_ms);
   void maybe_presence(uint32_t now_ms);
 
   kl_config_t cfg_;
@@ -212,9 +228,16 @@ class KlintoRouter {
   uint8_t battery_;
   int8_t last_rssi_;
   uint8_t capabilities_;
+  bool charging_;
+  bool battery_low_;
+  bool relay_allowed_;
+  bool inet_has_;
+  bool mobile_gateway_;
+  uint16_t inet_rtt_ms_;
   uint32_t last_presence_ms_;
   uint32_t last_presence_gw_hop_;
   uint32_t last_beacon_ms_;
+  uint32_t last_mobile_beacon_ms_;
   uint32_t boot_ms_;
   kl_router_stats_t stats_;
   KlintoLock lock_;

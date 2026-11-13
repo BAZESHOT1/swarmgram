@@ -231,6 +231,9 @@ function generateConfigHeader(config, version) {
     `#define KL_FIRMWARE_VERSION ${cString(version)}`,
     `#define KL_BOARD ${cString(board)}`,
     `#define KL_ROLE ${cString(role)}`,
+    // Гибридный носимый узел включён по умолчанию для wearable.
+    `#define KL_HYBRID_PORTABLE ${role === 'wearable' ? 1 : 0}`,
+    `#define KL_RELAY_ALLOWED 1`,
     `#define KL_CONNECTIVITY ${cString(connectivity)}`,
     `#define KL_IS_GATEWAY ${role === 'gateway' ? 1 : 0}`,
     `#define KL_IS_WEARABLE ${role === 'wearable' ? 1 : 0}`,
@@ -291,6 +294,7 @@ function generateConfigHeader(config, version) {
   lines.push(
     `#define KL_BATT_ENABLED ${battEnabled}`,
     `#define KL_BATT_PIN ${num(battery.pin, 0) | 0}`,
+    `#define KL_BATT_CHARGING_PIN ${battery.chargingPin !== undefined && battery.chargingPin !== null ? num(battery.chargingPin, -1) | 0 : -1}`,
     `#define KL_BATT_RATIO ${num(battery.ratio, 2.0)}`,
     `#define KL_LED_PIN ${config.ledPin !== undefined && config.ledPin !== null ? num(config.ledPin, -1) | 0 : -1}`,
     `#define KL_BATT_INTERVAL ${Math.max(10, num(battery.intervalSec, 300)) | 0}`,

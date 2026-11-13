@@ -29,9 +29,9 @@
 #define KL_DEFAULT_ACK_RETRIES 3
 
 enum kl_role_t : uint8_t {
-  KL_ROLE_CLIENT = 0,  /* wearable: battery first, transit only as fallback */
-  KL_ROLE_ROUTER = 1,  /* stationary relay / cross-band bridge           */
-  KL_ROLE_GATEWAY = 2  /* internet uplink                                */
+  KL_ROLE_CLIENT = 0,  /* носимый: гибридный клиент + ретранслятор + мобильный шлюз */
+  KL_ROLE_ROUTER = 1,  /* стационарный ретранслятор / межсредовой мост */
+  KL_ROLE_GATEWAY = 2  /* стационарный интернет-шлюз */
 };
 
 enum kl_lora_chip_t : uint8_t {
@@ -69,6 +69,17 @@ struct kl_config_t {
   bool espnow_enabled;
   uint8_t wifi_channel;
   bool allow_transit_for_client;
+
+  /* Гибридный носимый узел: клиент + умный ретранслятор + мобильный шлюз. */
+  bool hybrid_portable;
+  bool relay_allowed;
+  uint8_t relay_battery_min;
+  uint8_t relay_battery_resume;
+  uint16_t mobile_gw_beacon_ms;
+  uint16_t mobile_gw_ttl_ms;
+  uint8_t mobile_gw_hops;
+  uint16_t relay_penalty_espnow_ms;
+  uint16_t relay_penalty_lora_ms;
 
   bool lora_present;
   kl_lora_config_t lora;

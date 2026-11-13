@@ -10,6 +10,7 @@
  *   - отдавать статус MSG_SYNCED, чтобы UI не дублировал сообщение.
  */
 import { encryptBytes, storage } from '../../crypto/core';
+import { kv } from '../../crypto/storage';
 import { loadChatKey } from '../../data/chatkit';
 import { api } from '../../data/api';
 import {
@@ -25,15 +26,29 @@ import {
   ClientFrameType,
   DeliveryStatus,
   PacketFlag,
+  RpcOp,
+  BROADCAST_ID,
+  ANY_GATEWAY_ID,
   decodeMeshPacket,
   decodeRpc,
+  decodeFeedResponse,
+  decodeHistoryResponse,
+  decodeSearchResponse,
   encodeClientFrame,
+  encodeFeedRequest,
+  encodeHistoryRequest,
+  encodeInetStatus,
+  encodeProxyDown,
   encodeRpcText,
   encodeRpcUp,
+  encodeSearchRequest,
   msgUuidHex,
   nextMsgUuid,
   type DeliveryStatusValue,
+  type FeedEntry,
+  type HistoryEntry,
   type MeshPacket,
+  type SearchResult,
 } from './protocol';
 import { b64ToBytes, signPermanent } from './crypto';
 
@@ -65,6 +80,13 @@ export interface KMeshV1ClientOptions {
   onMessage?: (message: KMeshV1ReceivedMessage) => void;
   onStatus?: (event: KMeshV1StatusEvent) => void;
   onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number }) => void;
+  onSearch?: (reqId: number, results: SearchResult[], more: boolean) => void;
+  onFeed?: (entries: FeedEntry[], more: boolean) => void;
+  onHistory?: (chatRef: number, messages: HistoryEntry[], more: boolean) => void;
+  /** Мобильный шлюз: пакет для отправки на Hub (тело зашифровано). */
+  onProxyUplink?: (packet: MeshPacket, raw: Uint8Array) => void;
+  allowRelayTraffic?: boolean;
+  dailyProxyLimitBytes?: number;
 }
 
 export class KMeshV1Client {
@@ -73,10 +95,49 @@ export class KMeshV1Client {
   private seq = 1;
   private nodeId = 0;
   private opts: KMeshV1ClientOptions;
+  private proxyBytesToday = 0;
+  private proxyDay = '';
+  private dailyProxyLimit = 10 * 1024 * 1024;
 
   constructor(options: KMeshV1ClientOptions) {
     this.opts = options;
     this.link = options.link;
+    if (options.dailyProxyLimitBytes) this.dailyProxyLimit = options.dailyProxyLimitBytes;
+    void this.loadProxyCounter();
+  }
+
+  private async loadProxyCounter(): Promise<void> {
+    try {
+      const day = new Date().toISOString().slice(0, 10);
+      const storedDay = await kv.get('sg:kmesh:proxy:day');
+      if (storedDay !== day) {
+        this.proxyDay = day;
+        this.proxyBytesToday = 0;
+        await kv.set('sg:kmesh:proxy:day', day);
+        await kv.set('sg:kmesh:proxy:bytes', '0');
+        return;
+      }
+      this.proxyDay = day;
+      this.proxyBytesToday = Number(await kv.get('sg:kmesh:proxy:bytes')) || 0;
+    } catch {
+      /* счётчик недоступен — работаем без лимита */
+    }
+  }
+
+  private async addProxyBytes(bytes: number): Promise<boolean> {
+    await this.loadProxyCounter();
+    if (this.proxyBytesToday + bytes > this.dailyProxyLimit) return false;
+    this.proxyBytesToday += bytes;
+    try {
+      await kv.set('sg:kmesh:proxy:bytes', String(this.proxyBytesToday));
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }
+
+  getProxyTraffic(): { usedBytes: number; limitBytes: number } {
+    return { usedBytes: this.proxyBytesToday, limitBytes: this.dailyProxyLimit };
   }
 
   attachLink(link: KMeshV1Link): void {
@@ -99,6 +160,34 @@ export class KMeshV1Client {
 
   async ping(): Promise<boolean> {
     return this.link.send(encodeClientFrame(ClientFrameType.PING, new Uint8Array(0), this.seq++));
+  }
+
+  /** Раз в 15 секунд приложение сообщает модулю статус интернета. */
+  async setInetStatus(hasInternet: boolean, rttMs: number, allowRelay = this.opts.allowRelayTraffic ?? true): Promise<boolean> {
+    const payload = encodeInetStatus(hasInternet, rttMs, allowRelay);
+    return this.link.send(encodeClientFrame(ClientFrameType.INET_STATUS, payload, this.seq++));
+  }
+
+  private async sendServiceRpc(rpc: Uint8Array): Promise<boolean> {
+    const up = encodeRpcUp(ANY_GATEWAY_ID, PacketFlag.TO_INTERNET, 0n, rpc);
+    return this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+  }
+
+  async search(reqId: number, query: string, searchType: number): Promise<boolean> {
+    return this.sendServiceRpc(encodeSearchRequest(reqId, searchType, query));
+  }
+
+  async syncFeed(lastSyncTs: number): Promise<boolean> {
+    return this.sendServiceRpc(encodeFeedRequest(lastSyncTs));
+  }
+
+  async chatHistory(chatRef: number, beforeUuid = 0n, limit = 10): Promise<boolean> {
+    return this.sendServiceRpc(encodeHistoryRequest(chatRef, beforeUuid, limit));
+  }
+
+  /** Мобильный шлюз: отправить серверный пакет в mesh. */
+  async proxyDownlink(packet: MeshPacket): Promise<boolean> {
+    return this.link.send(encodeClientFrame(ClientFrameType.PROXY_DOWN, encodeProxyDown(packet), this.seq++));
   }
 
   async sendConfig(wifiSsid: string, wifiPassword: string): Promise<boolean> {
@@ -124,11 +213,14 @@ export class KMeshV1Client {
 
     const msgUuid = nextMsgUuid(this.nodeId);
     const uuidHex = msgUuidHex(msgUuid);
-    const rpc = encodeRpcText(input.chatRef, input.text, input.group ? 0x02 : 0);
+    const isGroup = Boolean(input.group);
+    const rpc = encodeRpcText(input.chatRef, input.text, isGroup ? 0x02 : 0);
     const flags =
-      (input.toInternet ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE : PacketFlag.NEED_CLOUD_ARCHIVE) |
-      PacketFlag.NEED_ACK;
-    const up = encodeRpcUp(input.peerNodeId, flags, msgUuid, rpc);
+      (input.toInternet || isGroup
+        ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE
+        : PacketFlag.NEED_CLOUD_ARCHIVE) |
+      (isGroup ? 0 : PacketFlag.NEED_ACK);
+    const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
     const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
 
     let ciphertextB64 = '';
@@ -215,13 +307,36 @@ export class KMeshV1Client {
           const packet = decodeMeshPacket(frame.payload);
           if (!packet) break;
           if (packet.flags & PacketFlag.PERM_USER_KEY) {
-            /* Постоянный downlink забирается через /v1/kmesh/v1/messages,
-             * чтобы приложение открыло его ключом чата и проверило подпись. */
+            /* Постоянный downlink забирается через /v1/kmesh/v1/history. */
+            break;
+          }
+          const op = packet.payload[0];
+          if (op === RpcOp.SEARCH_RESP) {
+            const parsed = decodeSearchResponse(packet.payload);
+            if (parsed) this.opts.onSearch?.(parsed.reqId, parsed.results, parsed.more);
+            break;
+          }
+          if (op === RpcOp.FEED_SYNC_RESP) {
+            const parsed = decodeFeedResponse(packet.payload);
+            if (parsed) this.opts.onFeed?.(parsed.entries, parsed.more);
+            break;
+          }
+          if (op === RpcOp.CHAT_HISTORY_RESP) {
+            const parsed = decodeHistoryResponse(packet.payload);
+            if (parsed) this.opts.onHistory?.(packet.payload[2] | (packet.payload[3] << 8), parsed.messages, parsed.more);
             break;
           }
           const rpc = decodeRpc(packet.payload);
-          if (!rpc || rpc.compressed) break; /* node always decompresses for us */
+          if (!rpc || rpc.compressed) break;
           this.emitMessage(packet, rpc.chatRef, rpc.text ?? '');
+          break;
+        }
+        case ClientFrameType.PROXY_UP: {
+          const packet = decodeMeshPacket(frame.payload);
+          if (!packet) break;
+          void this.addProxyBytes(frame.payload.length).then((allowed) => {
+            if (allowed) this.opts.onProxyUplink?.(packet, frame.payload);
+          });
           break;
         }
         default:

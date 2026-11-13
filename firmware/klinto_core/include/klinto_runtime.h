@@ -34,7 +34,10 @@ class KlintoNode {
   KlintoGateway &gateway() { return gateway_; }
   const kl_config_t &config() const { return cfg_; }
 
-  void setBattery(uint8_t percent) { router_.set_battery(percent, -60); }
+  void setBattery(uint8_t percent, bool charging = false) {
+    router_.set_battery(percent, -60);
+    router_.set_charging(charging);
+  }
 
  private:
   KlintoNode();
@@ -59,6 +62,7 @@ class KlintoNode {
                            uint8_t iface);
   static void onConfig(void *ctx, const char *json, size_t len);
   static void onLog(void *ctx, const char *text);
+  static void onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
   static bool cellApplyChannel(void *ctx, uint8_t wifi_channel);
   static void cellLocked(void *ctx, uint8_t channel, uint32_t gateway_id, int16_t rssi,
                          uint8_t hops, uint8_t reason);

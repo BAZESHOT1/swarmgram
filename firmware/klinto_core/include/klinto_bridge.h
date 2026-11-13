@@ -30,7 +30,10 @@ enum kl_client_frame_t : uint8_t {
   KL_CF_PING = 7,
   KL_CF_PONG = 8,
   KL_CF_LOG = 9,
-  KL_CF_SYNC_ACK = 10
+  KL_CF_SYNC_ACK = 10,
+  KL_CF_PROXY_UP = 11,
+  KL_CF_PROXY_DOWN = 12,
+  KL_CF_INET_STATUS = 13
 };
 
 enum kl_client_flags_t : uint8_t {
@@ -60,6 +63,8 @@ struct kl_bridge_sink_t {
   void (*config)(void *ctx, const char *json, size_t len);
   /** Log line for the app's serial/BLE console (may be null). */
   void (*log)(void *ctx, const char *text);
+  /** Приложение сообщило статус интернета: мобильный шлюз вкл/выкл. */
+  void (*inet_status)(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
 };
 
 class KlintoClientBridge {
@@ -79,6 +84,8 @@ class KlintoClientBridge {
 
   void loop(uint32_t now_ms);
   bool send_info();
+  /** Мобильный шлюз: отправить перехваченный пакет в приложение для отправки на Hub. */
+  bool proxy_uplink(const kl_packet_t *pkt);
   uint16_t pending_outbox() const { return outbox_ ? outbox_->count() : 0; }
 
   static uint16_t crc16(const uint8_t *data, size_t len);
@@ -87,6 +94,8 @@ class KlintoClientBridge {
   void handle_frame(uint8_t type, uint8_t flags, const uint8_t *payload, size_t len);
   void handle_rpc_up(const uint8_t *payload, size_t len);
   void handle_config(const uint8_t *payload, size_t len);
+  void handle_proxy_down(const uint8_t *payload, size_t len);
+  void handle_inet_status(const uint8_t *payload, size_t len);
   bool send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags = 0);
   void flush_outbox();
   void log_line(const char *fmt, ...);

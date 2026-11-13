@@ -43,13 +43,28 @@ export const RpcOp = {
   SYNC_REQUEST: 0x05,
   SYNC_MESSAGE: 0x06,
   PRESENCE: 0x07,
+  SEARCH_REQ: 0x08,
+  SEARCH_RESP: 0x09,
+  FEED_SYNC_REQ: 0x0a,
+  FEED_SYNC_RESP: 0x0b,
+  CHAT_HISTORY_REQ: 0x0c,
+  CHAT_HISTORY_RESP: 0x0d,
+} as const;
+
+export const SearchType = {
+  ALL: 0,
+  USERS: 1,
+  GROUPS: 2,
+  CHANNELS: 3,
 } as const;
 
 export const RpcFlag = {
   COMPRESSED: 0x01,
   GROUP: 0x02,
+  IS_GROUP_OR_CHANNEL: 0x02,
   REPLY: 0x04,
   TYPING: 0x08,
+  MORE: 0x40,
 } as const;
 
 export const DeliveryStatus = {
@@ -76,6 +91,9 @@ export const ClientFrameType = {
   PONG: 8,
   LOG: 9,
   SYNC_ACK: 10,
+  PROXY_UP: 11,
+  PROXY_DOWN: 12,
+  INET_STATUS: 13,
 } as const;
 
 export const CLIENT_MAGIC = [0x53, 0x47] as const;
@@ -359,6 +377,154 @@ export class ClientFrameDecoder {
     this.buffer = new Uint8Array(0);
     this.frags = [null, null];
   }
+}
+
+/* ------------------------------------------------ сервисные RPC ---------- */
+
+function putRawText(text: string, cap: number): Uint8Array {
+  const bytes = new TextEncoder().encode(text).slice(0, Math.min(127, cap - 1));
+  const out = new Uint8Array(1 + bytes.length);
+  out[0] = bytes.length;
+  out.set(bytes, 1);
+  return out;
+}
+
+function readRawText(data: Uint8Array, offset: number): { text: string; next: number } {
+  if (offset >= data.length) return { text: '', next: data.length };
+  const len = data[offset] & 0x7f;
+  const start = offset + 1;
+  const end = Math.min(data.length, start + len);
+  return { text: new TextDecoder().decode(data.subarray(start, end)), next: end };
+}
+
+function servicePrefix(op: number, chatRef: number, flags = 0): Uint8Array {
+  const out = new Uint8Array(4);
+  out[0] = op;
+  out[1] = flags;
+  new DataView(out.buffer).setUint16(2, chatRef & 0xffff, true);
+  return out;
+}
+
+export function encodeSearchRequest(reqId: number, searchType: number, query: string, chatRef = 0xffff): Uint8Array {
+  const head = servicePrefix(RpcOp.SEARCH_REQ, chatRef);
+  const body = putRawText(query, 40);
+  const out = new Uint8Array(4 + 3 + body.length);
+  out.set(head, 0);
+  const view = new DataView(out.buffer);
+  view.setUint16(4, reqId & 0xffff, true);
+  out[6] = searchType & 0xff;
+  out.set(body, 7);
+  return out;
+}
+
+export interface SearchResult {
+  entityId: number;
+  type: number;
+  name: string;
+}
+
+export function decodeSearchResponse(payload: Uint8Array): { reqId: number; results: SearchResult[]; more: boolean } | null {
+  if (payload.length < 7 || payload[0] !== RpcOp.SEARCH_RESP) return null;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const total = payload[6];
+  const results: SearchResult[] = [];
+  let offset = 7;
+  for (let i = 0; i < total && offset + 5 <= payload.length; i += 1) {
+    const entityId = view.getUint32(offset, true);
+    const type = payload[offset + 4];
+    offset += 5;
+    const text = readRawText(payload, offset);
+    results.push({ entityId, type, name: text.text });
+    offset = text.next;
+  }
+  return { reqId: view.getUint16(4, true), results, more: (payload[1] & RpcFlag.MORE) !== 0 };
+}
+
+export function encodeFeedRequest(lastSyncTs: number, chatRef = 0xffff): Uint8Array {
+  const out = new Uint8Array(8);
+  out.set(servicePrefix(RpcOp.FEED_SYNC_REQ, chatRef), 0);
+  new DataView(out.buffer).setUint32(4, lastSyncTs >>> 0, true);
+  return out;
+}
+
+export interface FeedEntry {
+  chatRef: number;
+  chatId?: string;
+  unreadCount: number;
+  lastMsgUuid: string;
+  timestamp: number;
+  preview: string;
+}
+
+export function decodeFeedResponse(payload: Uint8Array): { entries: FeedEntry[]; more: boolean } | null {
+  if (payload.length < 5 || payload[0] !== RpcOp.FEED_SYNC_RESP) return null;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const total = payload[4];
+  const entries: FeedEntry[] = [];
+  let offset = 5;
+  for (let i = 0; i < total && offset + 16 <= payload.length; i += 1) {
+    const chatRef = view.getUint16(offset, true);
+    const unreadCount = view.getUint16(offset + 2, true);
+    const uuid = view.getBigUint64(offset + 4, true);
+    const timestamp = view.getUint32(offset + 12, true);
+    offset += 16;
+    const text = readRawText(payload, offset);
+    entries.push({
+      chatRef,
+      unreadCount,
+      lastMsgUuid: uuid.toString(16).padStart(16, '0'),
+      timestamp,
+      preview: text.text,
+    });
+    offset = text.next;
+  }
+  return { entries, more: (payload[1] & RpcFlag.MORE) !== 0 };
+}
+
+export function encodeHistoryRequest(chatRef: number, beforeUuid: bigint, limit = 10): Uint8Array {
+  const out = new Uint8Array(13);
+  out.set(servicePrefix(RpcOp.CHAT_HISTORY_REQ, chatRef), 0);
+  const view = new DataView(out.buffer);
+  view.setBigUint64(4, BigInt.asUintN(64, beforeUuid), true);
+  out[12] = Math.min(20, Math.max(1, limit));
+  return out;
+}
+
+export interface HistoryEntry {
+  msgUuid: string;
+  senderId: number;
+  timestamp: number;
+  text: string;
+}
+
+export function decodeHistoryResponse(payload: Uint8Array): { messages: HistoryEntry[]; more: boolean } | null {
+  if (payload.length < 5 || payload[0] !== RpcOp.CHAT_HISTORY_RESP) return null;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const total = payload[4];
+  const messages: HistoryEntry[] = [];
+  let offset = 5;
+  for (let i = 0; i < total && offset + 16 <= payload.length; i += 1) {
+    const uuid = view.getBigUint64(offset, true);
+    const senderId = view.getUint32(offset + 8, true);
+    const timestamp = view.getUint32(offset + 12, true);
+    offset += 16;
+    const text = readRawText(payload, offset);
+    messages.push({ msgUuid: uuid.toString(16).padStart(16, '0'), senderId, timestamp, text: text.text });
+    offset = text.next;
+  }
+  return { messages, more: (payload[1] & RpcFlag.MORE) !== 0 };
+}
+
+export function encodeInetStatus(hasInternet: boolean, rttMs: number, allowRelay: boolean): Uint8Array {
+  const out = new Uint8Array(4);
+  out[0] = hasInternet ? 1 : 0;
+  new DataView(out.buffer).setUint16(1, Math.min(65535, Math.max(0, rttMs)), true);
+  out[3] = allowRelay ? 1 : 0;
+  return out;
+}
+
+export function encodeProxyDown(packet: MeshPacket): Uint8Array {
+  return encodeMeshPacket(packet);
 }
 
 /* ---------------------------------------------------------- snowflake ---- */

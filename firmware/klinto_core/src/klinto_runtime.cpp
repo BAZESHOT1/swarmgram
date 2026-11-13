@@ -209,6 +209,12 @@ bool KlintoNode::loadConfig() {
   if (!strcmp(KL_ROLE, "gateway")) cfg_.role = KL_ROLE_GATEWAY;
   else if (!strcmp(KL_ROLE, "repeater") || !strcmp(KL_ROLE, "router")) cfg_.role = KL_ROLE_ROUTER;
   else cfg_.role = KL_ROLE_CLIENT;
+#ifdef KL_HYBRID_PORTABLE
+  cfg_.hybrid_portable = KL_HYBRID_PORTABLE != 0;
+#endif
+#ifdef KL_RELAY_ALLOWED
+  cfg_.relay_allowed = KL_RELAY_ALLOWED != 0;
+#endif
   cfg_.gateway_id = cfg_.node_id;
 
   if (KL_USE_LORA) {
@@ -324,7 +330,8 @@ bool KlintoNode::begin() {
   ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
   serial_.setReceiveCallback(&KlintoNode::onClientLink, this);
 
-  kl_bridge_sink_t bridge_sink = {this, &KlintoNode::onConfig, &KlintoNode::onLog};
+  kl_bridge_sink_t bridge_sink = {this, &KlintoNode::onConfig, &KlintoNode::onLog,
+                                  &KlintoNode::onInetStatus};
   bridge_.init(&router_, &cfg_, client_link_, &down_queue_, &bridge_sink);
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
@@ -388,6 +395,9 @@ bool KlintoNode::sinkSend(void *ctx, const kl_packet_t *pkt, uint8_t iface, uint
   else if (pkt->type == KL_TYPE_GW_BEACON || pkt->type == KL_TYPE_NODE_PRESENCE ||
            pkt->type == KL_TYPE_RREQ) {
     priority = KL_PRIO_LOW;
+  } else if (pkt->type == KL_TYPE_DATA &&
+             kl_rpc_priority_hint(pkt->payload, pkt->payload_len) == KL_PRIO_LOW) {
+    priority = KL_PRIO_LOW;
   }
   if (iface == KL_IFACE_LORA) return self->lora_.sendPacket(wire, len, next_hop, priority);
   if (iface == KL_IFACE_ESPNOW) return self->espnow_.sendPacket(wire, len, next_hop, priority);
@@ -405,10 +415,15 @@ void KlintoNode::sinkDeliver(void *ctx, const kl_packet_t *pkt, int16_t rssi, ui
       pkt->type == KL_TYPE_RREP) {
     return;
   }
-  if (self->cfg_.role == KL_ROLE_GATEWAY &&
+  if ((self->cfg_.role == KL_ROLE_GATEWAY || self->router_.mobile_gateway_active()) &&
       ((pkt->flags & KL_FLAG_TO_INTERNET) || pkt->dst_id == KL_ANY_GATEWAY_ID)) {
-    /* Never block the mesh task on TLS: queue and let kl_gateway publish. */
-    self->up_queue_.push(pkt);
+    if (self->router_.mobile_gateway_active()) {
+      /* Мобильный шлюз: телефон-курьер отправляет пакет на Hub. */
+      self->bridge_.proxy_uplink(pkt);
+    } else {
+      /* Стационарный шлюз: не блокируем mesh-задачу на TLS. */
+      self->up_queue_.push(pkt);
+    }
     return;
   }
   self->bridge_.deliver_mesh(pkt);
@@ -421,14 +436,24 @@ void KlintoNode::sinkStatus(void *ctx, uint64_t msg_uuid, uint32_t packet_id, ui
 
 void KlintoNode::sinkArchive(void *ctx, const kl_packet_t *pkt) {
   KlintoNode *self = (KlintoNode *)ctx;
-  if (pkt) self->up_queue_.push(pkt);
+  if (!pkt) return;
+  if (self->router_.mobile_gateway_active()) {
+    self->bridge_.proxy_uplink(pkt);
+  } else {
+    self->up_queue_.push(pkt);
+  }
 }
 
 void KlintoNode::sinkPresence(void *ctx, const kl_packet_t *pkt, int16_t rssi, uint8_t iface) {
   (void)rssi;
   (void)iface;
   KlintoNode *self = (KlintoNode *)ctx;
-  if (pkt) self->up_queue_.push(pkt);
+  if (!pkt) return;
+  if (self->router_.mobile_gateway_active()) {
+    self->bridge_.proxy_uplink(pkt);
+  } else {
+    self->up_queue_.push(pkt);
+  }
 }
 
 void KlintoNode::sinkBeacon(void *ctx, const kl_packet_t *pkt, int16_t rssi, uint8_t iface) {
@@ -507,6 +532,14 @@ void KlintoNode::onConfig(void *ctx, const char *json, size_t len) {
 void KlintoNode::onLog(void *ctx, const char *text) {
   (void)ctx;
   if (text) Serial.println(text);
+}
+
+void KlintoNode::onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  self->router_.set_internet_status(has_internet, rtt_ms, allow_relay);
+  Serial.printf("[klinto] inet=%d rtt=%ums relay=%d mobile_gw=%d\n", has_internet ? 1 : 0,
+                (unsigned)rtt_ms, allow_relay ? 1 : 0,
+                self->router_.mobile_gateway_active() ? 1 : 0);
 }
 
 void KlintoNode::onConfigJson(const char *json, size_t len) {

@@ -19,6 +19,16 @@ import {
   CLIENT_MAGIC,
 } from '../src/kmesh/v1/protocol';
 import { sealMesh, permanentDigest, openMesh } from '../src/kmesh/v1/crypto';
+import {
+  encodeSearchRequest,
+  decodeSearchResponse,
+  encodeFeedRequest,
+  decodeFeedResponse,
+  encodeHistoryRequest,
+  decodeHistoryResponse,
+  encodeInetStatus,
+  RpcOp,
+} from '../src/kmesh/v1/protocol';
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -120,5 +130,65 @@ assert.strictEqual(d2.push(f1).length, 0);
 const reassembled = d2.push(f2);
 assert.strictEqual(reassembled.length, 1);
 assert.deepStrictEqual(Array.from(reassembled[0].payload), Array.from(payload));
+
+/* Сервисные RPC KMesh_v1 */
+const searchReq = encodeSearchRequest(7, 1, 'алиса');
+assert.strictEqual(searchReq[0], RpcOp.SEARCH_REQ);
+assert.strictEqual(searchReq[4] | (searchReq[5] << 8), 7);
+assert.strictEqual(new TextDecoder().decode(searchReq.subarray(8)), 'алиса');
+
+const searchResp = new Uint8Array(4 + 3 + 6 + 5);
+searchResp[0] = RpcOp.SEARCH_RESP;
+searchResp[2] = 0x07;
+searchResp[4] = 0x07;
+searchResp[6] = 1;
+new DataView(searchResp.buffer).setUint32(7, 4242, true);
+searchResp[11] = 1;
+searchResp[12] = 5;
+searchResp.set(new TextEncoder().encode('alice'), 13);
+const sdec = decodeSearchResponse(searchResp);
+assert.ok(sdec);
+assert.strictEqual(sdec!.results[0].entityId, 4242);
+assert.strictEqual(sdec!.results[0].name, 'alice');
+
+const feedReq = encodeFeedRequest(1700000000);
+assert.strictEqual(feedReq[0], RpcOp.FEED_SYNC_REQ);
+assert.strictEqual(new DataView(feedReq.buffer).getUint32(4, true), 1700000000);
+
+const feedResp = new Uint8Array(5 + 17 + 9);
+feedResp[0] = RpcOp.FEED_SYNC_RESP;
+feedResp[4] = 1;
+const fv = new DataView(feedResp.buffer);
+fv.setUint16(5, 3, true);
+fv.setUint16(7, 2, true);
+fv.setBigUint64(9, 0x1122334455667788n, true);
+fv.setUint32(17, 1700000100, true);
+feedResp[21] = 8;
+feedResp.set(new TextEncoder().encode('прив'), 22);
+const fdec = decodeFeedResponse(feedResp);
+assert.ok(fdec);
+assert.strictEqual(fdec!.entries[0].unreadCount, 2);
+assert.strictEqual(fdec!.entries[0].preview, 'прив');
+
+const histReq = encodeHistoryRequest(5, 0xABCn, 5);
+assert.strictEqual(histReq[0], RpcOp.CHAT_HISTORY_REQ);
+assert.strictEqual(new DataView(histReq.buffer).getBigUint64(4, true), 0xABCn);
+
+const histResp = new Uint8Array(5 + 17 + 4);
+histResp[0] = RpcOp.CHAT_HISTORY_RESP;
+histResp[4] = 1;
+const hv = new DataView(histResp.buffer);
+hv.setBigUint64(5, 0x1122334455667788n, true);
+hv.setUint32(13, 42, true);
+hv.setUint32(17, 1700000200, true);
+histResp[21] = 2;
+histResp.set(new TextEncoder().encode('ok'), 22);
+const hdec = decodeHistoryResponse(histResp);
+assert.ok(hdec);
+assert.strictEqual(hdec!.messages[0].senderId, 42);
+assert.strictEqual(hdec!.messages[0].text, 'ok');
+
+const inet = encodeInetStatus(true, 120, true);
+assert.deepStrictEqual(Array.from(inet), [1, 120, 0, 1]);
 
 console.log('KMesh_v1 client codec: OK');

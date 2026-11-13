@@ -211,6 +211,12 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
     case KL_CF_CONFIG:
       handle_config(payload, len);
       break;
+    case KL_CF_PROXY_DOWN:
+      handle_proxy_down(payload, len);
+      break;
+    case KL_CF_INET_STATUS:
+      handle_inet_status(payload, len);
+      break;
     case KL_CF_PING: {
       uint8_t pong[8];
       kl_write_le32(pong, kl_uptime_ms());
@@ -229,6 +235,30 @@ void KlintoClientBridge::handle_config(const uint8_t *payload, size_t len) {
   memcpy(json, payload, copy);
   json[copy] = '\0';
   if (sink_.config) sink_.config(sink_.ctx, json, copy);
+}
+
+void KlintoClientBridge::handle_proxy_down(const uint8_t *payload, size_t len) {
+  if (!payload || !len || !router_) return;
+  kl_packet_t pkt;
+  if (!kl_packet_parse(payload, len, &pkt)) return;
+  router_->forward_downlink(&pkt, kl_uptime_ms());
+}
+
+void KlintoClientBridge::handle_inet_status(const uint8_t *payload, size_t len) {
+  if (!payload || len < 4) return;
+  const bool has_internet = payload[0] != 0;
+  const uint16_t rtt = (uint16_t)(payload[1] | ((uint16_t)payload[2] << 8));
+  const bool allow_relay = payload[3] != 0;
+  if (sink_.inet_status) sink_.inet_status(sink_.ctx, has_internet, rtt, allow_relay);
+}
+
+bool KlintoClientBridge::proxy_uplink(const kl_packet_t *pkt) {
+  if (!pkt) return false;
+  uint8_t wire[KL_MAX_PACKET_SIZE];
+  const size_t len = kl_packet_serialize(pkt, wire, sizeof(wire));
+  if (!len) return false;
+  if (send_frame(KL_CF_PROXY_UP, wire, len, KL_CF_FLAG_URGENT)) return true;
+  return false;
 }
 
 void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {

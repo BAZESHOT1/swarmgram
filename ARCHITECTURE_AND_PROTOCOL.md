@@ -105,8 +105,14 @@ UTF-8 текст → Unishox2 → RPC-структура → ChaCha20+HMAC → M
 | `0x05` | `RPC_SYNC_REQUEST` | `since_server_seq u32, limit u8, chat_ref u16` | 11 |
 | `0x06` | `RPC_SYNC_MESSAGE` | зарезервировано под пакетную выдачу | — |
 | `0x07` | `RPC_PRESENCE` | `battery u8, rssi i8, role u8, caps u8` | 8 |
+| `0x08` | `RPC_SEARCH_REQ` | `req_id u16, search_type u8, query (Unishox2)` | ≤ 32 |
+| `0x09` | `RPC_SEARCH_RESP` | `req_id u16, count u8, [entity_id u32, type u8, name]` | ≤ 200 |
+| `0x0A` | `RPC_FEED_SYNC_REQ` | `last_sync_ts u32` | 8 |
+| `0x0B` | `RPC_FEED_SYNC_RESP` | `count u8, [chat_ref u16, unread u16, last_msg_uuid u64, ts u32, preview]` | ≤ 200 |
+| `0x0C` | `RPC_CHAT_HISTORY_REQ` | `before_uuid u64, limit u8` | 13 |
+| `0x0D` | `RPC_CHAT_HISTORY_RESP` | `count u8, [msg_uuid u64, sender u32, ts u32, text]` | ≤ 200 |
 
-`rpc_flags`: `0x01 COMPRESSED`, `0x02 GROUP`, `0x04 REPLY`, `0x08 TYPING`.
+`rpc_flags`: `0x01 COMPRESSED`, `0x02 GROUP / IS_GROUP_OR_CHANNEL`, `0x04 REPLY`, `0x08 TYPING`, `0x40 MORE` (ответ разбит на несколько пакетов).
 
 ### 2.4 Экономия Unishox2 (реальные замеры теста)
 
@@ -323,6 +329,35 @@ rssi <= -115 dBm  → 10 мс
 соседей, `best_gw`, pending/ACK и кольцо дедупликации — старые записи
 относятся к другой соте и не должны влиять на новую.
 
+### 5.10 Гибридный носимый узел (`HYBRID_PORTABLE_NODE`)
+
+По умолчанию `NODE_CLIENT` работает как клиент + умный ретранслятор +
+мобильный шлюз. Отключается в настройках приложения (`relay_allowed=false`).
+
+**Smart Portable Relay:**
+
+- Транзит разрешён всем клиентам, но с роль-штрафом к RSSI-backoff:
+  `+60 мс` для ESP-NOW и `+250 мс` для LoRa. Стационарные роутеры/шлюзы
+  передают без штрафа и выигрывают гонку; носимый узел отменяет ретрансляцию,
+  услышав тот же `packet_id`.
+- Battery Guard: при заряде `< 20%` (и отсутствии зарядки) транзит и
+  мобильный шлюз отключаются; при `> 25%` возвращаются. Гистерезис 5%.
+- Зарядка определяется пином `KL_BATT_CHARGING_PIN`; при зарядке ограничение
+  по батарее не действует.
+
+**Mobile Smartphone Gateway:**
+
+- Приложение раз в 15 секунд (и при смене сети) отправляет
+  `INET_STATUS {has_internet, rtt_ms, allow_relay}`.
+- При `has_internet=true` модуль вещает `GW_BEACON` с `hop_count = 2`
+  (метрический штраф), поэтому домашние шлюзы с `hop_count=0` всегда
+  приоритетнее.
+- Мобильный маяк уходит раз в 25 секунд, TTL маршрута — 60 секунд.
+- Uplink/Downlink идут через BLE-кадры `PROXY_UP/PROXY_DOWN`; телефон
+  работает «слепым курьером» и не имеет доступа к шифртексту.
+- Дневной лимит проксированного трафика — 10 МБ (настраивается), счётчик
+  хранится в приложении.
+
 ---
 
 ## 6. Слой 5 — двухэтапное шифрование и история
@@ -403,6 +438,11 @@ CRC16-CCITT по `ver..payload` (без magic). Заголовок — **9 ба�
 | 7 | `PING` / 8 `PONG` | `[millis u32]` |
 | 9 | `LOG` | UTF-8 строка |
 | 10 | `SYNC_ACK` | `[msg_uuid u64][server_seq u32][status u8]` |
+| 11 | `PROXY_UP` | сырой `MeshPacket`: мобильный шлюз → телефон → Hub |
+| 12 | `PROXY_DOWN` | сырой `MeshPacket`: телефон → модуль → mesh |
+| 13 | `INET_STATUS` | `[has_internet u8][rtt_ms u16][allow_relay u8]` |
+
+`PROXY_UP/PROXY_DOWN` — «слепой» транспорт: телефон не расшифровывает содержимое, только пересылает зашифрованный пакет в `/v1/kmesh/v1/mobile/archive` и обратно.
 
 `RPC_UP.flags` — это `TO_INTERNET`, `GROUP` и т.п.; узел сам добавляет `NEED_ACK`, `TEMP_MESH_KEY`, `NEED_CLOUD_ARCHIVE`.
 
