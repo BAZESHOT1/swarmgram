@@ -306,6 +306,11 @@ export interface ModuleInfoPayload {
   gateway?: boolean;
   queue?: number;
   rssi?: number;
+  /** Живые данные mesh-кластера для шапки «Чаты». */
+  neighbors?: number;
+  cluster_id?: string | number;
+  border?: boolean | number;
+  handover?: number;
 }
 
 export interface EnvelopePayload {
@@ -381,6 +386,10 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     gateway: source.gateway === true || Number(source.gateway) === 1,
     queue: num(source.queue, 0),
     rssi: num(source.rssi, 0),
+    neighbors: num(source.neighbors, 0),
+    cluster_id: source.cluster_id != null ? String(source.cluster_id) : undefined,
+    border: source.border === true || Number(source.border) === 1,
+    handover: num(source.handover, 0),
   };
 }
 
