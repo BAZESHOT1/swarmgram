@@ -730,6 +730,7 @@ const server = http.createServer(async (req, res) => {
       core,
       freeMb,
       coreVersion: process.env.ESP32_CORE_VERSION || null,
+      firmwareVersion: FIRMWARE_VERSION,
       boards: String(process.env.ESP32_BOARDS || 'esp32c3').split(',').map((b) => b.trim()).filter(Boolean),
     });
   }
