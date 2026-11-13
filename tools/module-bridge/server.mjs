@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kinto module bridge — локальный сервис для админ-страницы модулей.
+ * Klinto module bridge — локальный сервис для админ-страницы модулей.
  *
  * Даёт браузеру то, чего у него нет: доступ к COM-портам, мониторы порта,
  * сброс и прошивку через esptool. Слушает только 127.0.0.1.
@@ -221,7 +221,7 @@ async function download(url, token) {
   const headers = token ? { authorization: `Bearer ${token}` } : {};
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`download_${res.status}`);
-  const dir = mkdtempSync(join(tmpdir(), 'kinto-fw-'));
+  const dir = mkdtempSync(join(tmpdir(), 'klinto-fw-'));
   const target = join(dir, 'firmware.bin');
   await pipeline(Readable.fromWeb(res.body), createWriteStream(target));
   return target;
@@ -332,12 +332,12 @@ const server = http.createServer(async (req, res) => {
 
 // Монитор порта не должен ронять весь bridge из-за обрыва SSE-клиента.
 process.on('uncaughtException', (error) => {
-  console.error('[kinto-bridge] uncaught', error);
+  console.error('[klinto-bridge] uncaught', error);
 });
 process.on('unhandledRejection', (error) => {
-  console.error('[kinto-bridge] rejection', error);
+  console.error('[klinto-bridge] rejection', error);
 });
 
 server.listen(HTTP_PORT, '127.0.0.1', () => {
-  console.log(`[kinto-bridge] http://127.0.0.1:${HTTP_PORT} python=${PYTHON}`);
+  console.log(`[klinto-bridge] http://127.0.0.1:${HTTP_PORT} python=${PYTHON}`);
 });

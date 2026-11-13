@@ -26,7 +26,7 @@ export async function showMeshLocalNotification(
     const fallbackBody = kind === 'media' ? 'Медиа' : 'Новое сообщение';
     await displayPushNotification({
       id: options.messageId ? `mesh-${options.messageId}` : `mesh-${options.chatId}-${Date.now()}`,
-      title: hidden ? 'Kinto' : options.title || 'Kinto',
+      title: hidden ? 'Klinto' : options.title || 'Klinto',
       body: hidden ? fallbackBody : options.body || fallbackBody,
       data: {
         chatId: options.chatId,

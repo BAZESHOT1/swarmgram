@@ -4,14 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-void kinto_beacon_init(kinto_beacon_t *b, const char *hardware_id, const char *mesh_addr) {
+void klinto_beacon_init(klinto_beacon_t *b, const char *hardware_id, const char *mesh_addr) {
   if (!b) return;
   memset(b, 0, sizeof(*b));
   if (hardware_id) snprintf(b->hardware_id, sizeof(b->hardware_id), "%s", hardware_id);
   if (mesh_addr) snprintf(b->mesh_addr, sizeof(b->mesh_addr), "%s", mesh_addr);
 }
 
-unsigned kinto_beacon_to_json(const kinto_beacon_t *b, char *out, unsigned cap) {
+unsigned klinto_beacon_to_json(const klinto_beacon_t *b, char *out, unsigned cap) {
   if (!b || !out || !cap) return 0;
   char hues[32] = "";
   if (b->hues_mask & 0x01) strncat(hues, "\"wifi\"", sizeof(hues) - strlen(hues) - 1);
@@ -41,7 +41,7 @@ static const char *find_key(const char *json, const char *key) {
   return p ? p + strlen(key) : NULL;
 }
 
-bool kinto_beacon_from_json(const char *json, kinto_beacon_t *out) {
+bool klinto_beacon_from_json(const char *json, klinto_beacon_t *out) {
   if (!json || !out) return false;
   memset(out, 0, sizeof(*out));
   const char *p = find_key(json, "\"hw\":\"");

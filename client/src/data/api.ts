@@ -1,5 +1,5 @@
 /**
- * Единый API-клиент Kinto.
+ * Единый API-клиент Klinto.
  * Прямой путь к данным: клиент сам кладёт шифротекст на 3 реплики узлов,
  * Hub только выдаёт подписанные маршруты.
  */
@@ -1585,6 +1585,62 @@ export const api = {
       objects: number;
       messages: number;
     }>('/v1/stats'),
+  /* ---- KMesh_v1: синхронизация оффлайн-истории ---- */
+  kmeshV1Sync: (body: {
+    msg_uuid: string;
+    chat_id: string;
+    sender_node_id: number;
+    receiver_node_id: number;
+    timestamp: number;
+    ciphertext_b64: string;
+    nonce: string;
+    kind?: string;
+    header?: Record<string, unknown>;
+    signature: string;
+    sig_alg?: 'ecdsa-p256' | 'ed25519';
+    resign_mode?: 'client' | 'server';
+    chat_ref?: number;
+  }) =>
+    req<{
+      ok: true;
+      deduped: boolean;
+      msg_uuid: string;
+      message_id?: string;
+      server_seq: number;
+      permanent_signature: string;
+      sig_alg?: string;
+      resign_mode?: string;
+    }>('/v1/kmesh/v1/sync', { method: 'POST', body: JSON.stringify(body) }),
+
+  kmeshV1Messages: (chatId: string, since = 0, limit = 100) =>
+    req<Array<{
+      msgUuid: string;
+      chatId: string;
+      senderUserId: string;
+      senderNodeId: number;
+      receiverNodeId: number;
+      kind: string;
+      ciphertextB64: string;
+      nonce: string;
+      header: Record<string, unknown>;
+      permanentSignature: string;
+      sigAlg: string;
+      resignMode: string;
+      serverSeq: number;
+      createdAt: string;
+      syncedAt: string;
+    }>>(`/v1/kmesh/v1/messages?chatId=${encodeURIComponent(chatId)}&since=${since}&limit=${limit}`),
+
+  kmeshV1Presence: (nodeId: number) =>
+    req<{ nodeId: number; online: boolean; gatewayId: number; fallbackGatewayIds?: number[]; rssi?: number; hops?: number }>(
+      `/v1/kmesh/v1/presence/${nodeId}`,
+    ),
+
+  kmeshV1Ack: (messageUuids: string[]) =>
+    req<{ ok: true; accepted: number; rejected: number }>('/v1/kmesh/v1/ack', {
+      method: 'POST',
+      body: JSON.stringify({ messageUuids }),
+    }),
 };
 
 export { toB64u };

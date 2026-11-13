@@ -1,7 +1,7 @@
 # Модульная mesh-архитектура (ESP-NOW + LoRa)
 
 Статус: **описание фактической реализации** прошивки
-`services/firmware-builder/templates/swarm_module.ino` и `mesh_v2/*`.
+`services/firmware-builder/templates/klinto_module_v2.ino` и `mesh_v2/*`.
 Документ заменяет редакцию 2.0 в части транспорта и каналов: там
 предполагались ESP-WIFI-MESH и фиксированный канал 11, в коде этого нет.
 
@@ -9,7 +9,7 @@
 
 - `docs/PROTOCOL.md` — кадры, типы пакетов, JSON-payload.
 - `docs/MODULE-DEBUG.md` — логи, порты, диагностика.
-- `docs/KMT.md` — Kinto Mesh Transport (API поверх mesh).
+- `docs/KMT.md` — Klinto Mesh Transport (API поверх mesh).
 - `docs/ROUTING_METRICS.md`, `docs/SPECTRAMESH.md` — метрики и идейная база.
 
 Термины: **модуль** — ESP32/ESP32-C3/S3 с прошивкой; **узел** — модуль в
@@ -29,11 +29,11 @@ repeater); **шлюз (gateway)** — узел с uplink в Hub.
 
 Целевой режим — **ESP-NOW LR как основной внутрикластерный транспорт**
 (дальность, 250 кбит/с). В текущей сборке по умолчанию включён обычный
-ESP-NOW (`SG_ESPNOW_LR=0`): IDF не позволяет держать LR на AP, пока шлюз
+ESP-NOW (`KL_ESPNOW_LR=0`): IDF не позволяет держать LR на AP, пока шлюз
 одновременно ассоциирован с роутером по STA. LR доступен на выделенном
 mesh-канале (вариант B, раздел 6) или на узлах без uplink.
 
-Роли (`SG_ROLE`):
+Роли (`KL_ROLE`):
 
 | Роль | SoftAP | STA | ESP-NOW iface | Назначение |
 |---|---|---|---|---|
@@ -115,14 +115,14 @@ espNowReinitOnChannel(ch):
 
 ### 1.4 ESP-NOW LR
 
-`SG_ESPNOW_LR` (по умолчанию `0`):
+`KL_ESPNOW_LR` (по умолчанию `0`):
 
 - LR требует отдельного STA-интерфейса/канала. На шлюзе, который одновременно
   держит STA к роутеру, IDF **не даёт** включить LR на AP, а LR на STA рвёт
   ассоциацию с роутером.
 - Поэтому по умолчанию используется **обычный ESP-NOW**: лог
   `[espnow] PHY normal (LR needs dedicated STA/channel)`.
-- При `SG_ESPNOW_LR=1` PHY переключается до `esp_wifi_start()`
+- При `KL_ESPNOW_LR=1` PHY переключается до `esp_wifi_start()`
   (`esp_wifi_config_80211_tx_rate(..., WIFI_PHY_RATE_LORA_250K)`), пиры
   получают rate config LR 250K. Это режим выделенного mesh-канала, не
   совместимый с uplink через тот же Wi-Fi.
@@ -133,7 +133,7 @@ espNowReinitOnChannel(ch):
 ## 2. Кластеры
 
 `cluster_id` = CRC32 по отсортированным строкам якорей, разделитель `|`
-(`kinto_compute_cluster_id`). Якоря — только `is_anchor=1` (gateway и
+(`klinto_compute_cluster_id`). Якоря — только `is_anchor=1` (gateway и
 стационарный repeater), видимые последние 12 с. Нет якорей — `cluster_id = 0`.
 
 ### 2.1 Моногамный кластер
@@ -157,7 +157,7 @@ espNowReinitOnChannel(ch):
 
 Пограничный узел видит два кластера и пересылает трафик между ними.
 
-Выбор (`kinto_elect_border_nodes`):
+Выбор (`klinto_elect_border_nodes`):
 
 ```text
 score = min(rssi_A, rssi_B) - max(queue_A, queue_B) * 4
@@ -304,7 +304,7 @@ select_route(dst, traffic):
 | Частота / SF / BW / CR | 869.525 МГц / SF9 / 125 кГц / 4:5 |
 | Sync word / мощность | `0x12` / +17 dBm |
 | Payload | ≤ 180 байт, крупное — `MT_FRAG` (150 Б × до 16) |
-| TTL | 8 при маршрутизации, до 12 у broadcast (`SG_LORA_MAX_HOPS`) |
+| TTL | 8 при маршрутизации, до 12 у broadcast (`KL_LORA_MAX_HOPS`) |
 | Duty cycle | wearable 1 % (36 с/час), остальные 10 % (360 с/час) |
 | LBT | CAD перед передачей (SX1262); SX127x — только duty-cycle |
 

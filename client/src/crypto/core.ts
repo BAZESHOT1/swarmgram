@@ -1,5 +1,5 @@
 /**
- * Криптографическое ядро Kinto — единое для web, iOS и Android.
+ * Криптографическое ядро Klinto — единое для web, iOS и Android.
  *
  * Использует чистые JS-реализации (@noble/*), поэтому не зависит от WebCrypto
  * и одинаково работает в браузере и в React Native.
@@ -275,7 +275,7 @@ export async function generateChatKeyRaw(): Promise<Uint8Array> {
 
 async function deriveKek(privHex: string, peerJwkJson: string, salt: Uint8Array): Promise<Uint8Array> {
   const shared = p256.getSharedSecret(privHex, jwkToSec1(JSON.parse(peerJwkJson) as JsonWebKey));
-  return hkdf(sha256, shared, salt, utf8Encode('kinto-chat-key-v1'), 32);
+  return hkdf(sha256, shared, salt, utf8Encode('klinto-chat-key-v1'), 32);
 }
 
 /** Оборачиваем ключ чата под устройство получателя. */

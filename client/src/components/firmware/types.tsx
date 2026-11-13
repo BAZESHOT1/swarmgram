@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Типы, пресеты и валидация конфигурации прошивки ESP32-модуля.
  * Здесь нет сетевых вызовов — только чистые данные и проверки,
  * чтобы шаги визарда и сборка использовали один и тот же контракт.
@@ -51,6 +51,8 @@ export interface FirmwareConfig {
   claimToken?: string;
   lora?: LoraConfig;
   battery?: BatteryConfig;
+  /** Частотное кластерирование и временный ключ KMesh_v1. */
+  kmesh?: { v1: boolean; tempKey?: string };
   /** GPIO светодиода: горит — связь с модулями есть, мигает — нет. */
   ledPin?: number;
   ota?: boolean;

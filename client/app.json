@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Kinto",
-    "slug": "kinto",
-    "version": "1.4.31",
+    "name": "Klinto",
+    "slug": "klinto",
+    "version": "1.5.0",
     "orientation": "portrait",
-    "scheme": "kinto",
+    "scheme": "klinto",
     "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
     "jsEngine": "hermes",
@@ -56,7 +56,7 @@
         {
           "isBackgroundEnabled": true,
           "modes": ["central"],
-          "bluetoothAlwaysPermission": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети."
+          "bluetoothAlwaysPermission": "Klinto подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
       ],
       "expo-sqlite",
@@ -65,21 +65,21 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "10431",
+      "buildNumber": "10500",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
       },
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети.",
-        "NSBluetoothPeripheralUsageDescription": "Kinto использует Bluetooth для связи с носимыми модулями.",
+        "NSBluetoothAlwaysUsageDescription": "Klinto подключается к модулям связи по Bluetooth для работы mesh-сети.",
+        "NSBluetoothPeripheralUsageDescription": "Klinto использует Bluetooth для связи с носимыми модулями.",
         "UIBackgroundModes": ["fetch", "remote-notification", "bluetooth-central"],
         "FirebaseAppDelegateProxyEnabled": true
       }
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 10431,
+      "versionCode": 10500,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {

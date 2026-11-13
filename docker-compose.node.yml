@@ -1,5 +1,5 @@
 # ============================================================
-#  Узел хранения SwarmGram (ставится на сервер пользователя)
+#  Узел хранения Klinto (ставится на сервер пользователя)
 #  Запуск:  docker compose -f docker-compose.node.yml up -d --build
 #  Перед запуском заполнить .env (см. node.env.example)
 # ============================================================
@@ -9,8 +9,8 @@ services:
     build:
       context: ./services/node
       dockerfile: Dockerfile
-    image: swarmgram/node:1.0.0
-    container_name: swarmgram-node
+    image: klinto/node:1.0.0
+    container_name: klinto-node
     restart: unless-stopped
     env_file: .env
     environment:

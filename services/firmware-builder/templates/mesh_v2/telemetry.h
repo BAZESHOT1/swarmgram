@@ -26,11 +26,11 @@ typedef struct {
   uint8_t routes_count;
   uint16_t outbox_depth;
   uint32_t uptime_s;
-} kinto_telemetry_t;
+} klinto_telemetry_t;
 
-void kinto_telemetry_init(kinto_telemetry_t *t, const char *mesh_addr);
-void kinto_telemetry_neighbor(kinto_telemetry_t *t, int16_t rssi);
-unsigned kinto_telemetry_to_json(const kinto_telemetry_t *t, char *out, unsigned cap);
+void klinto_telemetry_init(klinto_telemetry_t *t, const char *mesh_addr);
+void klinto_telemetry_neighbor(klinto_telemetry_t *t, int16_t rssi);
+unsigned klinto_telemetry_to_json(const klinto_telemetry_t *t, char *out, unsigned cap);
 
 #ifdef __cplusplus
 }

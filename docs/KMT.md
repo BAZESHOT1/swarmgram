@@ -1,59 +1,24 @@
-# Kinto Mesh Transport (KMT v1)
+# Klinto Mesh Transport (KMT v1) — устаревший протокол
 
-KMT carries **any JSON API traffic** of the app over BLE + Wi-Fi mesh when the
-phone has no internet. It is transparent to the app: `api.req()` falls back to
-KMT when the module is connected and `transportOnline` is false.
+> Актуальная документация: [`ARCHITECTURE_AND_PROTOCOL.md`](../ARCHITECTURE_AND_PROTOCOL.md) (KMesh_v1).
 
-## Layers
+KMT v1 переносил **произвольный JSON-трафик** приложения по BLE + Wi-Fi mesh,
+когда у телефона не было интернета. Приложение не знало о транспорте:
+`api.req()` переключался на KMT, если модуль подключён, а
+`transportOnline = false`.
 
-```
-App API request
-  │  AES-256-GCM (meshRelayKey = HKDF(userId, deviceId))
-  ▼
-BLE frame DATA_UP  chatId="__http__"
-  │
-Wearable ── MT_DATA broadcast/route ──► repeater ──► border ──► gateway
-  │                                                         │
-  │                                    POST /v1/modules/http (module token)
-  │                                                         ▼
-  │                                    Hub decrypts blob, performs the API call
-  │                                    as the user (short-lived 120 s token),
-  │                                    encrypts {status, body} and returns blob
-  ▼
-BLE frame DATA_DOWN chatId="__http__"  ◄── route back to source mesh_addr
-```
+## Слои
 
-- Encryption: AES-256-GCM, random 12-byte nonce per request. The gateway only
-  sees an opaque blob; it cannot read tokens or bodies.
-- Auth: the Hub issues a short-lived access token for the **verified module
-  owner**; the gateway cannot elevate privileges.
-- Path allowlist: all `/v1/*` except `admin`, `auth`, `objects`, `uploads`,
-  `keys`.
-- Idempotency: request `id`; client keeps a pending map with a 15 s timeout.
-- Responses: JSON `{status, body}`; errors propagate as `ApiError`.
+1. **BLE/USB-кадр:** `A5 5A | ver | type | len u16 | payload | crc16`.
+2. **Mesh-пакет:** 24-байтный заголовок + payload.
+3. **KMT-конверт:** JSON `{kind, chatId, envelope, ...}`.
+4. **Hub relay:** `POST /v1/mesh/relay`, `GET /v1/mesh/inbox`.
 
-## Routing
+## Ограничения
 
-- Mesh frames use the mesh-v2 router: hue metric (Wi-Fi/LoRa), route table,
-  TTL, duplicate ring `(srcMac, packetId)`, cluster/border selection.
-- API requests are broadcast if no gateway route is known; once a gateway
-  neighbour/route is learned they use `meshTransmitRouted` unicast.
-- Responses are unicast to the source `mesh_addr` and fall back to flood.
+- JSON и base64 раздувают кадр, не помещается в LoRa.
+- Нет сквозного `msg_uuid` и постоянной истории.
+- Нет частотного плана и хендовера между сотами.
 
-## Reliability
-
-- The gateway keeps a persistent queue: if Hub is unreachable, the request
-  stays in LittleFS and is retried.
-- Downlink: `GET /v1/modules/relay/pending?since=<seq>` (numeric cursor).
-  Text envelopes ≤ 4 KB include `envelopeB64` so the receiver can decrypt
-  without downloading an object.
-- `mesh_inbox` is drained every 30 s; `clientId` dedup prevents duplicates.
-
-## Limitations / v2 roadmap
-
-- LoRa API traffic is fragmented by the existing MT_FRAG layer; large
-  responses are currently limited to Wi-Fi.
-- Media uploads still require internet; KMT v2 will add chunked object
-  transfer and per-chunk ACKs.
-- The mesh relay key is derived from `(userId, deviceId)` on the Hub and
-  shared with the phone at login; key rotation is tied to device revocation.
+KMT оставлен для старых клиентов и прошивки v2. Новые сборки используют
+бинарный RPC KMesh_v1 и `klinto_core`.

@@ -6,7 +6,7 @@
  * Сигнатуры должны совпадать с нативной реализацией.
  */
 
-export const MESH_CHANNEL_ID = 'kinto-mesh';
+export const MESH_CHANNEL_ID = 'klinto-mesh';
 
 export interface MeshServiceInfo {
   publicId?: string;

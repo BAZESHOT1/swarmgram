@@ -1,4 +1,4 @@
-# Routing metrics and thresholds
+# Метрики и пороги маршрутизации
 
 ## EWMA задержки
 

@@ -1,8 +1,8 @@
 {
-  "name": "kinto-module-bridge",
+  "name": "klinto-module-bridge",
   "version": "1.0.0",
   "private": true,
-  "description": "Local bridge for Kinto admin module debug page: COM ports, monitors, flashing",
+  "description": "Local bridge for Klinto admin module debug page: COM ports, monitors, flashing",
   "type": "commonjs",
   "main": "server.mjs",
   "scripts": {

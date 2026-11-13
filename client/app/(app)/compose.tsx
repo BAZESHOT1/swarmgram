@@ -165,7 +165,7 @@ export default function ComposeScreen() {
               value={title}
               onChangeText={setTitle}
               accessibilityLabel={mode === 'group' ? 'Название группы' : 'Название канала'}
-              placeholder={mode === 'group' ? 'Например: Команда' : 'Например: Новости Swarm'}
+              placeholder={mode === 'group' ? 'Например: Команда' : 'Например: Новости Klinto'}
               placeholderTextColor={theme.textDisabled}
               style={[styles.input, { borderColor: theme.line, color: theme.textPrimary, backgroundColor: theme.surface }]}
             />

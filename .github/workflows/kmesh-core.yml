@@ -1,0 +1,45 @@
+name: KMesh_v1 core
+
+on:
+  push:
+    paths:
+      - 'firmware/klinto_core/**'
+      - 'client/src/kmesh/v1/**'
+      - 'client/scripts/test-kmesh-v1.ts'
+      - 'services/hub/src/routes/kmeshV1.ts'
+      - 'services/hub/sql/036_kmesh_v1_rename.sql'
+      - '.github/workflows/kmesh-core.yml'
+  pull_request:
+    paths:
+      - 'firmware/klinto_core/**'
+      - 'client/src/kmesh/v1/**'
+      - 'services/hub/src/routes/kmeshV1.ts'
+      - 'services/hub/sql/036_kmesh_v1_rename.sql'
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run host tests
+        working-directory: firmware/klinto_core
+        run: make test
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Client typecheck + protocol vectors
+        working-directory: client
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test:kmesh-v1
+      - name: Hub typecheck
+        working-directory: services/hub
+        run: |
+          npm ci
+          npm run typecheck

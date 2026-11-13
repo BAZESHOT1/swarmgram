@@ -31,11 +31,11 @@ import { isPushContentHidden } from './pushPrefs';
 import * as api from '../data/api';
 import type { PushCleanup, PushData, PushDisplayOptions, PushSession } from './types';
 
-export const MESSAGES_CHANNEL_ID = 'kinto-messages';
-export const SYSTEM_CHANNEL_ID = 'kinto-system';
+export const MESSAGES_CHANNEL_ID = 'klinto-messages';
+export const SYSTEM_CHANNEL_ID = 'klinto-system';
 /** LOW importance: постоянное уведомление Android foreground service. */
-export const MESH_CHANNEL_ID = 'kinto-mesh';
-export const BACKGROUND_FETCH_TASK_ID = 'kinto-pending-notifications';
+export const MESH_CHANNEL_ID = 'klinto-mesh';
+export const BACKGROUND_FETCH_TASK_ID = 'klinto-pending-notifications';
 
 const MAX_PENDING_PER_FETCH = 10;
 
@@ -178,7 +178,7 @@ export async function displayPushNotification(options: PushDisplayOptions): Prom
 
     await notifee.displayNotification({
       id: options.id,
-      title: options.title || 'Kinto',
+      title: options.title || 'Klinto',
       body: options.body || '',
       data,
       android: {
@@ -207,14 +207,14 @@ function notificationFromMessage(message: RemoteMessage, hidden = false): PushDi
   const data = normalizeData(message.data);
   if (hidden) {
     return {
-      title: 'Kinto',
+      title: 'Klinto',
       body: data.kind === 'media' ? 'Медиа' : 'Новое сообщение',
       data: { chatId: data.chatId, messageId: data.messageId, kind: data.kind },
       channelId: channelForData(data),
     };
   }
   return {
-    title: message.notification?.title || data.title || data.senderDisplayName || data.senderUsername || 'Kinto',
+    title: message.notification?.title || data.title || data.senderDisplayName || data.senderUsername || 'Klinto',
     body: message.notification?.body || data.body || data.text || '',
     data,
     channelId: channelForData(data),
@@ -480,7 +480,7 @@ export async function pollPending(): Promise<number> {
         if (chatId) data.chatId = chatId;
       }
 
-      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'Kinto';
+      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'Klinto';
       const body =
         (typeof raw.body === 'string' && raw.body) ||
         (typeof raw.message === 'string' && raw.message) ||
@@ -490,7 +490,7 @@ export async function pollPending(): Promise<number> {
 
       await displayPushNotification({
         id: `pending-${notificationId}`,
-        title: hidden ? 'Kinto' : title,
+        title: hidden ? 'Klinto' : title,
         body: hidden ? 'Новое сообщение' : body,
         data: hidden ? { chatId: data.chatId, messageId: data.messageId, kind: data.kind } : data,
       });

@@ -27,16 +27,16 @@ typedef struct {
   float load;               /* 0.0 .. 1.0 */
   uint32_t neighbor_clusters[KINTO_BEACON_MAX_NEIGHBOR_CLUSTERS];
   uint8_t neighbor_cluster_count;
-} kinto_beacon_t;
+} klinto_beacon_t;
 
 /** Заполняет структуру значениями по умолчанию. */
-void kinto_beacon_init(kinto_beacon_t *b, const char *hardware_id, const char *mesh_addr);
+void klinto_beacon_init(klinto_beacon_t *b, const char *hardware_id, const char *mesh_addr);
 
 /** Сериализует beacon в JSON. Возвращает длину или 0 при нехватке буфера. */
-unsigned kinto_beacon_to_json(const kinto_beacon_t *b, char *out, unsigned cap);
+unsigned klinto_beacon_to_json(const klinto_beacon_t *b, char *out, unsigned cap);
 
 /** Разбирает JSON beacon (только нужные поля, неизвестные игнорируются). */
-bool kinto_beacon_from_json(const char *json, kinto_beacon_t *out);
+bool klinto_beacon_from_json(const char *json, klinto_beacon_t *out);
 
 #ifdef __cplusplus
 }

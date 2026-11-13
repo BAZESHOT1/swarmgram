@@ -1,4 +1,4 @@
-# Kinto module bridge
+# Klinto module bridge
 
 Локальный HTTP-сервис для админ-страницы **Отладка**:
 

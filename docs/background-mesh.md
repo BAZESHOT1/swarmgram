@@ -1,4 +1,4 @@
-# Background mesh / BLE
+# Фоновый mesh и BLE
 
 Клиент держит подключение к носимому модулю, пока приложение в фоне, но не
 завершено пользователем. Убитое приложение ОС не поднимает ради BLE, поэтому
@@ -30,7 +30,7 @@
   сервису Notifee типы `connectedDevice|dataSync|shortService`: без этого
   Android 14+ останавливает `shortService` через несколько минут. Это только
   правка AndroidManifest, native-код не добавляется.
-- Канал `kinto-mesh` имеет `AndroidImportance.LOW`: без звука, вибрации и
+- Канал `klinto-mesh` имеет `AndroidImportance.LOW`: без звука, вибрации и
   heads-up. Уведомление постоянное (`ongoing`), пока модуль подключён.
 - При разрыве, ручном disconnect или выходе из аккаунта сервис
   останавливается.

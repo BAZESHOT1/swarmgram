@@ -13,7 +13,7 @@ static void fallback_mac(uint8_t out[6]) {
   memcpy(out, zero, 6);
 }
 
-bool kinto_identity_read(kinto_mesh_identity_t *out) {
+bool klinto_identity_read(klinto_mesh_identity_t *out) {
   if (!out) return false;
   memset(out, 0, sizeof(*out));
 #if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
@@ -33,19 +33,19 @@ bool kinto_identity_read(kinto_mesh_identity_t *out) {
 #endif
 }
 
-void kinto_mac_to_hardware_id(const uint8_t mac[6], char *out, unsigned cap) {
+void klinto_mac_to_hardware_id(const uint8_t mac[6], char *out, unsigned cap) {
   if (!out || cap < KINTO_HW_ID_LEN) return;
   snprintf(out, cap, "esp32-%02x%02x%02x%02x%02x%02x",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-void kinto_mac_to_text(const uint8_t mac[6], char *out, unsigned cap) {
+void klinto_mac_to_text(const uint8_t mac[6], char *out, unsigned cap) {
   if (!out || cap < KINTO_MAC_TEXT_LEN) return;
   snprintf(out, cap, "%02x:%02x:%02x:%02x:%02x:%02x",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-uint32_t kinto_identity_node_id(const char *hardware_id) {
+uint32_t klinto_identity_node_id(const char *hardware_id) {
   if (!hardware_id) return 0;
   uint32_t h = 2166136261UL;
   while (*hardware_id) {

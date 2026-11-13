@@ -1,27 +1,14 @@
 /* =======================================================================
- *  Kinto module firmware — ESP32 / ESP32-C3 / ESP32-S3.
+ *  Прошивка модуля Klinto — ESP32 / ESP32-C3 / ESP32-S3.
  *
- *  Единая глобальная mesh-сеть аккаунта. Роли:
- *    wearable  — BLE GATT + USB CDC мост между телефоном/ПК и mesh.
- *    repeater  — только mesh (Wi-Fi и/или LoRa), пересылка пакетов.
- *    gateway   — root Wi-Fi mesh + STA к роутеру + Hub (uplink/downlink).
+ *  Прежняя версия mesh-ядра (v2). Роли:
+ *    wearable  — BLE GATT + USB CDC, мост к телефону/ПК и mesh.
+ *    repeater  — только mesh (Wi-Fi и/или LoRa), ретранслятор трафика.
+ *    gateway   — корневой Wi-Fi mesh + STA к роутеру + Hub (uplink/downlink).
  *
- *  Шаблон самодостаточен: build-сервис копирует только этот .ino и
- *  сгенерированный config.h. Все параметры из config.h; отсутствующие
- *  макросы закрыты #ifndef-дефолтами, чтобы сборка не падала.
- *
- *  Протокол:
- *    - BLE/USB кадр: A5 5A | ver | type | len u16 LE | payload | crc16.
- *    - Mesh пакет:   24-байтный заголовок + payload (см. MeshHeader).
- *    - LoRa payload  <= 180 байт, Wi-Fi payload <= 1024 байта.
- *
- *  Wi-Fi транспорт:
- *    - по умолчанию используется компилируемый fallback: скрытый AP
- *      (SG_MESH_SSID/PASS) + STA + UDP-флудинг с тем же mesh-заголовком;
- *    - полноценный ESP-WIFI-MESH доступен при SG_USE_ESP_MESH=1
- *      (Arduino core 2.0.17 + esp_mesh.h), по умолчанию выключен, чтобы
- *      гарантировать сборку на всех платах builder-а.
- * ======================================================================= */
+ *  Остальное собирается build-скриптом: он подставляет config.h,
+ *  поэтому параметры не нужно править вручную.
+ */
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -47,185 +34,185 @@
 
 // ESP-NOW Long Range — основной mesh-транспорт. UDP остаётся только как
 // аварийный fallback, если ESP-NOW не поднялся (старые прошивки/странный SDK).
-#ifndef SG_USE_ESPNOW
-#define SG_USE_ESPNOW 1
+#ifndef KL_USE_ESPNOW
+#define KL_USE_ESPNOW 1
 #endif
 // ESP-NOW LR требует отдельного STA-интерфейса/канала: на шлюзе, который
 // одновременно держит STA к роутеру, IDF не даёт включить LR на AP, а LR на
 // STA рвёт ассоциацию. Поэтому по умолчанию — обычный ESP-NOW; LR включается
 // флагом для выделенного mesh-канала.
-#ifndef SG_ESPNOW_LR
-#define SG_ESPNOW_LR 0
+#ifndef KL_ESPNOW_LR
+#define KL_ESPNOW_LR 0
 #endif
 // Аварийный bootstrap для плат, где ESP-NOW молча не работает на
 // неассоциированной STA: один раз ассоциируемся с mesh-AP (<=3 c), затем
 // disconnect(). Это заставляет IDF выставить home-канал и поднять STA.
 // По умолчанию выключено.
-#ifndef SG_ESPNOW_ASSOC_BOOTSTRAP
-#define SG_ESPNOW_ASSOC_BOOTSTRAP 1
+#ifndef KL_ESPNOW_ASSOC_BOOTSTRAP
+#define KL_ESPNOW_ASSOC_BOOTSTRAP 1
 #endif
 
 /* ------------------------------------------------------- дефолты конфига -- */
 
-#ifndef SG_FIRMWARE_VERSION
-#define SG_FIRMWARE_VERSION "1.0.0"
+#ifndef KL_FIRMWARE_VERSION
+#define KL_FIRMWARE_VERSION "1.1"
 #endif
-#ifndef SG_BOARD
-#define SG_BOARD "esp32"
+#ifndef KL_BOARD
+#define KL_BOARD "esp32"
 #endif
-#ifndef SG_ROLE
-#define SG_ROLE "gateway"
+#ifndef KL_ROLE
+#define KL_ROLE "gateway"
 #endif
-#ifndef SG_CONNECTIVITY
-#define SG_CONNECTIVITY "wifi"
+#ifndef KL_CONNECTIVITY
+#define KL_CONNECTIVITY "wifi"
 #endif
-#ifndef SG_WIFI_SSID
-#define SG_WIFI_SSID ""
+#ifndef KL_WIFI_SSID
+#define KL_WIFI_SSID ""
 #endif
-#ifndef SG_WIFI_PASS
-#define SG_WIFI_PASS ""
+#ifndef KL_WIFI_PASS
+#define KL_WIFI_PASS ""
 #endif
-#ifndef SG_MESH_SSID
-#define SG_MESH_SSID ""
+#ifndef KL_MESH_SSID
+#define KL_MESH_SSID ""
 #endif
-#ifndef SG_MESH_PASS
-#define SG_MESH_PASS ""
+#ifndef KL_MESH_PASS
+#define KL_MESH_PASS ""
 #endif
-#ifndef SG_MESH_ID
-#define SG_MESH_ID ""
+#ifndef KL_MESH_ID
+#define KL_MESH_ID ""
 #endif
-#ifndef SG_MESH_HIDDEN
-#define SG_MESH_HIDDEN 0
+#ifndef KL_MESH_HIDDEN
+#define KL_MESH_HIDDEN 0
 #endif
-#ifndef SG_HUB_URL
-#define SG_HUB_URL ""
+#ifndef KL_HUB_URL
+#define KL_HUB_URL ""
 #endif
-#ifndef SG_MODULE_TOKEN
-#define SG_MODULE_TOKEN ""
+#ifndef KL_MODULE_TOKEN
+#define KL_MODULE_TOKEN ""
 #endif
-#ifndef SG_CLAIM_TOKEN
-#define SG_CLAIM_TOKEN ""
+#ifndef KL_CLAIM_TOKEN
+#define KL_CLAIM_TOKEN ""
 #endif
-#ifndef SG_OTA
-#define SG_OTA 0
+#ifndef KL_OTA
+#define KL_OTA 0
 #endif
-#ifndef SG_DEEP_SLEEP
-#define SG_DEEP_SLEEP 0
+#ifndef KL_DEEP_SLEEP
+#define KL_DEEP_SLEEP 0
 #endif
-// Если сервер не выставил SG_USE_LORA, но пины LoRa в config.h есть — включаем.
-#if !defined(SG_USE_LORA) && defined(SG_LORA_CS)
-#define SG_USE_LORA 1
+// Если сервер не выставил KL_USE_LORA, но пины LoRa в config.h есть — включаем.
+#if !defined(KL_USE_LORA) && defined(KL_LORA_CS)
+#define KL_USE_LORA 1
 #endif
-#ifndef SG_USE_LORA
-#define SG_USE_LORA 0
+#ifndef KL_USE_LORA
+#define KL_USE_LORA 0
 #endif
-#ifndef SG_LORA_CHIP_SX1262
-#define SG_LORA_CHIP_SX1262 0
+#ifndef KL_LORA_CHIP_SX1262
+#define KL_LORA_CHIP_SX1262 0
 #endif
-#ifndef SG_LORA_CHIP
-#define SG_LORA_CHIP "sx1278"
+#ifndef KL_LORA_CHIP
+#define KL_LORA_CHIP "sx1278"
 #endif
 
 // Жёсткие параметры сети (config.h может их переопределить).
-#define SG_DEFAULT_MESH_SSID "SG-MESH"
-#define SG_DEFAULT_MESH_PASS "sgmesh-2026-11-11-a7f3c9d2e6b14580"
-#define SG_DEFAULT_HUB_URL "http://150.251.143.212:8080"
+#define KL_DEFAULT_MESH_SSID "SG-MESH"
+#define KL_DEFAULT_MESH_PASS "sgmesh-2026-11-11-a7f3c9d2e6b14580"
+#define KL_DEFAULT_HUB_URL "http://150.251.143.212:8080"
 
-#ifndef SG_MESH_CHANNEL
-#define SG_MESH_CHANNEL 11
+#ifndef KL_MESH_CHANNEL
+#define KL_MESH_CHANNEL 11
 #endif
-#ifndef SG_LORA_FREQ
-#define SG_LORA_FREQ 869.525
+#ifndef KL_LORA_FREQ
+#define KL_LORA_FREQ 869.525
 #endif
-#ifndef SG_LORA_SF
-#define SG_LORA_SF 9
+#ifndef KL_LORA_SF
+#define KL_LORA_SF 9
 #endif
-#ifndef SG_LORA_BW
-#define SG_LORA_BW 125.0
+#ifndef KL_LORA_BW
+#define KL_LORA_BW 125.0
 #endif
-#ifndef SG_LORA_CR
-#define SG_LORA_CR 5
+#ifndef KL_LORA_CR
+#define KL_LORA_CR 5
 #endif
-#ifndef SG_LORA_SYNC
-#define SG_LORA_SYNC 0x12
+#ifndef KL_LORA_SYNC
+#define KL_LORA_SYNC 0x12
 #endif
-#ifndef SG_LORA_POWER
-#define SG_LORA_POWER 17
+#ifndef KL_LORA_POWER
+#define KL_LORA_POWER 17
 #endif
-#ifndef SG_WIFI_MAX_HOPS
-#define SG_WIFI_MAX_HOPS 14
+#ifndef KL_WIFI_MAX_HOPS
+#define KL_WIFI_MAX_HOPS 14
 #endif
-#ifndef SG_LORA_MAX_HOPS
-#define SG_LORA_MAX_HOPS 12
-#endif
-
-#ifndef SG_LORA_SCK
-#define SG_LORA_SCK 4
-#endif
-#ifndef SG_LORA_MISO
-#define SG_LORA_MISO 5
-#endif
-#ifndef SG_LORA_MOSI
-#define SG_LORA_MOSI 6
-#endif
-#ifndef SG_LORA_CS
-#define SG_LORA_CS 7
-#endif
-#ifndef SG_LORA_RST
-#define SG_LORA_RST 3
-#endif
-#ifndef SG_LORA_DIO0
-#define SG_LORA_DIO0 2
-#endif
-#ifndef SG_LORA_BUSY
-#define SG_LORA_BUSY -1
+#ifndef KL_LORA_MAX_HOPS
+#define KL_LORA_MAX_HOPS 12
 #endif
 
-#ifndef SG_BATT_ENABLED
-#define SG_BATT_ENABLED 0
+#ifndef KL_LORA_SCK
+#define KL_LORA_SCK 4
 #endif
-#ifndef SG_LED_PIN
-#define SG_LED_PIN -1
+#ifndef KL_LORA_MISO
+#define KL_LORA_MISO 5
 #endif
-#ifndef SG_BATT_PIN
-#define SG_BATT_PIN 0
+#ifndef KL_LORA_MOSI
+#define KL_LORA_MOSI 6
 #endif
-#ifndef SG_BATT_RATIO
-#define SG_BATT_RATIO 2.0
+#ifndef KL_LORA_CS
+#define KL_LORA_CS 7
 #endif
-#ifndef SG_BATT_INTERVAL
-#define SG_BATT_INTERVAL 300
+#ifndef KL_LORA_RST
+#define KL_LORA_RST 3
+#endif
+#ifndef KL_LORA_DIO0
+#define KL_LORA_DIO0 2
+#endif
+#ifndef KL_LORA_BUSY
+#define KL_LORA_BUSY -1
+#endif
+
+#ifndef KL_BATT_ENABLED
+#define KL_BATT_ENABLED 0
+#endif
+#ifndef KL_LED_PIN
+#define KL_LED_PIN -1
+#endif
+#ifndef KL_BATT_PIN
+#define KL_BATT_PIN 0
+#endif
+#ifndef KL_BATT_RATIO
+#define KL_BATT_RATIO 2.0
+#endif
+#ifndef KL_BATT_INTERVAL
+#define KL_BATT_INTERVAL 300
 #endif
 
 // ESP-WIFI-MESH включается только явно (см. шапку файла).
-#ifndef SG_USE_ESP_MESH
-#define SG_USE_ESP_MESH 0
+#ifndef KL_USE_ESP_MESH
+#define KL_USE_ESP_MESH 0
 #endif
-#ifndef SG_BLE_ENABLED
-#define SG_BLE_ENABLED 1
+#ifndef KL_BLE_ENABLED
+#define KL_BLE_ENABLED 1
 #endif
 
 /* --------------------------------------------------------- include opt --- */
 
-#if SG_OTA
+#if KL_OTA
 #include <ArduinoOTA.h>
 #include <Update.h>
 #include <mbedtls/sha256.h>
 #endif
 
 /* --- Mesh v2 core: кластеры, гибридный роутинг, классификатор трафика --- */
-#ifndef SG_MESH_V2
-#define SG_MESH_V2 1
+#ifndef KL_MESH_V2
+#define KL_MESH_V2 1
 #endif
-#if SG_MESH_V2
+#if KL_MESH_V2
 #include "beacon_format.h"
 #include "cluster_manager.h"
 #include "hybrid_router.h"
 #include "traffic_classifier.h"
 #else
-// Минимальные типы, чтобы скетч собирался и с SG_MESH_V2=0.
-enum kinto_iface_t { KINTO_IFACE_NONE = 0, KINTO_IFACE_WIFI = 1, KINTO_IFACE_LORA = 2 };
-enum kinto_traffic_t {
+// Минимальные типы, чтобы скетч собирался и с KL_MESH_V2=0.
+enum klinto_iface_t { KINTO_IFACE_NONE = 0, KINTO_IFACE_WIFI = 1, KINTO_IFACE_LORA = 2 };
+enum klinto_traffic_t {
   KINTO_TRAFFIC_TEXT = 0,
   KINTO_TRAFFIC_MEDIA,
   KINTO_TRAFFIC_OTA,
@@ -234,22 +221,22 @@ enum kinto_traffic_t {
 };
 #endif
 
-#if SG_USE_LORA
-#if SG_LORA_CHIP_SX1262
+#if KL_USE_LORA
+#if KL_LORA_CHIP_SX1262
 #include <RadioLib.h>
 #else
 #include <LoRa.h>
 #endif
 #endif
 
-#if SG_BLE_ENABLED
+#if KL_BLE_ENABLED
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #endif
 
-#if SG_USE_ESP_MESH
+#if KL_USE_ESP_MESH
 #include <esp_mesh.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
@@ -263,21 +250,21 @@ enum kinto_traffic_t {
 
 /* ----------------------------------------------------------- константы --- */
 
-static const uint16_t SG_MESH_UDP_PORT = 45678;
-static const uint16_t SG_MAX_PAYLOAD = 1024;       // общий предел payload
-static const uint16_t SG_LORA_MAX_PAYLOAD = 180;   // предел LoRa payload
+static const uint16_t KL_MESH_UDP_PORT = 45678;
+static const uint16_t KL_MAX_PAYLOAD = 1024;       // общий предел payload
+static const uint16_t KL_LORA_MAX_PAYLOAD = 180;   // предел LoRa payload
 // ESP-NOW v1: один кадр <= 250 байт. Крупные mesh-пакеты режем MT_FRAG
 // (тот же формат, что и для LoRa), чтобы не зависеть от ESP-NOW v2.
-static const uint16_t SG_ESPNOW_MAX_FRAME = 240;
-static const uint8_t  SG_ESPNOW_PEER_MAX = 20;
-static const uint16_t SG_ESPNOW_RX_QUEUE = 6;
-static const size_t   SG_QUEUE_MAX = 200;          // записей в /queue.log
-static const uint32_t SG_QUEUE_TTL_SEC = 72UL * 3600UL;
+static const uint16_t KL_ESPNOW_MAX_FRAME = 240;
+static const uint8_t  KL_ESPNOW_PEER_MAX = 20;
+static const uint16_t KL_ESPNOW_RX_QUEUE = 6;
+static const size_t   KL_QUEUE_MAX = 200;          // записей в /queue.log
+static const uint32_t KL_QUEUE_TTL_SEC = 72UL * 3600UL;
 // Верхняя граница данных в одном BLE-notification. При MTU 23 реальный chunk
 // равен 8 (20 байт на кадр), при MTU 185/247 — до 170/232 байт. Большой chunk
 // критичен для ответов KMT: 11 КБ иначе превращаются в ~1500 notifications.
-static const uint16_t SG_BLE_CHUNK = 200;
-static const uint16_t SG_USB_CHUNK = SG_MAX_PAYLOAD;   // USB может принять кадр целиком
+static const uint16_t KL_BLE_CHUNK = 200;
+static const uint16_t KL_USB_CHUNK = KL_MAX_PAYLOAD;   // USB может принять кадр целиком
 
 static const uint8_t F_MAGIC0 = 0xA5;
 static const uint8_t F_MAGIC1 = 0x5A;
@@ -311,9 +298,9 @@ enum MeshType {
 };
 
 // LoRa-фрагментация: 150 байт данных × до 16 фрагментов.
-static const uint16_t SG_LORA_FRAG_DATA = 150;
-static const uint8_t  SG_MAX_FRAGMENTS = 16;
-static const uint16_t SG_FRAG_MAX_TOTAL = 36 + SG_MAX_PAYLOAD; // MeshHeader(36) + payload
+static const uint16_t KL_LORA_FRAG_DATA = 150;
+static const uint8_t  KL_MAX_FRAGMENTS = 16;
+static const uint16_t KL_FRAG_MAX_TOTAL = 36 + KL_MAX_PAYLOAD; // MeshHeader(36) + payload
 
 static const uint32_t MESH_BROADCAST = 0xFFFFFFFFUL;
 
@@ -413,7 +400,7 @@ struct FragSlot {
   uint32_t mask;
   uint16_t len;
   uint32_t lastMs;
-  uint8_t data[SG_FRAG_MAX_TOTAL];
+  uint8_t data[KL_FRAG_MAX_TOTAL];
 };
 static FragSlot gFragSlots[2];
 
@@ -422,7 +409,7 @@ struct FrameAssembler {
   uint16_t total;
   uint16_t got;
   bool     active;
-  uint8_t  buf[SG_MAX_PAYLOAD];
+  uint8_t  buf[KL_MAX_PAYLOAD];
 };
 
 /* ------------------------------------------------------------- глобалы --- */
@@ -452,7 +439,7 @@ static bool gBleConnected = false;
 static bool gBleRestartAdv = false;
 static bool gBleWantInfo = false;
 static uint16_t gBleMtu = 23;   // согласованный ATT MTU, обновляется callback-ом
-static uint8_t gBleRxBuf[SG_MAX_PAYLOAD + 16];
+static uint8_t gBleRxBuf[KL_MAX_PAYLOAD + 16];
 static size_t gBleRxLen = 0;
 static bool gUsbSeen = false;
 // USB-клиент начал обмен кадрами: текстовые логи глушим, чтобы не мешать
@@ -492,12 +479,12 @@ struct EspNowPeer {
 static EspNowPeer gEspNowPeers[12];
 
 struct EspNowRxItem {
-  uint8_t data[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint8_t data[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   uint16_t len;
   int16_t rssi;
   uint8_t srcMac[6];
 };
-static EspNowRxItem gEspNowRx[SG_ESPNOW_RX_QUEUE];
+static EspNowRxItem gEspNowRx[KL_ESPNOW_RX_QUEUE];
 static volatile uint8_t gEspNowRxHead = 0;
 static volatile uint8_t gEspNowRxTail = 0;
 
@@ -568,12 +555,12 @@ static uint32_t gPendingSince = 0;
 
 // LoRa.
 static uint32_t gLastLoraTxMs = 0;
-#if SG_USE_LORA && SG_LORA_CHIP_SX1262
+#if KL_USE_LORA && KL_LORA_CHIP_SX1262
 static SX1262 *gRadio = nullptr;
 #endif
 
 // BLE.
-#if SG_BLE_ENABLED
+#if KL_BLE_ENABLED
 static BLEServer *pBleServer = nullptr;
 static BLECharacteristic *pBleTx = nullptr;
 static BLECharacteristic *pBleRx = nullptr;
@@ -591,7 +578,7 @@ static uint32_t gLastFwdLogMs = 0;
 static uint32_t gLastDiagMs = 0;
 
 // Wi-Fi UDP fallback.
-#if !SG_USE_ESP_MESH
+#if !KL_USE_ESP_MESH
 static WiFiUDP gUdp;
 static bool gUdpStarted = false;
 static uint32_t gLastWifiAttemptMs = 0;
@@ -617,7 +604,7 @@ static void sgLog(const char *fmt, ...) {
   if (!gLogEnabled) return;
   // На wearable USB CDC несёт бинарные кадры. Логи полезны до подключения
   // клиента; после первого кадра замолкаем, чтобы не мешать протоколу.
-  if (gUsbProtoActive && strcmp(SG_ROLE, "wearable") == 0) return;
+  if (gUsbProtoActive && strcmp(KL_ROLE, "wearable") == 0) return;
   char buf[224];
   va_list ap;
   va_start(ap, fmt);
@@ -639,50 +626,50 @@ static void sgLogE(const char *fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
-  esp_log_write(ESP_LOG_ERROR, "kinto", "%s\n", buf);
+  esp_log_write(ESP_LOG_ERROR, "klinto", "%s\n", buf);
 }
 
 static bool roleIs(const char *role) {
-  return strcmp(SG_ROLE, role) == 0;
+  return strcmp(KL_ROLE, role) == 0;
 }
 static bool isWearable() { return roleIs("wearable"); }
 static bool isRepeater() { return roleIs("repeater"); }
 static bool isGateway()  { return roleIs("gateway"); }
 
 static bool connHas(const char *needle) {
-  return strstr(SG_CONNECTIVITY, needle) != nullptr;
+  return strstr(KL_CONNECTIVITY, needle) != nullptr;
 }
 
 static bool wifiTransportEnabled() {
   // wifi и wifi_lora -> Wi-Fi; чистый lora -> только радио.
-  return strcmp(SG_CONNECTIVITY, "lora") != 0;
+  return strcmp(KL_CONNECTIVITY, "lora") != 0;
 }
 static bool loraTransportEnabled() {
-#if SG_USE_LORA
+#if KL_USE_LORA
   // Реагируем на "wifi_lora", "lora", "Wi-Fi + LoRa" и т.п.
-  return connHas("lora") || strcmp(SG_CONNECTIVITY, "wifi") != 0;
+  return connHas("lora") || strcmp(KL_CONNECTIVITY, "wifi") != 0;
 #else
   return false;
 #endif
 }
 
 static const char *meshSsid() {
-  return strlen(SG_MESH_SSID) ? SG_MESH_SSID : SG_DEFAULT_MESH_SSID;
+  return strlen(KL_MESH_SSID) ? KL_MESH_SSID : KL_DEFAULT_MESH_SSID;
 }
 static const char *meshPass() {
-  return strlen(SG_MESH_PASS) ? SG_MESH_PASS : SG_DEFAULT_MESH_PASS;
+  return strlen(KL_MESH_PASS) ? KL_MESH_PASS : KL_DEFAULT_MESH_PASS;
 }
 static const char *meshIdText() {
-  return strlen(SG_MESH_ID) ? SG_MESH_ID : SG_DEFAULT_MESH_SSID;
+  return strlen(KL_MESH_ID) ? KL_MESH_ID : KL_DEFAULT_MESH_SSID;
 }
 
 /** Текущий mesh-канал: SoftAP шлюза / ESP-NOW / дефолт. */
 static uint8_t currentMeshChannel() {
-#if !SG_USE_ESP_MESH
+#if !KL_USE_ESP_MESH
   if (gApChannel) return gApChannel;
 #endif
   if (gEspNowChannel) return gEspNowChannel;
-  return (uint8_t)SG_MESH_CHANNEL;
+  return (uint8_t)KL_MESH_CHANNEL;
 }
 
 /**
@@ -703,12 +690,12 @@ static void meshApConfig() {
 }
 
 static const char *hubBase() {
-  return strlen(SG_HUB_URL) ? SG_HUB_URL : SG_DEFAULT_HUB_URL;
+  return strlen(KL_HUB_URL) ? KL_HUB_URL : KL_DEFAULT_HUB_URL;
 }
 static String normalizedHubBase() {
   String base = String(hubBase());
   while (base.endsWith("/")) base.remove(base.length() - 1);
-  if (!base.length()) base = SG_DEFAULT_HUB_URL;
+  if (!base.length()) base = KL_DEFAULT_HUB_URL;
   return base;
 }
 
@@ -773,7 +760,7 @@ static void initIdentity() {
   const String computed = macToHardwareId(mac);
   Preferences prefs;
   String stored;
-  if (prefs.begin("swarm", false)) {
+  if (prefs.begin("klinto", false)) {
     stored = prefs.getString("hw_id", "");
     if (stored != computed) {
       if (stored.length()) {
@@ -936,8 +923,8 @@ static uint32_t jsonGetU32(const String &src, const char *key) {
 
 // Mesh v2 адреса: 8 байт из nodeId (или строкового hardware/public id).
 static void nodeMeshAddr(uint32_t id, uint8_t out[8]) {
-#if SG_MESH_V2
-  kinto_mesh_addr_from_u32(id, out);
+#if KL_MESH_V2
+  klinto_mesh_addr_from_u32(id, out);
 #else
   out[0] = (uint8_t)(id >> 24);
   out[1] = (uint8_t)(id >> 16);
@@ -1004,13 +991,13 @@ static uint16_t crc16Ccitt(const uint8_t *data, size_t len) {
 
 /* ------------------------------------------------------------ очередь ---- */
 
-static QueueEntry gQueue[SG_QUEUE_MAX];
+static QueueEntry gQueue[KL_QUEUE_MAX];
 static size_t gQueueCount = 0;
 static bool gQueueDirty = false;
 static uint32_t gQueueDirtyMs = 0;
 static bool gFsReady = false;
-static const char *SG_QUEUE_FILE = "/queue.log";
-static const char *SG_QUEUE_TMP  = "/queue.tmp";
+static const char *KL_QUEUE_FILE = "/queue.log";
+static const char *KL_QUEUE_TMP  = "/queue.tmp";
 
 static bool clockValid() {
   return time(NULL) > 1600000000L;
@@ -1046,7 +1033,7 @@ static int8_t hexVal(char c) {
 // Формат строки: JSON-объект с hex-полем data (JSON lines).
 static void queueSave() {
   if (!gFsReady) return;
-  File f = LittleFS.open(SG_QUEUE_TMP, "w");
+  File f = LittleFS.open(KL_QUEUE_TMP, "w");
   if (!f) {
     sgLog("[queue] open tmp failed");
     return;
@@ -1074,8 +1061,8 @@ static void queueSave() {
     f.print("\"}\n");
   }
   f.close();
-  LittleFS.remove(SG_QUEUE_FILE);
-  if (!LittleFS.rename(SG_QUEUE_TMP, SG_QUEUE_FILE)) {
+  LittleFS.remove(KL_QUEUE_FILE);
+  if (!LittleFS.rename(KL_QUEUE_TMP, KL_QUEUE_FILE)) {
     sgLog("[queue] rename failed");
   }
   gQueueDirty = false;
@@ -1083,9 +1070,9 @@ static void queueSave() {
 
 static void queueLoad() {
   if (!gFsReady) return;
-  File f = LittleFS.open(SG_QUEUE_FILE, "r");
+  File f = LittleFS.open(KL_QUEUE_FILE, "r");
   if (!f) return;
-  while (f.available() && gQueueCount < SG_QUEUE_MAX) {
+  while (f.available() && gQueueCount < KL_QUEUE_MAX) {
     String line = f.readStringUntil('\n');
     line.trim();
     if (line.length() < 16) continue;
@@ -1095,7 +1082,7 @@ static void queueLoad() {
     uint8_t kind = (uint8_t)jsonGetInt(line, "kind");
     uint8_t tries = (uint8_t)jsonGetInt(line, "tries");
     uint16_t len = (uint16_t)jsonGetInt(line, "len");
-    if (len > SG_MAX_PAYLOAD) continue;
+    if (len > KL_MAX_PAYLOAD) continue;
 
     String hex = jsonGetString(line, "data");
     if ((size_t)hex.length() < (size_t)len * 2) continue;
@@ -1147,11 +1134,11 @@ static bool queueRemove(uint32_t id) {
 
 // forcedId != 0 используется для DATA, чтобы ACK мог удалить запись.
 static uint32_t queueAdd(const uint8_t *data, uint16_t len, uint8_t kind, uint32_t forcedId) {
-  if (len > SG_MAX_PAYLOAD) {
+  if (len > KL_MAX_PAYLOAD) {
     sgLog("[queue] drop oversized %u", (unsigned)len);
     return 0;
   }
-  if (gQueueCount >= SG_QUEUE_MAX) {
+  if (gQueueCount >= KL_QUEUE_MAX) {
     // Переполнение: освобождаем самую старую запись.
     queueRemoveAt(0);
   }
@@ -1188,8 +1175,8 @@ static void queueCleanup() {
     bool expired = false;
     if (c & 0x80000000UL) {
       const uint32_t born = c & 0x7FFFFFFFUL;
-      if (nowS > born && nowS - born > SG_QUEUE_TTL_SEC) expired = true;
-    } else if (c && epoch && epoch > c + SG_QUEUE_TTL_SEC) {
+      if (nowS > born && nowS - born > KL_QUEUE_TTL_SEC) expired = true;
+    } else if (c && epoch && epoch > c + KL_QUEUE_TTL_SEC) {
       expired = true;
     }
     if (expired) {
@@ -1220,10 +1207,10 @@ static bool seenBefore(uint32_t id) {
 
 // Дубли: mesh v2 использует (src, packetId) ring на 256 записей/60 c.
 static bool meshSeenDuplicate(uint32_t src, uint32_t packetId) {
-#if SG_MESH_V2
+#if KL_MESH_V2
   uint8_t addr[8];
   nodeMeshAddr(src, addr);
-  return kinto_is_duplicate(addr, packetId, millis());
+  return klinto_is_duplicate(addr, packetId, millis());
 #else
   (void)src;
   return seenBefore(packetId);
@@ -1231,10 +1218,10 @@ static bool meshSeenDuplicate(uint32_t src, uint32_t packetId) {
 }
 
 static void meshMarkOwn(uint32_t packetId) {
-#if SG_MESH_V2
+#if KL_MESH_V2
   uint8_t addr[8];
   nodeMeshAddr(gNodeId, addr);
-  kinto_is_duplicate(addr, packetId, millis());   // запись в ring без срабатывания
+  klinto_is_duplicate(addr, packetId, millis());   // запись в ring без срабатывания
 #else
   seenBefore(packetId);
 #endif
@@ -1381,9 +1368,9 @@ struct PendingRoute {
   uint32_t lastReqMs;
   uint8_t tries;
   uint8_t ttl;
-  kinto_traffic_t traffic;
+  klinto_traffic_t traffic;
   uint16_t len;
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
 };
 static PendingRoute gPendingRoute;
 static void sendRouteReq(uint32_t dst);
@@ -1437,7 +1424,7 @@ static uint32_t routeLookup(uint32_t dst) {
 // Ранние объявления: clusterTick/handoverSend определены ниже, но используют
 // routed-отправку и запуск handover.
 static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payload,
-                               uint16_t len, uint8_t ttl, kinto_traffic_t traffic);
+                               uint16_t len, uint8_t ttl, klinto_traffic_t traffic);
 static void handoverStart(uint32_t newCluster);
 static void handoverSend(const char *op, uint32_t dst, uint32_t cluster);
 
@@ -1460,7 +1447,7 @@ static void neighborUpdatePresence(uint32_t id, int16_t rssi, const String &json
   }
 }
 
-#if SG_MESH_V2
+#if KL_MESH_V2
 static uint16_t rssiToEwma(int16_t rssi) {
   if (rssi >= -50) return 40;
   if (rssi >= -65) return 80;
@@ -1472,7 +1459,7 @@ static uint16_t rssiToEwma(int16_t rssi) {
 // HYBRID: сосед -> запись route table (metric/iface/queue/expiry).
 static void meshV2RouteUpdate(uint32_t id, int16_t rssi, bool fromLora, uint8_t queueDepth) {
   if (!id || id == gNodeId) return;
-  kinto_route_t r;
+  klinto_route_t r;
   memset(&r, 0, sizeof(r));
   nodeMeshAddr(id, r.dst);
   nodeMeshAddr(id, r.next_hop);   // сосед = прямой next hop
@@ -1483,13 +1470,13 @@ static void meshV2RouteUpdate(uint32_t id, int16_t rssi, bool fromLora, uint8_t 
   r.expiry_ms = millis() + (fromLora ? KINTO_ROUTE_EXPIRY_LORA_MS
                                      : KINTO_ROUTE_EXPIRY_ESPNOW_MS);
   r.valid = true;
-  kinto_route_upsert(&r);
+  klinto_route_upsert(&r);
 }
 
 // MT_ROUTE_REP: маршрут до не-соседа через ответивший узел.
 static void meshV2RouteLearned(uint32_t dst, uint32_t nextHop, bool fromLora) {
   if (!dst || !nextHop || dst == gNodeId) return;
-  kinto_route_t r;
+  klinto_route_t r;
   memset(&r, 0, sizeof(r));
   nodeMeshAddr(dst, r.dst);
   nodeMeshAddr(nextHop, r.next_hop);
@@ -1500,12 +1487,12 @@ static void meshV2RouteLearned(uint32_t dst, uint32_t nextHop, bool fromLora) {
   r.expiry_ms = millis() + (fromLora ? KINTO_ROUTE_EXPIRY_LORA_MS
                                      : KINTO_ROUTE_EXPIRY_ESPNOW_MS);
   r.valid = true;
-  kinto_route_upsert(&r);
+  klinto_route_upsert(&r);
   sgLog("[route] learned dst=%s next=%s via=%s", publicIdForNode(dst).c_str(),
         publicIdForNode(nextHop).c_str(), fromLora ? "lora" : "wifi");
 }
 
-static kinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, uint16_t len) {
+static klinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, uint16_t len) {
   if (type == MT_ADVERT || type == MT_PRESENCE || type == MT_ROUTE_REQ ||
       type == MT_ROUTE_REP || type == MT_DISCOVER ||
       type == MT_DISCOVER_ACK || type == MT_LORA_ADVERT) {
@@ -1514,7 +1501,7 @@ static kinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, ui
   if (type == MT_DATA && payload && len) {
     const uint16_t cap = len > 160 ? 160 : len;
     String s = payloadToString(payload, cap);
-    kinto_traffic_class_t cls = kinto_classify("text", len);
+    klinto_traffic_class_t cls = klinto_classify("text", len);
     if (s.indexOf("\"kind\":\"media\"") >= 0 || s.indexOf("\"kind\":\"image\"") >= 0 ||
         s.indexOf("\"kind\":\"file\"") >= 0) {
       cls = KINTO_CLASS_MEDIA;
@@ -1538,13 +1525,13 @@ static kinto_traffic_t meshV2TrafficFor(uint8_t type, const uint8_t *payload, ui
 }
 
 // Возвращает true, если route table дала конкретный интерфейс.
-static bool meshV2SelectIface(uint32_t dst, kinto_traffic_t traffic,
-                              kinto_iface_t *iface, uint8_t *hops) {
+static bool meshV2SelectIface(uint32_t dst, klinto_traffic_t traffic,
+                              klinto_iface_t *iface, uint8_t *hops) {
   if (iface) *iface = KINTO_IFACE_NONE;
   if (!dst || dst == MESH_BROADCAST) return false;
   uint8_t addr[8];
   nodeMeshAddr(dst, addr);
-  kinto_route_t r = kinto_select_route(addr, traffic, millis());
+  klinto_route_t r = klinto_select_route(addr, traffic, millis());
   if (!r.valid || r.iface == KINTO_IFACE_NONE) return false;
   if (iface) *iface = r.iface;
   if (hops) *hops = r.hops;
@@ -1603,10 +1590,10 @@ static uint32_t clusterComputeSelfId() {
     }
     ptrs[j + 1] = value;
   }
-  return kinto_compute_cluster_id(ptrs, ac);
+  return klinto_compute_cluster_id(ptrs, ac);
 }
 
-static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
+static void clusterCollectNeighbors(klinto_cluster_neighbor_t *out, unsigned max,
                                     unsigned *count) {
   unsigned n = 0;
   const uint32_t now = millis();
@@ -1638,7 +1625,7 @@ static void clusterCollectNeighbors(kinto_cluster_neighbor_t *out, unsigned max,
 
   // Стабильный порядок: адрес не зависит от порядка соседей.
   for (unsigned i = 1; i < n; i++) {
-    kinto_cluster_neighbor_t v = out[i];
+    klinto_cluster_neighbor_t v = out[i];
     int j = (int)i - 1;
     while (j >= 0 && meshAddrCmp(out[j].mesh_addr, v.mesh_addr) > 0) {
       out[j + 1] = out[j];
@@ -1680,14 +1667,14 @@ static void clusterTick() {
     }
   }
 
-  kinto_cluster_neighbor_t list[9];
+  klinto_cluster_neighbor_t list[9];
   unsigned count = 0;
   clusterCollectNeighbors(list, 9, &count);
 
-  const bool selfSeesTwo = kinto_is_border_candidate(list, count);
-  kinto_border_candidate_t elected[KINTO_BORDER_MAX];
+  const bool selfSeesTwo = klinto_is_border_candidate(list, count);
+  klinto_border_candidate_t elected[KINTO_BORDER_MAX];
   const unsigned electedCount =
-      kinto_elect_border_nodes(list, count, now ? now : 1, elected);
+      klinto_elect_border_nodes(list, count, now ? now : 1, elected);
 
   // Порог для себя: чужой кластер >= -95 dBm и очередь <= 8 три beacon-интервала.
   int bestForeignRssi = -127;
@@ -1794,10 +1781,10 @@ static uint16_t rssiToEwma(int16_t rssi) {
 }
 static void meshV2RouteUpdate(uint32_t, int16_t, bool, uint8_t) {}
 static void meshV2RouteLearned(uint32_t, uint32_t, bool) {}
-static kinto_traffic_t meshV2TrafficFor(uint8_t, const uint8_t *, uint16_t) {
+static klinto_traffic_t meshV2TrafficFor(uint8_t, const uint8_t *, uint16_t) {
   return KINTO_TRAFFIC_TEXT;
 }
-static bool meshV2SelectIface(uint32_t, kinto_traffic_t, kinto_iface_t *, uint8_t *) {
+static bool meshV2SelectIface(uint32_t, klinto_traffic_t, klinto_iface_t *, uint8_t *) {
   return false;
 }
 static void clusterTick() {}
@@ -1852,9 +1839,9 @@ static void handoverSend(const char *op, uint32_t dst, uint32_t cluster) {
              "\",\"from\":" + String((unsigned long)gNodeId) +
              ",\"to\":" + String((unsigned long)dst) +
              ",\"cluster\":" + String((unsigned long)cluster) +
-             ",\"role\":\"" + SG_ROLE + "\"}";
+             ",\"role\":\"" + KL_ROLE + "\"}";
   meshTransmitRouted(MT_DATA, dst, (const uint8_t *)p.c_str(),
-                     (uint16_t)p.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
+                     (uint16_t)p.length(), KL_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
 }
 
 static void handoverStart(uint32_t newCluster) {
@@ -2044,7 +2031,7 @@ static size_t meshBuildFrom(uint8_t *out, size_t cap, uint8_t type, uint32_t src
                             const uint8_t srcMac[6], uint32_t dst,
                             uint32_t packetId, uint8_t ttl, uint8_t hop,
                             const uint8_t *payload, uint16_t len) {
-  if (!out || cap < sizeof(MeshHeader) + (size_t)len || len > SG_MAX_PAYLOAD) return 0;
+  if (!out || cap < sizeof(MeshHeader) + (size_t)len || len > KL_MAX_PAYLOAD) return 0;
   MeshHeader h;
   memset(&h, 0, sizeof(h));
   h.magic0 = 0x53;
@@ -2080,7 +2067,7 @@ static bool meshParse(const uint8_t *buf, size_t n, MeshHeader &h, const uint8_t
   if (n < sizeof(MeshHeader)) return false;
   memcpy(&h, buf, sizeof(h));
   if (h.magic0 != 0x53 || h.magic1 != 0x47 || h.ver != 1) return false;
-  if (h.payloadLen > SG_MAX_PAYLOAD) return false;
+  if (h.payloadLen > KL_MAX_PAYLOAD) return false;
   if (n < sizeof(MeshHeader) + (size_t)h.payloadLen) return false;
 
   uint8_t hdr[sizeof(MeshHeader)];
@@ -2182,7 +2169,7 @@ static bool espNowEnsurePeer(const uint8_t mac[6]) {
 
 static void espNowRecvCb(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (!info || !data || len <= 0) return;
-  const uint8_t next = (uint8_t)((gEspNowRxHead + 1) % SG_ESPNOW_RX_QUEUE);
+  const uint8_t next = (uint8_t)((gEspNowRxHead + 1) % KL_ESPNOW_RX_QUEUE);
   if (next == gEspNowRxTail) {
     // Wi-Fi задача не должна блокироваться: при переполнении теряем кадр,
     // mesh-очередь/ретраи восстановят доставку.
@@ -2225,7 +2212,7 @@ static void espNowSendCb(const wifi_tx_info_t *info, esp_now_send_status_t statu
  * Останавливаем Wi-Fi, меняем PHY, запускаем обратно; softAP/begin — позже.
  */
 static void espNowConfigurePhy() {
-#if SG_USE_ESPNOW && SG_ESPNOW_LR
+#if KL_USE_ESPNOW && KL_ESPNOW_LR
   gEspNowLr = false;
   esp_wifi_stop();
   const esp_err_t err = esp_wifi_config_80211_tx_rate(
@@ -2241,7 +2228,7 @@ static void espNowConfigurePhy() {
 }
 
 static bool espNowInit(uint8_t channel = 0) {
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   if (gEspNowReady) return true;
   // Явный канал не перетираем "протухшим" WiFi.channel(): после WiFi.begin()
   // он может вернуть старый/нулевой канал. Приоритет: аргумент > gEspNowChannel > WiFi.
@@ -2291,7 +2278,7 @@ static bool espNowInit(uint8_t channel = 0) {
     sgLog("[espnow] ready if=%d ch=%u home=%u rate=%s", (int)espNowIface(),
           (unsigned)gEspNowChannel, (unsigned)primary,
           gEspNowLr ? "LR250K" : "normal");
-    ESP_LOGE("kinto", "espnow ready if=%d ch=%u home=%u lr=%d",
+    ESP_LOGE("klinto", "espnow ready if=%d ch=%u home=%u lr=%d",
              (int)espNowIface(), (unsigned)gEspNowChannel, (unsigned)primary,
              gEspNowLr ? 1 : 0);
     sgLogE("[espnow] ready if=%d ch=%u home=%u lr=%d", (int)espNowIface(),
@@ -2362,7 +2349,7 @@ static bool espNowSendFrame(const uint8_t *buf, size_t len, uint32_t nextHop) {
     esp_wifi_get_channel(&primary, &second);
     sgLog("[espnow] send err %d ch=%u dst=%08lx len=%u", (int)err,
           (unsigned)gEspNowChannel, (unsigned long)nextHop, (unsigned)len);
-    ESP_LOGE("kinto", "espnow send err=%d ch=%u home=%u len=%u next=%08lx bcast=%d",
+    ESP_LOGE("klinto", "espnow send err=%d ch=%u home=%u len=%u next=%08lx bcast=%d",
              (int)err, (unsigned)gEspNowChannel, (unsigned)primary,
              (unsigned)len, (unsigned long)nextHop, bcast ? 1 : 0);
     sgLogE("[espnow] send err=%d ch=%u home=%u len=%u next=%08lx bcast=%d",
@@ -2376,12 +2363,12 @@ static bool espNowSendFragments(const uint8_t *buf, size_t len, uint32_t nextHop
   MeshHeader h;
   const uint8_t *payload = NULL;
   if (!meshParse(buf, len, h, payload)) return false;
-  const uint8_t total = (uint8_t)((len + SG_LORA_FRAG_DATA - 1) / SG_LORA_FRAG_DATA);
-  if (!total || total > SG_MAX_FRAGMENTS) return false;
+  const uint8_t total = (uint8_t)((len + KL_LORA_FRAG_DATA - 1) / KL_LORA_FRAG_DATA);
+  if (!total || total > KL_MAX_FRAGMENTS) return false;
   for (uint8_t i = 0; i < total; i++) {
-    const size_t off = (size_t)i * SG_LORA_FRAG_DATA;
-    const uint16_t chunk = (uint16_t)min((size_t)SG_LORA_FRAG_DATA, len - off);
-    uint8_t pl[6 + SG_LORA_FRAG_DATA];
+    const size_t off = (size_t)i * KL_LORA_FRAG_DATA;
+    const uint16_t chunk = (uint16_t)min((size_t)KL_LORA_FRAG_DATA, len - off);
+    uint8_t pl[6 + KL_LORA_FRAG_DATA];
     writeLe32(pl, h.packetId);
     pl[4] = i;
     pl[5] = total;
@@ -2397,7 +2384,7 @@ static bool espNowSendFragments(const uint8_t *buf, size_t len, uint32_t nextHop
 
 static bool espNowSendRaw(const uint8_t *buf, size_t len, uint32_t nextHop) {
   if (!gEspNowReady) return false;
-  if (len > SG_ESPNOW_MAX_FRAME) return espNowSendFragments(buf, len, nextHop);
+  if (len > KL_ESPNOW_MAX_FRAME) return espNowSendFragments(buf, len, nextHop);
   return espNowSendFrame(buf, len, nextHop);
 }
 
@@ -2414,19 +2401,19 @@ static void espNowPoll() {
     gEspNowRxCount++;
     gEspNowWindowRx++;
     handleMeshPacket(item.data, item.len, false, item.rssi);
-    gEspNowRxTail = (uint8_t)((gEspNowRxTail + 1) % SG_ESPNOW_RX_QUEUE);
+    gEspNowRxTail = (uint8_t)((gEspNowRxTail + 1) % KL_ESPNOW_RX_QUEUE);
   }
 }
 
 /* --------------------------------------------------------- transport TX -- */
 
-#if !SG_USE_ESP_MESH
+#if !KL_USE_ESP_MESH
 static bool wifiStartUdp() {
-  gUdpStarted = gUdp.begin(SG_MESH_UDP_PORT);
+  gUdpStarted = gUdp.begin(KL_MESH_UDP_PORT);
   if (gUdpStarted) {
-    sgLog("[udp] listen :%u", (unsigned)SG_MESH_UDP_PORT);
+    sgLog("[udp] listen :%u", (unsigned)KL_MESH_UDP_PORT);
   } else {
-    sgLog("[udp] begin :%u failed", (unsigned)SG_MESH_UDP_PORT);
+    sgLog("[udp] begin :%u failed", (unsigned)KL_MESH_UDP_PORT);
   }
   gLastUdpRetryMs = millis();
   return gUdpStarted;
@@ -2459,7 +2446,7 @@ static void wifiNotePeer(const IPAddress &ip) {
 }
 
 static bool wifiSendOnce(const IPAddress &dst, const uint8_t *buf, size_t len) {
-  if (!gUdp.beginPacket(dst, SG_MESH_UDP_PORT)) return false;
+  if (!gUdp.beginPacket(dst, KL_MESH_UDP_PORT)) return false;
   if (gUdp.write(buf, len) != len) {
     gUdp.endPacket();   // сбрасываем недоотправленный буфер
     return false;
@@ -2539,7 +2526,7 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
 }
 #endif
 
-#if SG_USE_LORA
+#if KL_USE_LORA
 /** Скользящий бюджет airtime: wearable 1%, остальные 10% от часа. */
 static uint32_t loraBudgetMs() {
   return isWearable() ? 36000UL : 360000UL;
@@ -2556,19 +2543,19 @@ static bool loraBudgetAllows(uint32_t airMs) {
 
 static bool loraSendRaw(const uint8_t *buf, size_t len) {
   if (!gLoraReady) return false;
-  if (len > (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) return false;
+  if (len > (size_t)(sizeof(MeshHeader) + KL_LORA_MAX_PAYLOAD)) return false;
   const uint32_t airMs =
-#if SG_LORA_CHIP_SX1262
+#if KL_LORA_CHIP_SX1262
       (uint32_t)gRadio->getTimeOnAir(len) + 8;
 #else
-      (uint32_t)(len * 8.0f / (SG_LORA_BW * 1000.0f) * 1000.0f * 2.0f) + 50;
+      (uint32_t)(len * 8.0f / (KL_LORA_BW * 1000.0f) * 1000.0f * 2.0f) + 50;
 #endif
   if (!loraBudgetAllows(airMs)) {
     sgLog("[lora] duty budget full (%lu/%lu ms)", (unsigned long)gLoraTxAirMs,
           (unsigned long)loraBudgetMs());
     return false;
   }
-#if SG_LORA_CHIP_SX1262
+#if KL_LORA_CHIP_SX1262
   // LBT: CAD перед передачей. Канал занят — пакет остаётся в очереди,
   // без blind-retry (иначе сами создаём коллизии).
   gLoraCadTotal++;
@@ -2600,13 +2587,13 @@ static bool loraSendRaw(const uint8_t *buf, size_t len) {
 #endif
 
 static bool transportCanCarry(uint16_t len) {
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   // ESP-NOW LR: крупный пакет режется на MT_FRAG-фрагменты.
-  if (gEspNowReady && len <= SG_FRAG_MAX_TOTAL) return true;
+  if (gEspNowReady && len <= KL_FRAG_MAX_TOTAL) return true;
 #else
-  if (wifiTransportEnabled() && gWifiReady && len <= SG_MAX_PAYLOAD) return true;
+  if (wifiTransportEnabled() && gWifiReady && len <= KL_MAX_PAYLOAD) return true;
 #endif
-  if (loraTransportEnabled() && gLoraReady && len <= SG_LORA_MAX_PAYLOAD) return true;
+  if (loraTransportEnabled() && gLoraReady && len <= KL_LORA_MAX_PAYLOAD) return true;
   return false;
 }
 
@@ -2616,11 +2603,11 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
  * Крупный пакет режется на LoRa-фрагменты: [origId u32][index][total][150 Б].
  * WiFi при этом получает пакет целиком; узлы-мосты собирают обе копии.
  */
-#if SG_USE_LORA
+#if KL_USE_LORA
 static bool loraSendFragments(const uint8_t *buf, size_t len) {
-  if (len > SG_FRAG_MAX_TOTAL) return false;
-  const uint8_t total = (uint8_t)((len + SG_LORA_FRAG_DATA - 1) / SG_LORA_FRAG_DATA);
-  if (total == 0 || total > SG_MAX_FRAGMENTS) return false;
+  if (len > KL_FRAG_MAX_TOTAL) return false;
+  const uint8_t total = (uint8_t)((len + KL_LORA_FRAG_DATA - 1) / KL_LORA_FRAG_DATA);
+  if (total == 0 || total > KL_MAX_FRAGMENTS) return false;
 
   uint32_t origId = 0;
   uint32_t dst = MESH_BROADCAST;
@@ -2635,9 +2622,9 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
   }
 
   for (uint8_t i = 0; i < total; i++) {
-    const size_t off = (size_t)i * SG_LORA_FRAG_DATA;
-    const uint16_t chunk = (uint16_t)min((size_t)SG_LORA_FRAG_DATA, len - off);
-    uint8_t pl[6 + SG_LORA_FRAG_DATA];
+    const size_t off = (size_t)i * KL_LORA_FRAG_DATA;
+    const uint16_t chunk = (uint16_t)min((size_t)KL_LORA_FRAG_DATA, len - off);
+    uint8_t pl[6 + KL_LORA_FRAG_DATA];
     writeLe32(pl, origId);
     pl[4] = i;
     pl[5] = total;
@@ -2645,7 +2632,7 @@ static bool loraSendFragments(const uint8_t *buf, size_t len) {
     uint8_t frag[sizeof(MeshHeader) + sizeof(pl)];
     const uint32_t fragId = origId ^ ((uint32_t)(i + 1) << 24);
     const size_t fn = meshBuildFrom(frag, sizeof(frag), MT_FRAG, src, srcMac, dst, fragId,
-                                    SG_LORA_MAX_HOPS, 0, pl, (uint16_t)(6 + chunk));
+                                    KL_LORA_MAX_HOPS, 0, pl, (uint16_t)(6 + chunk));
     if (!fn || !loraSendRaw(frag, fn)) return false;
   }
   sgLog("[lora] fragmented %u bytes into %u", (unsigned)len, (unsigned)total);
@@ -2661,7 +2648,7 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
   const uint8_t index = payload[4];
   const uint8_t total = payload[5];
   const uint16_t chunk = (uint16_t)(h.payloadLen - 6);
-  if (total == 0 || total > SG_MAX_FRAGMENTS || index >= total) return;
+  if (total == 0 || total > KL_MAX_FRAGMENTS || index >= total) return;
 
   FragSlot *slot = nullptr;
   for (auto &s : gFragSlots) {
@@ -2686,7 +2673,7 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
   }
   if (slot->total != total) return;
 
-  const size_t off = (size_t)index * SG_LORA_FRAG_DATA;
+  const size_t off = (size_t)index * KL_LORA_FRAG_DATA;
   if (off + chunk > sizeof(slot->data)) return;
   memcpy(slot->data + off, payload + 6, chunk);
   if (off + chunk > slot->len) slot->len = (uint16_t)(off + chunk);
@@ -2695,7 +2682,7 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
 
   const uint32_t full = (1UL << total) - 1UL;
   if ((slot->mask & full) == full) {
-    uint8_t assembled[SG_FRAG_MAX_TOTAL];
+    uint8_t assembled[KL_FRAG_MAX_TOTAL];
     const uint16_t n = slot->len;
     memcpy(assembled, slot->data, n);
     slot->active = false;
@@ -2718,16 +2705,16 @@ static void fragmentFeed(const MeshHeader &h, const uint8_t *payload, int16_t rs
  */
 static bool transmitLoraBridge(uint8_t type, uint32_t dst, const uint8_t *payload,
                                uint16_t len, uint8_t ttl) {
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (!loraTransportEnabled() || !gLoraReady || !payload) return false;
-  if (len > SG_MAX_PAYLOAD) return false;
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  if (len > KL_MAX_PAYLOAD) return false;
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   const uint32_t id = nextPacketId();
   const size_t n = meshBuild(buf, sizeof(buf), type, dst, id,
-                             ttl ? ttl : SG_LORA_MAX_HOPS, 0, payload, len);
+                             ttl ? ttl : KL_LORA_MAX_HOPS, 0, payload, len);
   if (!n) return false;
   meshMarkOwn(id);
-  if (n <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
+  if (n <= (size_t)(sizeof(MeshHeader) + KL_LORA_MAX_PAYLOAD)) {
     return loraSendRaw(buf, n);
   }
   return loraSendFragments(buf, n);
@@ -2745,7 +2732,7 @@ static bool transmitPacket(const uint8_t *buf, size_t len) {
   bool ok = false;
   bool viaWifi = false;
   bool viaLora = false;
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   if (gEspNowReady) {
     if (espNowSendRaw(buf, len, 0)) { ok = true; viaWifi = true; }
   }
@@ -2754,9 +2741,9 @@ static bool transmitPacket(const uint8_t *buf, size_t len) {
     if (wifiSendRaw(buf, len)) { ok = true; viaWifi = true; }
   }
 #endif
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (loraTransportEnabled() && gLoraReady) {
-    if (len <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
+    if (len <= (size_t)(sizeof(MeshHeader) + KL_LORA_MAX_PAYLOAD)) {
       if (loraSendRaw(buf, len)) { ok = true; viaLora = true; }
     } else {
       // Крупный пакет: ESP-NOW уже получил целиком, LoRa — фрагментами.
@@ -2776,20 +2763,20 @@ static bool transmitPacket(const uint8_t *buf, size_t len) {
 }
 
 // Отправка только через выбранный route-таблицей интерфейс.
-static bool transmitViaIface(const uint8_t *buf, size_t len, kinto_iface_t iface,
+static bool transmitViaIface(const uint8_t *buf, size_t len, klinto_iface_t iface,
                              uint32_t nextHop) {
   if (iface == KINTO_IFACE_ESPNOW || iface == KINTO_IFACE_WIFI) {
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
     if (gEspNowReady) return espNowSendRaw(buf, len, nextHop);
 #else
     if (wifiTransportEnabled() && gWifiReady) return wifiSendRaw(buf, len);
 #endif
     return false;
   }
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (iface == KINTO_IFACE_LORA) {
     if (!loraTransportEnabled() || !gLoraReady) return false;
-    if (len <= (size_t)(sizeof(MeshHeader) + SG_LORA_MAX_PAYLOAD)) {
+    if (len <= (size_t)(sizeof(MeshHeader) + KL_LORA_MAX_PAYLOAD)) {
       return loraSendRaw(buf, len);
     }
     return loraSendFragments(buf, len);
@@ -2800,8 +2787,8 @@ static bool transmitViaIface(const uint8_t *buf, size_t len, kinto_iface_t iface
 
 // HYBRID: unicast по route table, иначе обычный flood по всем транспортам.
 static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
-                           kinto_traffic_t traffic) {
-#if SG_MESH_V2
+                           klinto_traffic_t traffic) {
+#if KL_MESH_V2
   if (dst != MESH_BROADCAST) {
     uint32_t nextHop = routeLookup(dst);
     const bool canQueue = (traffic == KINTO_TRAFFIC_TEXT ||
@@ -2814,7 +2801,7 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
         gPendingRoute.startedMs = millis();
         gPendingRoute.lastReqMs = 0;
         gPendingRoute.tries = 0;
-        gPendingRoute.ttl = SG_LORA_MAX_HOPS;
+        gPendingRoute.ttl = KL_LORA_MAX_HOPS;
         gPendingRoute.traffic = traffic;
         gPendingRoute.len = (uint16_t)min(len, sizeof(gPendingRoute.buf));
         memcpy(gPendingRoute.buf, buf, gPendingRoute.len);
@@ -2827,7 +2814,7 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
       if (gPendingRoute.dst == dst) return true;
     }
     if (!nextHop) nextHop = dst;
-    kinto_iface_t iface = KINTO_IFACE_NONE;
+    klinto_iface_t iface = KINTO_IFACE_NONE;
     uint8_t hops = 0;
     if (meshV2SelectIface(dst, traffic, &iface, &hops)) {
       if (transmitViaIface(buf, len, iface, nextHop)) {
@@ -2844,7 +2831,7 @@ static bool transmitRouted(const uint8_t *buf, size_t len, uint32_t dst,
       }
       // Выбранный интерфейс не принял пакет — пробуем второй, не дублируя
       // сразу оба. Если и он недоступен, уходим в flood.
-      kinto_iface_t alt = (iface == KINTO_IFACE_LORA) ? KINTO_IFACE_ESPNOW
+      klinto_iface_t alt = (iface == KINTO_IFACE_LORA) ? KINTO_IFACE_ESPNOW
                                                      : KINTO_IFACE_LORA;
       if (transmitViaIface(buf, len, alt, nextHop)) {
         static uint32_t lastAltLogMs = 0;
@@ -2877,7 +2864,7 @@ static void routePendingTick() {
   const uint32_t now = millis();
   const uint32_t nextHop = routeLookup(gPendingRoute.dst);
   if (nextHop) {
-    kinto_iface_t iface = KINTO_IFACE_NONE;
+    klinto_iface_t iface = KINTO_IFACE_NONE;
     uint8_t hops = 0;
     if (meshV2SelectIface(gPendingRoute.dst, gPendingRoute.traffic, &iface, &hops)) {
       transmitViaIface(gPendingRoute.buf, gPendingRoute.len, iface, nextHop);
@@ -2904,19 +2891,19 @@ static void routePendingTick() {
 
 // meshTransmit с выбором маршрута/транспорта и TTL-нормализацией.
 static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payload,
-                               uint16_t len, uint8_t ttl, kinto_traffic_t traffic) {
-  if (len > SG_MAX_PAYLOAD) return false;
+                               uint16_t len, uint8_t ttl, klinto_traffic_t traffic) {
+  if (len > KL_MAX_PAYLOAD) return false;
   uint8_t effectiveTtl = ttl;
-#if SG_MESH_V2
+#if KL_MESH_V2
   if (dst != MESH_BROADCAST) {
-    kinto_iface_t iface = KINTO_IFACE_NONE;
+    klinto_iface_t iface = KINTO_IFACE_NONE;
     if (meshV2SelectIface(dst, traffic, &iface, NULL) && iface == KINTO_IFACE_LORA) {
-      effectiveTtl = kinto_ttl_for_iface(KINTO_IFACE_LORA, ttl);
+      effectiveTtl = klinto_ttl_for_iface(KINTO_IFACE_LORA, ttl);
     }
   }
 #endif
   if (!effectiveTtl) effectiveTtl = 1;
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   const uint32_t id = nextPacketId();
   const size_t n = meshBuild(buf, sizeof(buf), type, dst, id, effectiveTtl, 0,
                              payload, len);
@@ -2927,8 +2914,8 @@ static bool meshTransmitRouted(uint8_t type, uint32_t dst, const uint8_t *payloa
 
 static bool meshTransmit(uint8_t type, uint32_t dst, const uint8_t *payload,
                          uint16_t len, uint8_t ttl) {
-  if (len > SG_MAX_PAYLOAD) return false;
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  if (len > KL_MAX_PAYLOAD) return false;
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   uint32_t id = nextPacketId();
   size_t n = meshBuild(buf, sizeof(buf), type, dst, id, ttl, 0, payload, len);
   if (!n) return false;
@@ -2973,7 +2960,7 @@ static void appendBeaconFields(String &p) {
   p += gBleMac;
   p += "\"";
   p += ",\"is_anchor\":";
-  p += (isGateway() || strcmp(SG_ROLE, "repeater") == 0) ? "1" : "0";
+  p += (isGateway() || strcmp(KL_ROLE, "repeater") == 0) ? "1" : "0";
   p += ",\"hues\":[";
   bool firstHue = true;
   if (wifiTransportEnabled()) {
@@ -2985,7 +2972,7 @@ static void appendBeaconFields(String &p) {
     p += "\"lora\"";
     firstHue = false;
   }
-#if SG_BLE_ENABLED
+#if KL_BLE_ENABLED
   if (!firstHue) p += ",";
   p += "\"ble\"";
 #endif
@@ -3010,7 +2997,7 @@ static void appendBeaconFields(String &p) {
 
 static String advertPayload() {
   String p = String("{\"id\":") + String((unsigned long)gNodeId) +
-             ",\"role\":\"" + SG_ROLE + "\"" +
+             ",\"role\":\"" + KL_ROLE + "\"" +
              ",\"gw\":" + (isGateway() && wifiTransportEnabled() && WiFi.status() == WL_CONNECTED ? 1 : 0) +
              ",\"batt\":" + String(gBattery) +
              ",\"q\":" + String((unsigned)queueLoadValue()) +
@@ -3023,7 +3010,7 @@ static String advertPayload() {
 static void sendAdvert() {
   String p = advertPayload();
   meshTransmit(MT_ADVERT, MESH_BROADCAST, (const uint8_t *)p.c_str(),
-               (uint16_t)p.length(), SG_LORA_MAX_HOPS);
+               (uint16_t)p.length(), KL_LORA_MAX_HOPS);
 }
 
 static void sendPresence() {
@@ -3043,7 +3030,7 @@ static void sendPresence() {
  * LoRa-узлам — построить таблицу cluster_id -> nextHop.
  */
 static void loraBridgeTick() {
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (!loraTransportEnabled() || !gLoraReady) return;
   static uint32_t lastBridgeAdvertMs = 0;
   const uint32_t now = millis();
@@ -3058,7 +3045,7 @@ static void loraBridgeTick() {
              ",\"hw\":\"" + gHardwareId + "\"}";
   if (transmitLoraBridge(MT_LORA_ADVERT, MESH_BROADCAST,
                          (const uint8_t *)p.c_str(), (uint16_t)p.length(),
-                         SG_LORA_MAX_HOPS)) {
+                         KL_LORA_MAX_HOPS)) {
     sgLog("[lora] bridge advert cluster=%lu", (unsigned long)gSelfClusterId);
   }
 #endif
@@ -3067,7 +3054,7 @@ static void loraBridgeTick() {
 static void sendRouteReq(uint32_t dst) {
   uint8_t pl[4];
   writeLe32(pl, dst);
-  meshTransmit(MT_ROUTE_REQ, MESH_BROADCAST, pl, 4, SG_LORA_MAX_HOPS);
+  meshTransmit(MT_ROUTE_REQ, MESH_BROADCAST, pl, 4, KL_LORA_MAX_HOPS);
 }
 
 static int hubPostJson(const String &path, const String &body, String &resp, bool auth);
@@ -3084,7 +3071,7 @@ static void sendHttpResponseChunks(const String &reqId, uint32_t dst,
                  ",\"total\":" + String((unsigned)total) +
                  ",\"chunk\":\"" + chunk + "\"}}";
     meshTransmitRouted(MT_DATA, dst, (const uint8_t *)out.c_str(),
-                       (uint16_t)out.length(), SG_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
+                       (uint16_t)out.length(), KL_LORA_MAX_HOPS, KINTO_TRAFFIC_TEXT);
     // Wearable принимает Wi-Fi-чанк и сразу отдаёт его в BLE. При паузе 4 мс
     // он не успевает разгрузить UDP-буфер: 41 пакет приходит быстрее, чем
     // уходит в BLE, и хвост ответа теряется.
@@ -3119,7 +3106,7 @@ static void handleHttpRelay(const String &raw, uint32_t src) {
   const char *rblob = rd["blob"] | "";
   if (!strlen(rblob)) return;
 
-  // Ответ API может быть больше одного mesh-кадра (Wi-Fi SG_MAX_PAYLOAD).
+  // Ответ API может быть больше одного mesh-кадра (Wi-Fi KL_MAX_PAYLOAD).
   // Режем blob на части; клиент собирает по id/part/total и может попросить
   // повторную отправку, если BLE/mesh потерял часть кадров.
   const uint16_t chunkSize = 280;
@@ -3226,7 +3213,7 @@ static void handleMeshLocal(const MeshHeader &h, const uint8_t *payload, int16_t
           rep[8] = (uint8_t)(metric & 0xFF);
           rep[9] = (uint8_t)(metric >> 8);
           rep[10] = hops;
-          meshTransmitRouted(MT_ROUTE_REP, h.src, rep, sizeof(rep), SG_LORA_MAX_HOPS,
+          meshTransmitRouted(MT_ROUTE_REP, h.src, rep, sizeof(rep), KL_LORA_MAX_HOPS,
                              KINTO_TRAFFIC_TELEMETRY);
         }
       }
@@ -3328,7 +3315,7 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
   }
   meshV2RouteUpdate(h.src, rssi, fromLora, srcQueue);
 
-  const kinto_traffic_t traffic = meshV2TrafficFor(h.type, payload, h.payloadLen);
+  const klinto_traffic_t traffic = meshV2TrafficFor(h.type, payload, h.payloadLen);
 
   // Первый хоп от соседа: по этим строкам видно, работает ли транспорт.
   if (h.hop == 0 && h.type != MT_PRESENCE) {
@@ -3362,20 +3349,20 @@ static void handleMeshPacket(const uint8_t *buf, size_t n, bool fromLora, int16_
     }
     uint8_t nextTtl = (uint8_t)(h.ttl - 1);
     bool hasRoute = false;
-    kinto_iface_t routeIface = KINTO_IFACE_NONE;
-#if SG_MESH_V2
+    klinto_iface_t routeIface = KINTO_IFACE_NONE;
+#if KL_MESH_V2
     if (h.dst != MESH_BROADCAST) {
       hasRoute = meshV2SelectIface(h.dst, traffic, &routeIface, NULL);
     }
     if (hasRoute) {
-      nextTtl = kinto_ttl_for_iface(routeIface, nextTtl);
+      nextTtl = klinto_ttl_for_iface(routeIface, nextTtl);
     }
 #else
     (void)routeIface;
 #endif
     if (!nextTtl) return;
 
-    uint8_t fwd[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+    uint8_t fwd[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
     size_t fn = meshBuildFrom(fwd, sizeof(fwd), h.type, h.src, h.srcMac, h.dst, h.packetId,
                               nextTtl, (uint8_t)(h.hop + 1),
                               payload, h.payloadLen);
@@ -3432,11 +3419,11 @@ static void meshPumpQueue() {
 }
 
 static void sendQueuedEntry(QueueEntry &e) {
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   // Downlink обязан быть broadcast: у wearable может ещё не быть маршрута
   // до gateway, и unicast-пакет с чужим dst он не примет.
   size_t n = meshBuild(buf, sizeof(buf), MT_DATA, MESH_BROADCAST, e.id,
-                       SG_LORA_MAX_HOPS, 0, e.data, e.len);
+                       KL_LORA_MAX_HOPS, 0, e.data, e.len);
   if (!n) return;
   meshMarkOwn(e.id);   // не обрабатывать собственный пакет при эхе
   const bool ok = transmitPacket(buf, n);
@@ -3467,7 +3454,7 @@ static void asmReset(FrameAssembler &a) {
 
 // BLE-колбэк работает в отдельной задаче: готовый кадр складываем в inbox,
 // а разбираем в loop(), чтобы не трогать очередь из BLE-стека.
-static uint8_t gBleInboxBuf[SG_MAX_PAYLOAD];
+static uint8_t gBleInboxBuf[KL_MAX_PAYLOAD];
 static volatile uint16_t gBleInboxLen = 0;
 static volatile uint8_t gBleInboxType = 0;
 static volatile bool gBleInboxReady = false;
@@ -3481,7 +3468,7 @@ static void asmFeed(FrameAssembler &a, uint8_t type, const uint8_t *payload,
     a.total = len;
     a.got = 0;
   }
-  if (a.total > SG_MAX_PAYLOAD || a.got + len > SG_MAX_PAYLOAD) {
+  if (a.total > KL_MAX_PAYLOAD || a.got + len > KL_MAX_PAYLOAD) {
     asmReset(a);
     return;
   }
@@ -3512,7 +3499,7 @@ static void clientInboxPoll() {
   gBleInboxBusy = false;
 }
 
-#if SG_BLE_ENABLED
+#if KL_BLE_ENABLED
 
 // JIT-буфер для нарезки кадра. len — полная длина payload (повторяется
 // в каждом чанке, чтобы принимающая сторона знала общий размер).
@@ -3549,13 +3536,13 @@ static size_t buildFrame(uint8_t *out, size_t cap, uint8_t type,
 
 static void bleSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
   if (!gBleConnected || !pBleRx) return;
-  uint8_t frame[6 + SG_MAX_PAYLOAD + 8];
+  uint8_t frame[6 + KL_MAX_PAYLOAD + 8];
   // В фрагменте 4 байта служебного заголовка; notification ≤ MTU-3.
   uint16_t chunkMax = 8;
   if (gBleMtu > 23) {
     uint16_t c = (uint16_t)(gBleMtu - 3 - 6 - 4 - 2);
     if (c > chunkMax) chunkMax = c;
-    if (chunkMax > SG_BLE_CHUNK) chunkMax = SG_BLE_CHUNK;
+    if (chunkMax > KL_BLE_CHUNK) chunkMax = KL_BLE_CHUNK;
   }
   uint16_t off = 0;
   do {
@@ -3592,7 +3579,7 @@ class SgBleWriteCb : public BLECharacteristicCallbacks {
     while (gBleRxLen - pos >= 8) {
       if (gBleRxBuf[pos] != F_MAGIC0 || gBleRxBuf[pos + 1] != F_MAGIC1) { pos++; continue; }
       uint16_t len = (uint16_t)gBleRxBuf[pos + 4] | ((uint16_t)gBleRxBuf[pos + 5] << 8);
-      if (len > SG_MAX_PAYLOAD) { pos += 2; continue; }
+      if (len > KL_MAX_PAYLOAD) { pos += 2; continue; }
       size_t need = 6 + (size_t)len + 2;
       if (gBleRxLen - pos < need) break;
       uint16_t crc = crc16Ccitt(gBleRxBuf + pos + 2, 4 + len);
@@ -3724,11 +3711,11 @@ static void bleSendFrame(uint8_t, const uint8_t *, uint16_t) {}
 
 static void usbSendFrame(uint8_t type, const uint8_t *payload, uint16_t len) {
   if (!isWearable() || !gUsbSeen) return;
-  uint8_t frame[6 + SG_MAX_PAYLOAD + 2];
+  uint8_t frame[6 + KL_MAX_PAYLOAD + 2];
   uint16_t off = 0;
   do {
     uint16_t chunk = (uint16_t)(len - off);
-    if (chunk > SG_USB_CHUNK) chunk = SG_USB_CHUNK;
+    if (chunk > KL_USB_CHUNK) chunk = KL_USB_CHUNK;
     size_t n;
     {
       size_t need = 6 + (size_t)chunk + 2;
@@ -3758,7 +3745,7 @@ static void deliverToClients(uint8_t frameType, const uint8_t *payload, uint16_t
 }
 
 // USB-парсер: байтовый поток, ресинхронизация по magic.
-static uint8_t gUsbBuf[SG_MAX_PAYLOAD + 16];
+static uint8_t gUsbBuf[KL_MAX_PAYLOAD + 16];
 static size_t gUsbLen = 0;
 
 static void usbPoll() {
@@ -3780,7 +3767,7 @@ static void usbPoll() {
       continue;
     }
     uint16_t len = (uint16_t)gUsbBuf[pos + 4] | ((uint16_t)gUsbBuf[pos + 5] << 8);
-    if (len > SG_MAX_PAYLOAD) {
+    if (len > KL_MAX_PAYLOAD) {
       pos += 2;
       continue;
     }
@@ -3822,8 +3809,8 @@ static String buildInfoJson() {
   String j = String("{\"hardwareId\":\"") + gHardwareId +
              "\",\"bleMac\":\"" + gBleMac +
              "\",\"publicId\":\"" + gPublicId +
-             "\",\"role\":\"" + SG_ROLE +
-             "\",\"firmware\":\"" SG_FIRMWARE_VERSION
+             "\",\"role\":\"" + KL_ROLE +
+             "\",\"firmware\":\"" KL_FIRMWARE_VERSION
              "\",\"battery\":" + String(gBattery) +
              ",\"attached\":" + String(attached() ? 1 : 0) +
              ",\"gateway\":" + String(gw ? 1 : 0) +
@@ -3846,7 +3833,7 @@ static String buildInfoJson() {
 static void sendInfoToClient() {
   String j = buildInfoJson();
   gStatusJson = j;
-#if SG_BLE_ENABLED
+#if KL_BLE_ENABLED
   if (pBleStatus) {
     pBleStatus->setValue(gStatusJson.c_str());
     pBleStatus->notify();
@@ -3920,7 +3907,7 @@ static void clientFeedFrame(uint8_t type, const uint8_t *payload, uint16_t len) 
       }
       gRouterSsid = ssid;
       gRouterPass = pass;
-      gPrefs.begin("swarm", false);
+      gPrefs.begin("klinto", false);
       gPrefs.putString("wifi_ssid", gRouterSsid);
       gPrefs.putString("wifi_pass", gRouterPass);
       gPrefs.end();
@@ -3945,51 +3932,51 @@ static void clientFeedFrame(uint8_t type, const uint8_t *payload, uint16_t len) 
 /* --------------------------------------------------------------- LoRa ---- */
 
 static void setupLora() {
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (!loraTransportEnabled()) {
-    sgLog("[lora] disabled (conn=%s)", SG_CONNECTIVITY);
+    sgLog("[lora] disabled (conn=%s)", KL_CONNECTIVITY);
     return;
   }
-#if SG_LORA_CHIP_SX1262
-  SPI.begin(SG_LORA_SCK, SG_LORA_MISO, SG_LORA_MOSI, SG_LORA_CS);
-#if SG_LORA_BUSY >= 0
-  gRadio = new SX1262(new Module(SG_LORA_CS, SG_LORA_DIO0, SG_LORA_RST, SG_LORA_BUSY));
+#if KL_LORA_CHIP_SX1262
+  SPI.begin(KL_LORA_SCK, KL_LORA_MISO, KL_LORA_MOSI, KL_LORA_CS);
+#if KL_LORA_BUSY >= 0
+  gRadio = new SX1262(new Module(KL_LORA_CS, KL_LORA_DIO0, KL_LORA_RST, KL_LORA_BUSY));
 #else
-  gRadio = new SX1262(new Module(SG_LORA_CS, SG_LORA_DIO0, SG_LORA_RST));
+  gRadio = new SX1262(new Module(KL_LORA_CS, KL_LORA_DIO0, KL_LORA_RST));
 #endif
-  int state = gRadio->begin((float)SG_LORA_FREQ, (float)SG_LORA_BW,
-                            (int)SG_LORA_SF, (int)SG_LORA_CR,
-                            (uint8_t)SG_LORA_SYNC, (int)SG_LORA_POWER, 8);
+  int state = gRadio->begin((float)KL_LORA_FREQ, (float)KL_LORA_BW,
+                            (int)KL_LORA_SF, (int)KL_LORA_CR,
+                            (uint8_t)KL_LORA_SYNC, (int)KL_LORA_POWER, 8);
   if (state != RADIOLIB_ERR_NONE) {
-    sgLog("[lora] SX1262 init failed %d pins cs=%d rst=%d dio0=%d", state, SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
+    sgLog("[lora] SX1262 init failed %d pins cs=%d rst=%d dio0=%d", state, KL_LORA_CS, KL_LORA_RST, KL_LORA_DIO0);
     return;
   }
   gLoraReady = true;
-  sgLog("[lora] SX1262 ready %0.3f MHz SF%d", (double)SG_LORA_FREQ, (int)SG_LORA_SF);
+  sgLog("[lora] SX1262 ready %0.3f MHz SF%d", (double)KL_LORA_FREQ, (int)KL_LORA_SF);
 #else
-  LoRa.setPins(SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
-  if (!LoRa.begin((long)((double)SG_LORA_FREQ * 1000000.0))) {
-    sgLog("[lora] SX127x init failed pins cs=%d rst=%d dio0=%d", SG_LORA_CS, SG_LORA_RST, SG_LORA_DIO0);
+  LoRa.setPins(KL_LORA_CS, KL_LORA_RST, KL_LORA_DIO0);
+  if (!LoRa.begin((long)((double)KL_LORA_FREQ * 1000000.0))) {
+    sgLog("[lora] SX127x init failed pins cs=%d rst=%d dio0=%d", KL_LORA_CS, KL_LORA_RST, KL_LORA_DIO0);
     return;
   }
-  LoRa.setSpreadingFactor((int)SG_LORA_SF);
-  LoRa.setSignalBandwidth((long)((double)SG_LORA_BW * 1000.0));
-  LoRa.setCodingRate4((int)SG_LORA_CR);
-  LoRa.setSyncWord((uint8_t)SG_LORA_SYNC);
-  LoRa.setTxPower((int)SG_LORA_POWER);
+  LoRa.setSpreadingFactor((int)KL_LORA_SF);
+  LoRa.setSignalBandwidth((long)((double)KL_LORA_BW * 1000.0));
+  LoRa.setCodingRate4((int)KL_LORA_CR);
+  LoRa.setSyncWord((uint8_t)KL_LORA_SYNC);
+  LoRa.setTxPower((int)KL_LORA_POWER);
   gLoraReady = true;
-  sgLog("[lora] SX127x ready %0.3f MHz SF%d", (double)SG_LORA_FREQ, (int)SG_LORA_SF);
+  sgLog("[lora] SX127x ready %0.3f MHz SF%d", (double)KL_LORA_FREQ, (int)KL_LORA_SF);
 #endif
 #endif
 }
 
 static void loraPoll() {
-#if SG_USE_LORA
+#if KL_USE_LORA
   if (!gLoraReady) return;
-#if SG_LORA_CHIP_SX1262
+#if KL_LORA_CHIP_SX1262
   size_t avail = gRadio->available();
   if (avail > 0) {
-    uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+    uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
     if (avail > sizeof(buf)) avail = sizeof(buf);
     int st = gRadio->readData(buf, avail);
     if (st == RADIOLIB_ERR_NONE) {
@@ -4005,7 +3992,7 @@ static void loraPoll() {
 #else
   int packetSize = LoRa.parsePacket();
   if (packetSize > 0) {
-    uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+    uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
     size_t n = 0;
     while (LoRa.available() && n < sizeof(buf)) buf[n++] = (uint8_t)LoRa.read();
     const int16_t rssi = (int16_t)LoRa.packetRssi();
@@ -4022,7 +4009,7 @@ static void loraPoll() {
 
 /* ---------------------------------------------------- Wi-Fi mesh (UDP) --- */
 
-#if !SG_USE_ESP_MESH
+#if !KL_USE_ESP_MESH
 /**
  * Поиск mesh-канала без ассоциации с Wi-Fi.
  * Нода перебирает каналы 1..13, шлёт MT_DISCOVER broadcast и ждёт
@@ -4035,7 +4022,7 @@ static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
     gDiscoveredChannel = currentMeshChannel();
     return true;
   }
-#if !SG_USE_ESPNOW
+#if !KL_USE_ESPNOW
   (void)timeoutPerChannelMs;
   return false;
 #else
@@ -4044,7 +4031,7 @@ static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
   gDiscoverNonce = esp_random();
   if (!gDiscoverNonce) gDiscoverNonce = 1;
   const String identity =
-      String("{\"hw\":\"") + gHardwareId + "\",\"role\":\"" + SG_ROLE +
+      String("{\"hw\":\"") + gHardwareId + "\",\"role\":\"" + KL_ROLE +
       "\",\"nonce\":" + String((unsigned long)gDiscoverNonce) + "}";
 
   // Быстрый путь: скан AP шлюза даёт канал без 13 слепых probe.
@@ -4086,7 +4073,7 @@ static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
       esp_wifi_get_channel(&home, &second);
       sgLog("[channel] probe ch=%u home=%u err=%d", (unsigned)ch, (unsigned)home,
             (int)chErr);
-      ESP_LOGE("kinto", "channel probe ch=%u home=%u set=%d", (unsigned)ch,
+      ESP_LOGE("klinto", "channel probe ch=%u home=%u set=%d", (unsigned)ch,
                (unsigned)home, (int)chErr);
       sgLogE("[channel] probe ch=%u home=%u set=%d", (unsigned)ch,
              (unsigned)home, (int)chErr);
@@ -4116,7 +4103,7 @@ static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
       gApChannel = ch;
       gEspNowChannel = ch;
       sgLog("[channel] discovered ch=%u", (unsigned)ch);
-      ESP_LOGE("kinto", "channel discovered ch=%u", (unsigned)ch);
+      ESP_LOGE("klinto", "channel discovered ch=%u", (unsigned)ch);
       sgLogE("[channel] discovered ch=%u", (unsigned)ch);
       return true;
     }
@@ -4130,7 +4117,7 @@ static bool channelDiscover(uint32_t timeoutPerChannelMs = 140) {
     }
   }
   sgLog("[channel] discover failed");
-  ESP_LOGE("kinto", "channel discover failed");
+  ESP_LOGE("klinto", "channel discover failed");
   sgLogE("[channel] discover failed");
   return false;
 #endif
@@ -4181,12 +4168,12 @@ static void wifiEnsureAp() {  const wifi_mode_t mode = (wifi_mode_t)WiFi.getMode
   if ((mode & WIFI_AP) && apip[0] != 0) return;
   // Не дёргаем softAP в первые 15 секунд: DHCP/netif могут ещё подниматься.
   if (millis() - gBootMs < 15000UL) return;
-  const uint8_t ch = gApChannel ? gApChannel : (uint8_t)SG_MESH_CHANNEL;
+  const uint8_t ch = gApChannel ? gApChannel : (uint8_t)KL_MESH_CHANNEL;
   sgLog("[wifi] softAP not running (mode=%d ip=%s) -> restart ch%u",
         (int)mode, apip.toString().c_str(), (unsigned)ch);
   WiFi.mode(WIFI_AP_STA);
   meshApConfig();
-  if (!WiFi.softAP(meshSsid(), meshPass(), ch, SG_MESH_HIDDEN ? 1 : 0, 8)) {
+  if (!WiFi.softAP(meshSsid(), meshPass(), ch, KL_MESH_HIDDEN ? 1 : 0, 8)) {
     sgLog("[wifi] softAP restart failed");
   }
 }
@@ -4245,7 +4232,7 @@ static bool wifiJoinBestMesh(bool force) {
 static void ensureWifiLink() {
   const uint32_t now = millis();
 
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   // ESP-NOW не требует Wi-Fi-ассоциации: достаточно канала AP шлюза.
   // Не-шлюзовые узлы работают в STA-only (без SoftAP), иначе home-канал
   // остаётся 11 и esp_now_send падает с "peer channel != home channel".
@@ -4263,7 +4250,7 @@ static void ensureWifiLink() {
   if (WiFi.status() == WL_CONNECTED) {
     gStaDownSinceMs = 0;
     const uint8_t ch = (uint8_t)WiFi.channel();
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
     // Канал ESP-NOW обязан совпадать с каналом STA. Делаем это при каждом
     // подключении/смене канала (после reconnect роутер может дать другой).
     if (ch && !gStaWasConnected) {
@@ -4343,12 +4330,12 @@ static void ensureWifiLink() {
   }
 }
 
-#if SG_ESPNOW_ASSOC_BOOTSTRAP
+#if KL_ESPNOW_ASSOC_BOOTSTRAP
 /**
  * Аварийный bootstrap (по умолчанию выключен): одна ассоциация с mesh-AP,
  * чтобы IDF выставил home-канал и гарантированно поднял STA, затем сразу
  * disconnect. ESP-NOW продолжает работать на выбранном канале.
- * Включается SG_ESPNOW_ASSOC_BOOTSTRAP=1.
+ * Включается KL_ESPNOW_ASSOC_BOOTSTRAP=1.
  */
 static uint8_t espNowAssocBootstrap() {
   if (isGateway() || !wifiTransportEnabled()) return 0;
@@ -4370,16 +4357,16 @@ static uint8_t espNowAssocBootstrap() {
 #endif
 
 static void setupWifi() {
-  ESP_LOGE("kinto", "setupWifi role=%s gw=%d conn=%s", SG_ROLE, isGateway() ? 1 : 0,
-           SG_CONNECTIVITY);
-  sgLogE("[wifi] setupWifi role=%s gw=%d conn=%s", SG_ROLE, isGateway() ? 1 : 0,
-         SG_CONNECTIVITY);
+  ESP_LOGE("klinto", "setupWifi role=%s gw=%d conn=%s", KL_ROLE, isGateway() ? 1 : 0,
+           KL_CONNECTIVITY);
+  sgLogE("[wifi] setupWifi role=%s gw=%d conn=%s", KL_ROLE, isGateway() ? 1 : 0,
+         KL_CONNECTIVITY);
   if (!wifiTransportEnabled()) {
-    sgLog("[wifi] disabled (conn=%s)", SG_CONNECTIVITY);
+    sgLog("[wifi] disabled (conn=%s)", KL_CONNECTIVITY);
     return;
   }
   WiFi.persistent(false);
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   if (!isGateway()) {
     // Носимые/репитеры: только STA, без SoftAP. Иначе AP фиксирует
     // home-канал и ESP-NOW не может перейти на канал шлюза.
@@ -4402,7 +4389,7 @@ static void setupWifi() {
              (unsigned)home, (int)WiFi.getMode());
     }
     bool bootstrapped = false;
-#if SG_ESPNOW_ASSOC_BOOTSTRAP
+#if KL_ESPNOW_ASSOC_BOOTSTRAP
     {
       const uint8_t bch = espNowAssocBootstrap();
       if (bch) {
@@ -4425,24 +4412,24 @@ static void setupWifi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   // Важно: до softAP/begin, пока интерфейс ещё можно переконфигурировать.
   espNowConfigurePhy();
 #endif
 
   meshApConfig();
-  const bool apOk = WiFi.softAP(meshSsid(), meshPass(), SG_MESH_CHANNEL,
-                                SG_MESH_HIDDEN ? 1 : 0, 8);
+  const bool apOk = WiFi.softAP(meshSsid(), meshPass(), KL_MESH_CHANNEL,
+                                KL_MESH_HIDDEN ? 1 : 0, 8);
   if (apOk) {
-    gApChannel = (uint8_t)SG_MESH_CHANNEL;
+    gApChannel = (uint8_t)KL_MESH_CHANNEL;
     sgLog("[wifi] softAP %s ch%d hidden=%d ip=%s",
-          meshSsid(), (int)SG_MESH_CHANNEL, SG_MESH_HIDDEN ? 1 : 0,
+          meshSsid(), (int)KL_MESH_CHANNEL, KL_MESH_HIDDEN ? 1 : 0,
           WiFi.softAPIP().toString().c_str());
   } else {
     sgLog("[wifi] softAP failed, mode=%d", (int)WiFi.getMode());
   }
 
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   espNowInit();
   gWifiReady = apOk || gEspNowReady;
   // Нода: сразу ищем канал шлюза (setup может блокироваться до ~2 c).
@@ -4459,7 +4446,7 @@ static void setupWifi() {
 }
 
 static void wifiPoll() {
-#if SG_USE_ESPNOW
+#if KL_USE_ESPNOW
   espNowPoll();
   return;
 #else
@@ -4467,7 +4454,7 @@ static void wifiPoll() {
   int guard = 0;
   int sz = gUdp.parsePacket();
   while (sz > 0 && guard++ < 32) {
-    uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+    uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
     const IPAddress from = gUdp.remoteIP();
     int n = gUdp.read(buf, sizeof(buf));
     if (n > 0) {
@@ -4488,7 +4475,7 @@ static void wifiPoll() {
 #endif
 }
 #else
-/* Полноценный ESP-WIFI-MESH. Включается SG_USE_ESP_MESH=1.
+/* Полноценный ESP-WIFI-MESH. Включается KL_USE_ESP_MESH=1.
  * Примечание: в Arduino core 2.0.17 API доступен, но требует аккуратной
  * настройки mesh_cfg_t и совместимости с WiFi-стеком. По умолчанию
  * используется UDP fallback выше, чтобы сборка гарантированно проходила. */
@@ -4497,7 +4484,7 @@ static bool gMeshStarted = false;
 static void espMeshRxTask(void *arg) {
   (void)arg;
   mesh_data_t d;
-  uint8_t buf[sizeof(MeshHeader) + SG_MAX_PAYLOAD];
+  uint8_t buf[sizeof(MeshHeader) + KL_MAX_PAYLOAD];
   for (;;) {
     mesh_addr_t from;
     d.data = buf;
@@ -4520,7 +4507,7 @@ static void setupWifi() {
   esp_wifi_init(&ic);
   esp_mesh_init();
 
-  esp_mesh_set_max_layer(SG_WIFI_MAX_HOPS);
+  esp_mesh_set_max_layer(KL_WIFI_MAX_HOPS);
   esp_mesh_set_self_organized(true, true);
   esp_mesh_set_ap_authmode(WIFI_AUTH_WPA2_PSK);
   esp_mesh_set_ap_password((const uint8_t *)meshPass(), (int)strlen(meshPass()));
@@ -4528,7 +4515,7 @@ static void setupWifi() {
 
   mesh_cfg_t cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.channel = SG_MESH_CHANNEL;
+  cfg.channel = KL_MESH_CHANNEL;
   for (int i = 0; i < 6; i++) {
     cfg.mesh_id[i] = (uint8_t)(gNodeId >> (8 * i));
   }
@@ -4539,10 +4526,10 @@ static void setupWifi() {
   snprintf((char *)cfg.mesh_ap.password, sizeof(cfg.mesh_ap.password), "%s", meshPass());
   snprintf((char *)cfg.mesh_ap.ssid, sizeof(cfg.mesh_ap.ssid), "%s", meshSsid());
 
-  if (isGateway() && strlen(SG_WIFI_SSID)) {
-    cfg.router.ssid_len = (uint8_t)strlen(SG_WIFI_SSID);
-    snprintf((char *)cfg.router.ssid, sizeof(cfg.router.ssid), "%s", SG_WIFI_SSID);
-    snprintf((char *)cfg.router.password, sizeof(cfg.router.password), "%s", SG_WIFI_PASS);
+  if (isGateway() && strlen(KL_WIFI_SSID)) {
+    cfg.router.ssid_len = (uint8_t)strlen(KL_WIFI_SSID);
+    snprintf((char *)cfg.router.ssid, sizeof(cfg.router.ssid), "%s", KL_WIFI_SSID);
+    snprintf((char *)cfg.router.password, sizeof(cfg.router.password), "%s", KL_WIFI_PASS);
     cfg.router.authmode = WIFI_AUTH_WPA2_PSK;
     cfg.router.allow_router_switch = true;
   }
@@ -4559,7 +4546,7 @@ static void setupWifi() {
   gMeshStarted = true;
   gWifiReady = true;
   xTaskCreate(espMeshRxTask, "sg_mesh_rx", 4096, NULL, 5, NULL);
-  sgLog("[mesh] esp-wifi-mesh started role=%s", SG_ROLE);
+  sgLog("[mesh] esp-wifi-mesh started role=%s", KL_ROLE);
 }
 
 static bool wifiSendRaw(const uint8_t *buf, size_t len) {
@@ -4574,7 +4561,7 @@ static bool wifiSendRaw(const uint8_t *buf, size_t len) {
 static void wifiPoll() {}
 static void ensureWifiLink() {
   static uint32_t last = 0;
-  if (isGateway() && strlen(SG_WIFI_SSID) && millis() - last > 30000UL) {
+  if (isGateway() && strlen(KL_WIFI_SSID) && millis() - last > 30000UL) {
     last = millis();
     if (WiFi.status() != WL_CONNECTED) {
       // ESP-WIFI-MESH сам держит root→router; ручной reconnect не обязателен.
@@ -4595,7 +4582,7 @@ static void diagPoll() {
   const int apClients = wifiTransportEnabled() && gWifiReady ? (int)WiFi.softAPgetStationNum() : 0;
   sgLog("[diag] role=%s conn=%s wifi=%d lora=%d sta=%d ch=%d apClients=%d "
         "espnow tx=%lu rx=%lu fail=%lu lora rx=%lu tx=%lu load=%u/%u q=%u fwd=%lu",
-        SG_ROLE, SG_CONNECTIVITY, gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
+        KL_ROLE, KL_CONNECTIVITY, gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
         sta, ch, apClients, (unsigned long)gEspNowTxCount,
         (unsigned long)gEspNowRxCount, (unsigned long)gEspNowTxFail,
         (unsigned long)gLoraRxCount, (unsigned long)gLoraTxCount,
@@ -4658,17 +4645,17 @@ static uint32_t gLastLedMs = 0;
 static bool gLedOn = false;
 
 static void setupLed() {
-#if SG_LED_PIN >= 0
-  pinMode(SG_LED_PIN, OUTPUT);
-  digitalWrite(SG_LED_PIN, LOW);
+#if KL_LED_PIN >= 0
+  pinMode(KL_LED_PIN, OUTPUT);
+  digitalWrite(KL_LED_PIN, LOW);
 #endif
 }
 
 static void ledPoll() {
-#if SG_LED_PIN >= 0
+#if KL_LED_PIN >= 0
   const bool linked = neighborCount() > 0;
   if (linked) {
-    if (!gLedOn) digitalWrite(SG_LED_PIN, HIGH);
+    if (!gLedOn) digitalWrite(KL_LED_PIN, HIGH);
     gLedOn = true;
     return;
   }
@@ -4676,7 +4663,7 @@ static void ledPoll() {
   if (now - gLastLedMs < 500UL) return;
   gLastLedMs = now;
   gLedOn = !gLedOn;
-  digitalWrite(SG_LED_PIN, gLedOn ? HIGH : LOW);
+  digitalWrite(KL_LED_PIN, gLedOn ? HIGH : LOW);
 #endif
 }
 
@@ -4720,7 +4707,7 @@ static int hubGetJson(const String &path, String &resp, bool auth) {
 static String gOtaDoneJob;
 static uint32_t gLastOtaPollMs = 0;
 
-#if SG_OTA
+#if KL_OTA
 static void hubOtaReport(const String &jobId, const char *status, int progress, const String &err) {
   if (!jobId.length() || !gModuleToken.length()) return;
   String body = String("{\"jobId\":\"") + jobId + "\",\"status\":\"" + status +
@@ -4826,7 +4813,7 @@ static bool hubOtaApply(const String &, const String &, long, const String &) { 
 #endif
 
 static void hubOtaTick() {
-#if SG_OTA
+#if KL_OTA
   if (!isGateway() || WiFi.status() != WL_CONNECTED || !gModuleToken.length()) return;
   const uint32_t now = millis();
   if (now - gLastOtaPollMs < 60000UL) return;
@@ -4847,7 +4834,7 @@ static void hubOtaTick() {
 static void hubSaveToken(const String &token) {
   if (!token.length() || token == gModuleToken) return;
   gModuleToken = token;
-  gPrefs.begin("swarm", false);
+  gPrefs.begin("klinto", false);
   gPrefs.putString("module_token", gModuleToken);
   gPrefs.end();
   sgLog("[hub] module token stored");
@@ -4881,31 +4868,31 @@ static void hubRegister() {
                 "\",\"bleMac\":\"" + gBleMac +
                 "\",\"publicId\":\"" + gPublicId +
                 "\",\"role\":\"gateway\",\"battery\":" + String(gBattery) +
-                ",\"firmware\":\"" SG_FIRMWARE_VERSION
+                ",\"firmware\":\"" KL_FIRMWARE_VERSION
                 "\",\"gateway\":true,\"neighbors\":" + neighborsJson() +
                 ",\"cluster_id\":" + String((unsigned long)gSelfClusterId) +
                 ",\"border\":" + String(gBorderNode ? 1 : 0) +
                 ",\"wifi\":" + String(gWifiReady ? 1 : 0) +
                 ",\"lora\":" + String(gLoraReady ? 1 : 0) +
-                ",\"pins\":{\"led\":" + String(SG_LED_PIN) +
-                ",\"battery\":" + String(SG_BATT_PIN) +
-                ",\"batteryRatio\":" + String(SG_BATT_RATIO, 2) +
-                ",\"lora\":{\"sck\":" + String(SG_LORA_SCK) +
-                ",\"miso\":" + String(SG_LORA_MISO) +
-                ",\"mosi\":" + String(SG_LORA_MOSI) +
-                ",\"cs\":" + String(SG_LORA_CS) +
-                ",\"rst\":" + String(SG_LORA_RST) +
-                ",\"busy\":" + String(SG_LORA_BUSY) + "}}" +
+                ",\"pins\":{\"led\":" + String(KL_LED_PIN) +
+                ",\"battery\":" + String(KL_BATT_PIN) +
+                ",\"batteryRatio\":" + String(KL_BATT_RATIO, 2) +
+                ",\"lora\":{\"sck\":" + String(KL_LORA_SCK) +
+                ",\"miso\":" + String(KL_LORA_MISO) +
+                ",\"mosi\":" + String(KL_LORA_MOSI) +
+                ",\"cs\":" + String(KL_LORA_CS) +
+                ",\"rst\":" + String(KL_LORA_RST) +
+                ",\"busy\":" + String(KL_LORA_BUSY) + "}}" +
                 ",\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) +
                 ",\"uptime\":" + String((unsigned long)(millis() / 1000UL)) +
-                ",\"claimToken\":\"" SG_CLAIM_TOKEN "\"}";
+                ",\"claimToken\":\"" KL_CLAIM_TOKEN "\"}";
 
   String resp;
   int code = hubPostJson("/v1/modules/register", body, resp, false);
   // Старые сборки могли быть скомпилированы с нерабочим доменом: один раз
   // переключаемся на прямой адрес Hub и повторяем.
-  if ((code <= 0 || code == 301 || code == 302 || code == 404) && gHubBase != String(SG_DEFAULT_HUB_URL)) {
-    gHubBase = String(SG_DEFAULT_HUB_URL);
+  if ((code <= 0 || code == 301 || code == 302 || code == 404) && gHubBase != String(KL_DEFAULT_HUB_URL)) {
+    gHubBase = String(KL_DEFAULT_HUB_URL);
     sgLog("[hub] fallback -> %s", gHubBase.c_str());
     code = hubPostJson("/v1/modules/register", body, resp, false);
   }
@@ -5084,15 +5071,15 @@ static void hubLoop() {
 /* ------------------------------------------------------------- батарея --- */
 
 static int readBatteryPercent() {
-#if SG_BATT_ENABLED
+#if KL_BATT_ENABLED
   uint32_t mv = 0;
   const int samples = 8;
   for (int i = 0; i < samples; i++) {
-    mv += analogReadMilliVolts(SG_BATT_PIN);
+    mv += analogReadMilliVolts(KL_BATT_PIN);
     delay(2);
   }
   const float pinVolts = (mv / (float)samples) / 1000.0f;
-  const float battVolts = pinVolts * (float)SG_BATT_RATIO;
+  const float battVolts = pinVolts * (float)KL_BATT_RATIO;
   int pct = (int)((battVolts - 3.3f) / (4.2f - 3.3f) * 100.0f);
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
@@ -5104,14 +5091,14 @@ static int readBatteryPercent() {
 
 /* --------------------------------------------------------------- OTA ----- */
 
-#if SG_OTA
+#if KL_OTA
 static bool gOtaStarted = false;
 
 static void setupOta() {
   if (isWearable()) return;   // wearable с deep sleep не обновляется по OTA
   if (WiFi.status() != WL_CONNECTED) return;   // запустим из loop(), когда сеть появится
   static String otaHost;
-  otaHost = String("swarm-") + gPublicId;
+  otaHost = String("klinto-") + gPublicId;
   ArduinoOTA.setHostname(otaHost.c_str());
   ArduinoOTA.onStart([]() { sgLog("[ota] start"); });
   ArduinoOTA.onEnd([]() { sgLog("[ota] done"); });
@@ -5127,7 +5114,7 @@ static void setupOta() {}
 /* -------------------------------------------------------- deep sleep ----- */
 
 static void maybeDeepSleep() {
-#if SG_DEEP_SLEEP
+#if KL_DEEP_SLEEP
   if (!isWearable()) return;          // gateway/repeater никогда не спят
   if (gBleConnected) return;          // не спим, пока клиент подключён
   if (gUsbSeen && millis() - gLastClientActivityMs < 45000UL) return;
@@ -5135,10 +5122,10 @@ static void maybeDeepSleep() {
   if (millis() - gLastClientActivityMs < 45000UL) return;
 
   // Перед сном — presence(offline) не шлём: нет времени ждать эфир.
-  sgLog("[pm] deep sleep %u s", (unsigned)SG_BATT_INTERVAL);
+  sgLog("[pm] deep sleep %u s", (unsigned)KL_BATT_INTERVAL);
   Serial.flush();
   delay(50);
-  ESP.deepSleep((uint64_t)SG_BATT_INTERVAL * 1000000ULL);
+  ESP.deepSleep((uint64_t)KL_BATT_INTERVAL * 1000000ULL);
 #endif
 }
 
@@ -5147,12 +5134,12 @@ static void maybeDeepSleep() {
 void setup() {
   // Скетч может быть собран с CORE_DEBUG_LEVEL=0 (ESP_LOGE -> no-op).
   // Разрешаем ERROR-уровень для тега и печатаем через esp_log_write().
-  esp_log_level_set("kinto", ESP_LOG_ERROR);
-  ESP_LOGE("kinto", "setup start");
+  esp_log_level_set("klinto", ESP_LOG_ERROR);
+  ESP_LOGE("klinto", "setup start");
   // Дублируем через esp_log_write: ESP_LOGE из скетча может быть no-op.
   sgLogE("[boot] setup start");
   Serial.begin(115200);
-  ESP_LOGE("kinto", "serial ok");
+  ESP_LOGE("klinto", "serial ok");
   sgLogE("[boot] serial ok");
   // Даём USB CDC время на enumeration (для C3/S3); UART всегда готов.
   {
@@ -5163,24 +5150,24 @@ void setup() {
   gBootMs = millis();
 
   initIdentity();
-  ESP_LOGE("kinto", "identity ok");
+  ESP_LOGE("klinto", "identity ok");
   // Handshake-строка для клиента; ASCII, чтобы не ломать USB-парсер.
   Serial.printf("SG-INFO {\"hardwareId\":\"%s\",\"publicId\":\"%s\",\"role\":\"%s\"}\n",
-                gHardwareId.c_str(), gPublicId.c_str(), SG_ROLE);
+                gHardwareId.c_str(), gPublicId.c_str(), KL_ROLE);
   if (isWearable()) gLogEnabled = true;   // до первого USB-кадра логи полезны
   sgLog("[boot] firmware=%s board=%s role=%s conn=%s",
-        SG_FIRMWARE_VERSION, SG_BOARD, SG_ROLE, SG_CONNECTIVITY);
+        KL_FIRMWARE_VERSION, KL_BOARD, KL_ROLE, KL_CONNECTIVITY);
   if (connHas("lora") && !loraTransportEnabled()) {
-    sgLog("[cfg] WARN: conn=%s but SG_USE_LORA=0 — LoRa disabled",
-          SG_CONNECTIVITY);
+    sgLog("[cfg] WARN: conn=%s but KL_USE_LORA=0 — LoRa disabled",
+          KL_CONNECTIVITY);
   }
 
-  gPrefs.begin("swarm", true);
+  gPrefs.begin("klinto", true);
   gModuleToken = gPrefs.getString("module_token", "");
-  gRouterSsid = gPrefs.getString("wifi_ssid", SG_WIFI_SSID);
-  gRouterPass = gPrefs.getString("wifi_pass", SG_WIFI_PASS);
+  gRouterSsid = gPrefs.getString("wifi_ssid", KL_WIFI_SSID);
+  gRouterPass = gPrefs.getString("wifi_pass", KL_WIFI_PASS);
   gPrefs.end();
-  if (!gModuleToken.length() && strlen(SG_MODULE_TOKEN)) gModuleToken = SG_MODULE_TOKEN;
+  if (!gModuleToken.length() && strlen(KL_MODULE_TOKEN)) gModuleToken = KL_MODULE_TOKEN;
   gHubBase = normalizedHubBase();
 
   // LittleFS: очередь переживает перезагрузку. Форматируем только при сбое.
@@ -5200,20 +5187,20 @@ void setup() {
   // и LoRa. Wi-Fi-only wearable должен уметь подключаться к шлюзу по Wi-Fi.
   if (isWearable()) {
     setupBle();
-    ESP_LOGE("kinto", "ble ok");
+    ESP_LOGE("klinto", "ble ok");
     if (wifiTransportEnabled()) setupWifi();
-    ESP_LOGE("kinto", "wifi ok");
+    ESP_LOGE("klinto", "wifi ok");
     sgLogE("[boot] setupWifi done wifi=%d espnow=%d ch=%u", gWifiReady ? 1 : 0,
            gEspNowReady ? 1 : 0, (unsigned)gEspNowChannel);
     setupLora();
-    ESP_LOGE("kinto", "lora ok");
+    ESP_LOGE("klinto", "lora ok");
   } else {
     setupWifi();
     sgLogE("[boot] setupWifi done wifi=%d espnow=%d ch=%u", gWifiReady ? 1 : 0,
            gEspNowReady ? 1 : 0, (unsigned)gEspNowChannel);
     setupLora();
     setupBle();
-    ESP_LOGE("kinto", "gateway setup ok");
+    ESP_LOGE("klinto", "gateway setup ok");
   }
   sgLog("[boot] transports wifi=%d lora=%d (wifiReq=%d loraReq=%d)",
         gWifiReady ? 1 : 0, gLoraReady ? 1 : 0,
@@ -5223,8 +5210,8 @@ void setup() {
          (unsigned)gEspNowChannel);
   setupOta();
 
-#if SG_MESH_V2
-  kinto_router_init();
+#if KL_MESH_V2
+  klinto_router_init();
   gSelfClusterId = clusterComputeSelfId();
   gBorderNode = false;
   sgLog("[cluster] init cid=%lu mesh_v2=1", (unsigned long)gSelfClusterId);
@@ -5250,7 +5237,7 @@ void loop() {
   clientInboxPoll();
   bleLoop();
 
-#if SG_OTA
+#if KL_OTA
   if (!gOtaStarted && !isWearable() && WiFi.status() == WL_CONNECTED) setupOta();
   if (gOtaStarted) ArduinoOTA.handle();
 #endif
@@ -5272,8 +5259,8 @@ void loop() {
 
   const uint32_t now = millis();
 
-  // Батарея — не чаще SG_BATT_INTERVAL.
-  if (now - gLastBattMs >= (uint32_t)SG_BATT_INTERVAL * 1000UL) {
+  // Батарея — не чаще KL_BATT_INTERVAL.
+  if (now - gLastBattMs >= (uint32_t)KL_BATT_INTERVAL * 1000UL) {
     gLastBattMs = now;
     gBattery = readBatteryPercent();
   }

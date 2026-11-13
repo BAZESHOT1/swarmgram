@@ -138,7 +138,7 @@ export default function NotificationsScreen() {
           <SettingsToggle
             icon="eye-off-outline"
             title="Скрывать отправителя и текст"
-            subtitle="В уведомлениях будет только «Kinto · Новое сообщение»"
+            subtitle="В уведомлениях будет только «Klinto · Новое сообщение»"
             value={hideContent}
             onValueChange={changeHideContent}
           />

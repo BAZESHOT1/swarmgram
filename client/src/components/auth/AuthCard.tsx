@@ -304,7 +304,7 @@ export function AuthCard({ initialMode = 'login' }: { initialMode?: Mode }) {
     <AuthShell maxWidth={470}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <View>
-          <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 24, letterSpacing: 0.2 }}>Kinto</Text>
+          <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 24, letterSpacing: 0.2 }}>Klinto</Text>
           <Text style={{ color: theme.accent, fontWeight: '700', fontSize: 14, marginTop: 2 }}>
             {mode === 'login' ? t.authTitle : t.register}
           </Text>

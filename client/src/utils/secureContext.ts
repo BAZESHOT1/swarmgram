@@ -50,7 +50,7 @@ export function openSecureWeb(): void {
   if (!url) return;
   try {
     const session = getSession();
-    if (session) window.name = `kinto-session:${JSON.stringify(session)}`;
+    if (session) window.name = `klinto-session:${JSON.stringify(session)}`;
   } catch {
     /* сессия не критична: пользователь просто войдёт заново */
   }
@@ -62,9 +62,9 @@ export function takeHandoffSession(): unknown | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
   try {
     const value = window.name;
-    if (!value || !value.startsWith('kinto-session:')) return null;
+    if (!value || !value.startsWith('klinto-session:')) return null;
     window.name = '';
-    return JSON.parse(value.slice('kinto-session:'.length));
+    return JSON.parse(value.slice('klinto-session:'.length));
   } catch {
     return null;
   }

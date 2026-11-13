@@ -20,7 +20,7 @@ typedef enum {
   KINTO_OTA_ANNOUNCE = 48,
   KINTO_OTA_CHUNK_REQUEST = 49,
   KINTO_OTA_CHUNK = 50,
-} kinto_packet_type_t;
+} klinto_packet_type_t;
 
 typedef struct {
   uint8_t version;
@@ -35,7 +35,7 @@ typedef struct {
   uint8_t ttl;
   uint16_t flags;
   uint32_t seq;
-} kinto_beacon_t;
+} klinto_beacon_t;
 
 enum {
   KINTO_FLAG_GATEWAY = 1 << 0,

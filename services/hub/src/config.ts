@@ -37,7 +37,7 @@ export const config = {
   nodeEnv: str('NODE_ENV', 'development'),
   port: num('PORT', 8080),
   publicUrl: str('HUB_PUBLIC_URL', 'http://localhost:8080').replace(/\/+$/, ''),
-  databaseUrl: str('DATABASE_URL', 'postgres://swarm:swarm@localhost:5432/swarm'),
+  databaseUrl: str('DATABASE_URL', 'postgres://klinto:klinto@localhost:5432/klinto'),
   jwtSecret: ensureSecret(),
   adminToken: str('HUB_ADMIN_TOKEN', ''),
 
@@ -59,7 +59,7 @@ export const config = {
   monitorIntervalMs: 20_000,
   repairIntervalMs: 60_000,
 
-  tmpDir: str('TMP_DIR', '/tmp/swarm'),
+  tmpDir: str('TMP_DIR', '/tmp/klinto'),
   sqlDir: str('SQL_DIR', '/app/sql'),
 
   smtp: {
@@ -67,7 +67,7 @@ export const config = {
     port: num('SMTP_PORT', 587),
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
-    from: process.env.SMTP_FROM || 'Kinto <noreply@swarmgram.local>',
+    from: process.env.SMTP_FROM || 'Klinto <noreply@klinto.local>',
   },
 } as const;
 

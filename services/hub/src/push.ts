@@ -188,7 +188,7 @@ export async function sendNotification(id: string): Promise<void> {
       const hidden = Boolean(group[0]?.hide_content);
       const variant = hidden
         ? {
-            title: 'Kinto',
+            title: 'Klinto',
             body: notification.kind === 'message' ? 'Новое сообщение' : 'Системное уведомление',
           }
         : { title: notification.title, body: notification.body };
@@ -216,7 +216,7 @@ export async function sendNotification(id: string): Promise<void> {
                             aps: {
                               sound: 'default',
                               'mutable-content': 1,
-                              'thread-id': String(notification.data?.chatId ?? 'kinto'),
+                              'thread-id': String(notification.data?.chatId ?? 'klinto'),
                             },
                           },
                         },

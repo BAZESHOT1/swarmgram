@@ -293,7 +293,7 @@ export default function SettingsScreen() {
         )}
 
         <Text style={{ color: theme.textDisabled, fontSize: 11.5, textAlign: 'center', marginTop: 6 }}>
-          Kinto {VERSION}
+          Klinto {VERSION}
         </Text>
       </View>
     </ScrollView>

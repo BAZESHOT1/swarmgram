@@ -37,7 +37,7 @@ let sharedManager: BleManager | null = null;
  * перезапустила приложение ради BLE-события в фоне. Идентификатор один и
  * тот же на все запуски — по нему CoreBluetooth восстанавливает сессию.
  */
-const RESTORE_STATE_IDENTIFIER = 'kinto-ble-central';
+const RESTORE_STATE_IDENTIFIER = 'klinto-ble-central';
 
 /** Восстановленные периферийные устройства (для сверки состояния на active). */
 let restoredPeripherals: Device[] = [];

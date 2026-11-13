@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  SwarmGram Hub — резервная копия БД вместе с ключами шифрования.
+#  Klinto Hub — резервная копия БД вместе с ключами шифрования.
 #
 #  Что попадает в архив:
 #    - pg_dump всей БД (users, chats, messages, chat_keys, chat_key_versions,
@@ -9,16 +9,16 @@
 #    - docker-compose.hub.yml.
 #
 #  Без .env и HUB_KEY_SECRET ключи server-чатов восстановить невозможно,
-#  поэтому архив шифруется AES-256-CBC паролем из /root/.swarmgram-backup.pass.
+#  поэтому архив шифруется AES-256-CBC паролем из /root/.klinto-backup.pass.
 #  Пароль обязательно храните ВНЕ этого сервера (менеджер паролей/офлайн).
 #
-#  Запуск:  /opt/swarmgram/scripts/backup-hub.sh
-#  Cron:    15 3 * * * /opt/swarmgram/scripts/backup-hub.sh >> /var/log/swarmgram-backup.log 2>&1
+#  Запуск:  /opt/klinto/scripts/backup-hub.sh
+#  Cron:    15 3 * * * /opt/klinto/scripts/backup-hub.sh >> /var/log/klinto-backup.log 2>&1
 #
 #  Переменные:
-#    BACKUP_DIR       каталог архивов (по умолчанию /opt/swarmgram/backups)
+#    BACKUP_DIR       каталог архивов (по умолчанию /opt/klinto/backups)
 #    BACKUP_KEEP_DAYS сколько дней хранить (по умолчанию 7)
-#    BACKUP_PASS_FILE файл с паролем (по умолчанию /root/.swarmgram-backup.pass)
+#    BACKUP_PASS_FILE файл с паролем (по умолчанию /root/.klinto-backup.pass)
 #    BACKUP_REMOTE    опционально: команда копирования, например
 #                     "rclone copy" — архив будет отправлен в настроенный remote
 # ============================================================================
@@ -27,10 +27,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-${ROOT_DIR}/backups}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-7}"
-PASS_FILE="${BACKUP_PASS_FILE:-/root/.swarmgram-backup.pass}"
+PASS_FILE="${BACKUP_PASS_FILE:-/root/.klinto-backup.pass}"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 WORK="$(mktemp -d)"
-ARCHIVE="${BACKUP_DIR}/swarmgram-hub-${STAMP}.tar.gz.enc"
+ARCHIVE="${BACKUP_DIR}/klinto-hub-${STAMP}.tar.gz.enc"
 LOCK="${BACKUP_DIR}/.backup.lock"
 
 cleanup() { rm -rf "${WORK}"; }
@@ -56,18 +56,18 @@ fi
 
 COMPOSE="${ROOT_DIR}/docker-compose.hub.yml"
 ENV_FILE="${ROOT_DIR}/.env"
-PG_CONTAINER="${PG_CONTAINER:-swarmgram-postgres}"
-PG_USER="${POSTGRES_USER:-swarm}"
-PG_DB="${POSTGRES_DB:-swarm}"
+PG_CONTAINER="${PG_CONTAINER:-klinto-postgres}"
+PG_USER="${POSTGRES_USER:-klinto}"
+PG_DB="${POSTGRES_DB:-klinto}"
 
 echo "[backup] $(date -Is) старт"
 
 # 1) Дамп БД (custom format — восстанавливается pg_restore).
 docker exec "${PG_CONTAINER}" pg_dump -U "${PG_USER}" -d "${PG_DB}" -Fc > "${WORK}/db.dump"
 # Проверяем, что дамп читается (pg_restore требует seekable-файл).
-docker cp "${WORK}/db.dump" "${PG_CONTAINER}:/tmp/swarm-db.dump" >/dev/null
-docker exec "${PG_CONTAINER}" pg_restore -l /tmp/swarm-db.dump > /dev/null
-docker exec "${PG_CONTAINER}" rm -f /tmp/swarm-db.dump
+docker cp "${WORK}/db.dump" "${PG_CONTAINER}:/tmp/klinto-db.dump" >/dev/null
+docker exec "${PG_CONTAINER}" pg_restore -l /tmp/klinto-db.dump > /dev/null
+docker exec "${PG_CONTAINER}" rm -f /tmp/klinto-db.dump
 # 2) Конфигурация и ключи.
 cp "${ENV_FILE}" "${WORK}/env"
 cp "${COMPOSE}" "${WORK}/docker-compose.hub.yml"
@@ -94,5 +94,5 @@ if [ -n "${BACKUP_REMOTE:-}" ]; then
 fi
 
 # 6) Ротация.
-find "${BACKUP_DIR}" -maxdepth 1 -name 'swarmgram-hub-*.tar.gz.enc' -type f -mtime "+${KEEP_DAYS}" -print -delete
+find "${BACKUP_DIR}" -maxdepth 1 -name 'klinto-hub-*.tar.gz.enc' -type f -mtime "+${KEEP_DAYS}" -print -delete
 echo "[backup] $(date -Is) готово"

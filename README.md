@@ -1,4 +1,4 @@
-# SwarmGram
+# Klinto
 
 Мессенджер нового поколения с децентрализованным хранением: **главный сервер — оркестратор, пользовательские узлы — хранилище**.
 
@@ -60,13 +60,13 @@ GitHub Actions workflow [`.github/workflows/ios-unsigned.yml`](.github/workflows
 для сборки не нужен.
 
 1. Запустить workflow **iOS unsigned IPA** (вручную или push в `main`).
-2. Скачать артефакт `SwarmGram-unsigned-ipa`.
+2. Скачать артефакт `Klinto-unsigned-ipa`.
 3. Установить через **Sideloadly** на iPhone, войдя своим Apple ID — Sideloadly
    подпишет приложение самоподписанным сертификатом.
 
 Ограничения бесплатной подписи: приложение нужно переподписывать раз в 7 дней,
 BLE работает только в native-сборке (Expo Go и Safari не поддерживают BLE).
-API-адрес нативного клиента: `https://api.swarmgram.is-a.dev/api`
-(затем `api.swarmgram.io`, резервный `https://150-251-143-212.nip.io:3443/api`;
+API-адрес нативного клиента: `https://api.klinto.is-a.dev/api`
+(затем `api.klinto.io`, резервный `https://150-251-143-212.nip.io:3443/api`;
 Let's Encrypt; HTTP на iOS блокируется ATS).
 

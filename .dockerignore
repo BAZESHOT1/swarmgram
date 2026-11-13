@@ -1,0 +1,16 @@
+.git
+.gitignore
+.github
+backups
+client/node_modules
+client/.expo
+client/dist
+client/.tmp
+services/*/node_modules
+services/*/dist
+firmware/klinto_core/*.exe
+firmware/klinto_core/*.o
+firmware/klinto_core/build
+**/__pycache__
+**/*.log
+release

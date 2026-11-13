@@ -138,7 +138,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
 /* ---------------------------------------------------------------- коды ----- */
 
 export async function hashCode(code: string): Promise<string> {
-  return `scrypt$${sha256(`${code}:swarmgram`)}`;
+  return `scrypt$${sha256(`${code}:klinto`)}`;
 }
 
 /* ------------------------------------------------- подписи устройств (mesh) */

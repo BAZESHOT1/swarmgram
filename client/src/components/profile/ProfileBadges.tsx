@@ -51,7 +51,7 @@ export function buildProfileBadges(facts: ProfileBadgeFacts, theme: ReturnType<t
     badges.push({
       key: 'node',
       title: 'Узел сети',
-      description: facts.nodeOnline ? 'Узел сейчас онлайн' : 'Есть узел Kinto',
+      description: facts.nodeOnline ? 'Узел сейчас онлайн' : 'Есть узел Klinto',
       icon: 'hardware-chip-outline',
       color: theme.ringNode,
       soft: theme.dark ? 'rgba(245,166,35,0.16)' : 'rgba(247,144,9,0.14)',

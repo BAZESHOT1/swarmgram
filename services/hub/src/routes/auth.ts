@@ -46,7 +46,7 @@ interface UserRow {
 }
 
 const RESERVED = new Set([
-  'admin', 'root', 'support', 'swarmgram', 'swarm', 'system', 'help', 'api', 'me', 'about', 'node', 'hub',
+  'admin', 'root', 'support', 'klinto', 'klinto', 'system', 'help', 'api', 'me', 'about', 'node', 'hub',
 ]);
 
 function normalizeUsername(raw: string): string {
@@ -142,7 +142,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       `INSERT INTO email_codes (email, code_hash, purpose, expires_at) VALUES ($1,$2,'verify', now() + interval '24 hours')`,
       [email, await hashCode(code)],
     );
-    await sendMail(email, 'Добро пожаловать в Kinto', `Код подтверждения: ${code}`);
+    await sendMail(email, 'Добро пожаловать в Klinto', `Код подтверждения: ${code}`);
 
     const tokens = await issueTokens(userId, deviceId, {
       userAgent: String(req.headers['user-agent'] ?? ''),
@@ -256,7 +256,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       `INSERT INTO email_codes (email, code_hash, purpose, expires_at) VALUES ($1,$2,'reset', now() + interval '1 hour')`,
       [email, await hashCode(code)],
     );
-    await sendMail(email, 'Восстановление доступа Kinto', `Код сброса пароля: ${code}`);
+    await sendMail(email, 'Восстановление доступа Klinto', `Код сброса пароля: ${code}`);
     void reply.send({ ok: true, ...(config.nodeEnv !== 'production' ? { devCode: code } : {}) });
   });
 

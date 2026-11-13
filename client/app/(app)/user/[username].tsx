@@ -64,7 +64,7 @@ function profileUrl(username: string): string {
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     return `${window.location.origin}/user/${encodeURIComponent(username)}`;
   }
-  return `https://kinto.app/user/${encodeURIComponent(username)}`;
+  return `https://klinto.app/user/${encodeURIComponent(username)}`;
 }
 
 /** Страница профиля: свой — профильные блоки, чужой — действия и приглашения. */
@@ -106,9 +106,9 @@ export default function UserProfileScreen() {
   const canChat = Boolean(profile) && !isSelf && !blockedByMe;
 
   const share = React.useCallback(async () => {
-    const title = profile?.displayName ? `${profile.displayName} · Kinto` : `@${username} · Kinto`;
+    const title = profile?.displayName ? `${profile.displayName} · Klinto` : `@${username} · Klinto`;
     try {
-      const result = await shareUrl(profileUrl(username), title, `Профиль @${username} в Kinto`);
+      const result = await shareUrl(profileUrl(username), title, `Профиль @${username} в Klinto`);
       if (result === 'copied') pushToast({ kind: 'success', message: 'Ссылка на профиль скопирована' });
     } catch {
       pushToast({ kind: 'error', message: 'Не удалось поделиться' });
@@ -556,7 +556,7 @@ function OverviewSelf({
             right={<Ionicons name="qr-code-outline" size={15} color={theme.textSecondary} />}
           />
           <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>
-            Поделитесь профилем: ссылка и QR открывают @{profile.username} в Kinto.
+            Поделитесь профилем: ссылка и QR открывают @{profile.username} в Klinto.
           </Text>
           <View
             style={[

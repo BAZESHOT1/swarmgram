@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Прошивка-референс ESP32-модуля SwarmGram (Arduino/PlatformIO-совместимый файл).
+Прошивка-референс ESP32-модуля Klinto (Arduino/PlatformIO-совместимый файл).
 Хранится как reference: залить можно Arduino IDE 1.8+/esptool.
 
 Режимы работы (единая прошивка):

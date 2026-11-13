@@ -98,7 +98,7 @@ async function measureLatency(url: string): Promise<number | null> {
 
 const FAQ = [
   {
-    q: 'Что такое узел сети Kinto?',
+    q: 'Что такое узел сети Klinto?',
     a: 'Узел — добровольный сервер, который хранит зашифрованные реплики медиа и истории. Он не видит содержимое сообщений: ключи остаются на устройствах пользователей.',
   },
   {
@@ -162,7 +162,7 @@ export default function NodesScreen() {
   const me = useStore((s) => s.me);
 
   const [connectOpen, setConnectOpen] = useState(false);
-  const [nodeName, setNodeName] = useState('my-swarm-node');
+  const [nodeName, setNodeName] = useState('my-klinto-node');
   const [claim, setClaim] = useState<{ claimToken: string; expiresAt: string } | null>(null);
   const [claimError, setClaimError] = useState('');
   const [drainTarget, setDrainTarget] = useState<NodeRow | null>(null);
@@ -549,7 +549,7 @@ export default function NodesScreen() {
             </View>
             <View style={{ gap: 6 }}>
               <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18 }}>
-                1. Скачайте образ: docker pull kinto/node:1.0.0
+                1. Скачайте образ: docker pull klinto/node:1.0.0
               </Text>
               <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18 }}>
                 2. В .env укажите MAIN_SERVER_URL, OWNER_USERNAME, NODE_CLAIM_TOKEN и NODE_CAPACITY_GB.
@@ -585,7 +585,7 @@ export default function NodesScreen() {
                 setNodeName(value);
                 if (claimError) setClaimError('');
               }}
-              placeholder="my-swarm-node"
+              placeholder="my-klinto-node"
               accessibilityLabel="Имя узла"
               maxLength={64}
               autoCapitalize="none"

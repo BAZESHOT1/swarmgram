@@ -30,7 +30,7 @@ function derive(secret: string): Buffer {
 
 function devFallback(): Buffer {
   const fallback = createHash('sha256')
-    .update(`swarmgram-server-keys:${process.env.HUB_ADMIN_TOKEN ?? 'dev'}`, 'utf8')
+    .update(`klinto-server-keys:${process.env.HUB_ADMIN_TOKEN ?? 'dev'}`, 'utf8')
     .digest('hex');
   return Buffer.from(fallback, 'hex');
 }

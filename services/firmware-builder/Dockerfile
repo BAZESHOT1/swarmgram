@@ -1,5 +1,5 @@
 # ============================================================
-#  Firmware builder SwarmGram: arduino-cli + Node.js HTTP-обёртка.
+#  Firmware builder Klinto: arduino-cli + Node.js HTTP-обёртка.
 #  ESP32 core НЕ ставится в образ: entrypoint доустанавливает его
 #  в том /data при первом старте (образ остаётся компактным).
 # ============================================================
@@ -25,9 +25,11 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY server.mjs ./server.mjs
-COPY entrypoint.sh ./entrypoint.sh
-COPY templates ./templates
+COPY services/firmware-builder/server.mjs ./server.mjs
+COPY services/firmware-builder/entrypoint.sh ./entrypoint.sh
+COPY services/firmware-builder/templates ./templates
+# Canonical portable mesh core (also unit-tested on the host).
+COPY firmware/klinto_core ./klinto_core
 
 RUN chmod +x ./entrypoint.sh
 

@@ -1,5 +1,5 @@
 /**
- * Kinto Hub — главный сервер (оркестратор).
+ * Klinto Hub — главный сервер (оркестратор).
  *
  * Отвечает за: аккаунты и username, каталог чатов, маршрутизацию к узлам,
  * репликацию «в 3 экземплярах», мониторинг узлов, квоты и биллинг.
@@ -26,6 +26,7 @@ import messageRoutes from './routes/messages.js';
 import objectRoutes from './routes/objects.js';
 import nodeRoutes from './routes/nodes.js';
 import meshRoutes from './routes/mesh.js';
+import kmeshV1Routes from './routes/kmeshV1.js';
 import meshNetworkRoutes from './routes/meshNetwork.js';
 import offlineSyncRoutes from './routes/offlineSync.js';
 import statsRoutes from './routes/stats.js';
@@ -113,7 +114,7 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
 
   app.get('/health', async (_req, reply) => {
     const dbOk = await query('SELECT 1 AS ok').then(() => true).catch(() => false);
-    void reply.send({ ok: dbOk, service: 'swarmgram-hub', version: '1.0.0', time: new Date().toISOString() });
+    void reply.send({ ok: dbOk, service: 'klinto-hub', version: '1.1.0', time: new Date().toISOString() });
   });
 
   await app.register(authRoutes, { prefix: '/v1/auth' });
@@ -124,6 +125,7 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
   await app.register(objectRoutes, { prefix: '/v1' });
   await app.register(nodeRoutes, { prefix: '/v1' });
   await app.register(meshRoutes, { prefix: '/v1' });
+  await app.register(kmeshV1Routes, { prefix: '/v1' });
   await app.register(meshNetworkRoutes, { prefix: '/v1' });
   await app.register(offlineSyncRoutes, { prefix: '/v1' });
   await app.register(statsRoutes, { prefix: '/v1' });

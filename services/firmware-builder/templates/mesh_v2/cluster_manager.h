@@ -21,7 +21,7 @@ typedef struct {
   uint8_t battery; /* 0..100, для border election */
   uint8_t streaks; /* сколько beacon-интервалов подряд видим */
   uint32_t last_seen_ms;
-} kinto_cluster_neighbor_t;
+} klinto_cluster_neighbor_t;
 
 typedef struct {
   uint8_t mesh_addr[KINTO_MESH_ADDR_LEN];
@@ -29,28 +29,28 @@ typedef struct {
   uint32_t cluster_b;
   int16_t score;
   bool primary;
-} kinto_border_candidate_t;
+} klinto_border_candidate_t;
 
-uint32_t kinto_fnv1a32(const char *data, unsigned len);
+uint32_t klinto_fnv1a32(const char *data, unsigned len);
 
 /* 8-байтовый mesh-адрес из 32-битного nodeId (big-endian + hash-суффикс). */
-void kinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]);
+void klinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]);
 
 /* 8-байтовый mesh-адрес из hardwareId/publicId строки. */
-void kinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]);
+void klinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]);
 
 /* Cluster ID = FNV1a32(sorted(anchor ids), '|' separator). */
-uint32_t kinto_compute_cluster_id(const char *const *anchors, unsigned count);
+uint32_t klinto_compute_cluster_id(const char *const *anchors, unsigned count);
 
 /* Выбор до 2 Border Node между всеми видимыми кластерами. */
-unsigned kinto_elect_border_nodes(
-    const kinto_cluster_neighbor_t *neighbors,
+unsigned klinto_elect_border_nodes(
+    const klinto_cluster_neighbor_t *neighbors,
     unsigned count,
     uint32_t now_ms,
-    kinto_border_candidate_t out[KINTO_BORDER_MAX]);
+    klinto_border_candidate_t out[KINTO_BORDER_MAX]);
 
 /* true — пакет видит оба кластера и подходит на роль моста. */
-bool kinto_is_border_candidate(const kinto_cluster_neighbor_t *neighbors, unsigned count);
+bool klinto_is_border_candidate(const klinto_cluster_neighbor_t *neighbors, unsigned count);
 
 #ifdef __cplusplus
 }

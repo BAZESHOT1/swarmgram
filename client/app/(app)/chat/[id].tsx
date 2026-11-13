@@ -103,6 +103,9 @@ export default function ChatScreen() {
   const wide = useIsWide();
   const reduced = useReducedMotion();
   const insets = useSafeAreaInsets();
+  /* ВАЖНО: queryClient должен быть объявлен до useCallback(commitToCache),
+   * иначе на веб-сборке возникает TDZ ReferenceError при открытии чата. */
+  const qc = useQueryClient();
   const params = useLocalSearchParams<{ id: string; search?: string; msg?: string }>();
   const { id } = params;
   const chatId = String(id);
@@ -474,7 +477,6 @@ export default function ChatScreen() {
 
   // Отмечаем чат прочитанным при просмотре/после отправки: иначе счётчик
   // непрочитанных в списке и доке включает собственные сообщения.
-  const qc = useQueryClient();
   const lastSeq = data.length ? data[data.length - 1]?.seq ?? 0 : 0;
   useEffect(() => {
     if (!chat || !unreadReady || !Number.isFinite(lastSeq) || lastSeq <= 0) return;

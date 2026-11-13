@@ -1,25 +1,25 @@
 # ============================================================
-#  Главный сервер SwarmGram (Hub) + PostgreSQL + Web-клиент
+#  Главный сервер Klinto (Hub) + PostgreSQL + Web-клиент
 #  Запуск:  docker compose -f docker-compose.hub.yml up -d --build
 # ============================================================
 services:
 
   postgres:
     image: postgres:17-alpine
-    container_name: swarmgram-postgres
+    container_name: klinto-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-swarm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-swarm}
-      POSTGRES_DB: ${POSTGRES_DB:-swarm}
+      POSTGRES_USER: ${POSTGRES_USER:-klinto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-klinto}
+      POSTGRES_DB: ${POSTGRES_DB:-klinto}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-swarm}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-klinto}"]
       interval: 5s
       timeout: 5s
       retries: 20
-    networks: [swarm]
+    networks: [klinto]
     # Ограничение по памяти: сервер слабый
     deploy:
       resources:
@@ -30,8 +30,8 @@ services:
     build:
       context: ./services/hub
       dockerfile: Dockerfile
-    image: swarmgram/hub:1.0.0
-    container_name: swarmgram-hub
+    image: klinto/hub:1.0.0
+    container_name: klinto-hub
     restart: unless-stopped
     depends_on:
       postgres:
@@ -39,7 +39,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "8080"
-      DATABASE_URL: postgres://${POSTGRES_USER:-swarm}:${POSTGRES_PASSWORD:-swarm}@postgres:5432/${POSTGRES_DB:-swarm}
+      DATABASE_URL: postgres://${POSTGRES_USER:-klinto}:${POSTGRES_PASSWORD:-klinto}@postgres:5432/${POSTGRES_DB:-klinto}
       HUB_PUBLIC_URL: ${HUB_PUBLIC_URL:-http://150.251.143.212:8080}
       HUB_JWT_SECRET: ${HUB_JWT_SECRET}
       HUB_ADMIN_TOKEN: ${HUB_ADMIN_TOKEN}
@@ -54,17 +54,17 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-Kinto <noreply@kinto.local>}
+      SMTP_FROM: ${SMTP_FROM:-Klinto <noreply@klinto.local>}
       FIREBASE_SERVICE_ACCOUNT_FILE: /run/secrets/firebase-service-account.json
       SQL_DIR: /app/sql
-      TMP_DIR: /tmp/swarm
+      TMP_DIR: /tmp/klinto
       FIRMWARE_BUILDER_URL: http://firmware-builder:8090
     volumes:
-      - hubtmp:/tmp/swarm
+      - hubtmp:/tmp/klinto
       - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
     ports:
       - "8080:8080"
-    networks: [swarm]
+    networks: [klinto]
     deploy:
       resources:
         limits:
@@ -79,8 +79,10 @@ services:
   # ---------------------------------------------------------------
   firmware-builder:
     profiles: ["firmware"]
-    build: ./services/firmware-builder
-    container_name: swarmgram-firmware
+    build:
+      context: .
+      dockerfile: services/firmware-builder/Dockerfile
+    container_name: klinto-firmware
     restart: unless-stopped
     environment:
       - PORT=8090
@@ -94,11 +96,11 @@ services:
       - MIN_FREE_MB=${MIN_FREE_MB:-2200}
     volumes:
       - firmware_data:/data
-    networks: [swarm]
+    networks: [klinto]
 
   web:
     image: nginx:alpine
-    container_name: swarmgram-web
+    container_name: klinto-web
     restart: unless-stopped
     depends_on: [hub]
     volumes:
@@ -112,7 +114,7 @@ services:
       # HTTPS нужен для Web Serial (прошивка из браузера) и безопасного контекста.
       - "443:443"
       - "3443:443"
-    networks: [swarm]
+    networks: [klinto]
 
 volumes:
   pgdata:
@@ -120,5 +122,5 @@ volumes:
   firmware_data:
 
 networks:
-  swarm:
+  klinto:
     driver: bridge

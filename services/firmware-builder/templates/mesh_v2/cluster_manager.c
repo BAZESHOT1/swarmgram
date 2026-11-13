@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-uint32_t kinto_fnv1a32(const char *data, unsigned len) {
+uint32_t klinto_fnv1a32(const char *data, unsigned len) {
   uint32_t hash = 0x811c9dc5u;
   for (unsigned i = 0; i < len; i++) {
     hash ^= (uint8_t)data[i];
@@ -11,7 +11,7 @@ uint32_t kinto_fnv1a32(const char *data, unsigned len) {
   return hash;
 }
 
-void kinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]) {
+void klinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]) {
   if (!out) return;
   out[0] = (uint8_t)((id >> 24) & 0xFF);
   out[1] = (uint8_t)((id >> 16) & 0xFF);
@@ -30,20 +30,20 @@ void kinto_mesh_addr_from_u32(uint32_t id, uint8_t out[KINTO_MESH_ADDR_LEN]) {
   tmp[8] = 'h';
   tmp[9] = '2';
   tmp[10] = 0;
-  uint32_t h = kinto_fnv1a32(tmp, 10);
+  uint32_t h = klinto_fnv1a32(tmp, 10);
   out[4] = (uint8_t)((h >> 24) & 0xFF);
   out[5] = (uint8_t)((h >> 16) & 0xFF);
   out[6] = (uint8_t)((h >> 8) & 0xFF);
   out[7] = (uint8_t)(h & 0xFF);
 }
 
-void kinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]) {
+void klinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_LEN]) {
   if (!out) return;
   if (!text || !*text) {
     for (unsigned i = 0; i < KINTO_MESH_ADDR_LEN; i++) out[i] = 0;
     return;
   }
-  uint32_t a = kinto_fnv1a32(text, (unsigned)strlen(text));
+  uint32_t a = klinto_fnv1a32(text, (unsigned)strlen(text));
   char tmp[256];
   unsigned n = 0;
   while (text[n] && n < sizeof(tmp) - 6) {
@@ -56,7 +56,7 @@ void kinto_mesh_addr_from_string(const char *text, uint8_t out[KINTO_MESH_ADDR_L
   tmp[n++] = 'd';
   tmp[n++] = 'r';
   tmp[n] = 0;
-  uint32_t b = kinto_fnv1a32(tmp, n);
+  uint32_t b = klinto_fnv1a32(tmp, n);
   for (unsigned i = 0; i < 4; i++) out[i] = (uint8_t)((a >> (24 - i * 8)) & 0xFF);
   for (unsigned i = 0; i < 4; i++) out[4 + i] = (uint8_t)((b >> (24 - i * 8)) & 0xFF);
 }
@@ -86,7 +86,7 @@ static uint32_t crc32_bytes(const uint8_t *data, unsigned len, uint32_t crc) {
   return ~crc;
 }
 
-uint32_t kinto_compute_cluster_id(const char *const *anchors, unsigned count) {
+uint32_t klinto_compute_cluster_id(const char *const *anchors, unsigned count) {
   if (!anchors || count == 0) return 0;
   const char *sorted[32];
   if (count > 32) count = 32;
@@ -105,7 +105,7 @@ uint32_t kinto_compute_cluster_id(const char *const *anchors, unsigned count) {
   return crc;
 }
 
-bool kinto_is_border_candidate(const kinto_cluster_neighbor_t *neighbors, unsigned count) {
+bool klinto_is_border_candidate(const klinto_cluster_neighbor_t *neighbors, unsigned count) {
   if (!neighbors || count < 2) return false;
   uint32_t first = 0;
   int seen = 0;
@@ -123,19 +123,19 @@ bool kinto_is_border_candidate(const kinto_cluster_neighbor_t *neighbors, unsign
   return false;
 }
 
-unsigned kinto_elect_border_nodes(
-    const kinto_cluster_neighbor_t *neighbors,
+unsigned klinto_elect_border_nodes(
+    const klinto_cluster_neighbor_t *neighbors,
     unsigned count,
     uint32_t now_ms,
-    kinto_border_candidate_t out[KINTO_BORDER_MAX]) {
+    klinto_border_candidate_t out[KINTO_BORDER_MAX]) {
   unsigned found = 0;
   for (unsigned i = 0; i < count; i++) {
-    const kinto_cluster_neighbor_t *a = &neighbors[i];
+    const klinto_cluster_neighbor_t *a = &neighbors[i];
     if (a->rssi < KINTO_BORDER_MIN_RSSI || a->queue_depth > KINTO_BORDER_MAX_QUEUE) continue;
     if (a->streaks < 3) continue;   // кандидат должен стабильно видеть эфир
     if (now_ms - a->last_seen_ms > 12000u) continue;
     for (unsigned j = i + 1; j < count; j++) {
-      const kinto_cluster_neighbor_t *b = &neighbors[j];
+      const klinto_cluster_neighbor_t *b = &neighbors[j];
       if (b->cluster_id == a->cluster_id) continue;
       if (b->rssi < KINTO_BORDER_MIN_RSSI || b->queue_depth > KINTO_BORDER_MAX_QUEUE) continue;
       if (b->streaks < 3) continue;

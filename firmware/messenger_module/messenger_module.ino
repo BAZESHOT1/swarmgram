@@ -1,6 +1,6 @@
 /* =======================================================================
- *  SwarmGram module — ESP32 reference firmware (WiFi / WiFi+LoRa)
- *  Прошивка для модуля связи мессенджера SwarmGram.
+ *  Klinto module — ESP32 reference firmware (WiFi / WiFi+LoRa)
+ *  Прошивка для модуля связи мессенджера Klinto.
  *
  *  Транспорт:
  *    - BLE GATT (клиент ↔ модуль): JSONL
@@ -20,7 +20,7 @@
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 
-#if SG_ENABLE_LORA
+#if KL_ENABLE_LORA
 #include <LoRa.h>
 #endif
 
@@ -131,7 +131,7 @@ static void handleWrite(const String &line) {
       int s = line.indexOf("\"token\":\"") + 9;
       int e = line.indexOf('"', s);
       gModuleToken = line.substring(s, e);
-      nvs.begin("swarm", false);
+      nvs.begin("klinto", false);
       nvs.putString("module_token", gModuleToken);
       nvs.end();
       pushToDevice("{\"type\":\"ack\",\"message\":\"token accepted\"}");
@@ -176,7 +176,7 @@ class WriteCb : public NimBLECharacteristicCallbacks {
 };
 
 static void setupBle() {
-  NimBLEDevice::init("SwarmGramModule");
+  NimBLEDevice::init("KlintoModule");
   NimBLEServer *server = NimBLEDevice::getServer();
   if (server == nullptr) server = NimBLEDevice::createServer();
   NimBLEService *svc = server->createService(SGG_SERVICE_UUID);
@@ -190,7 +190,7 @@ static void setupBle() {
 }
 
 static void setupLoraIfEnabled() {
-#if SG_ENABLE_LORA
+#if KL_ENABLE_LORA
   LoRa.setPins(18, 14, 26);
   if (!LoRa.begin(868E6)) Serial.println("[lora] init failed");
   else { LoRa.enableInvertIQ(); Serial.println("[lora] ok"); }
@@ -201,7 +201,7 @@ static void setupLoraIfEnabled() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  nvs.begin("swarm", true);
+  nvs.begin("klinto", true);
   gModuleToken = nvs.getString("module_token", "");
   nvs.end();
   gBoardUuid = readBoardUuid();

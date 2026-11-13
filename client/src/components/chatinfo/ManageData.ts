@@ -474,7 +474,7 @@ export function originOf(): string {
 
 export function inviteUrl(token: string): string {
   const origin = originOf();
-  return `${origin || 'https://kinto.app'}/join/${encodeURIComponent(token)}`;
+  return `${origin || 'https://klinto.app'}/join/${encodeURIComponent(token)}`;
 }
 
 export async function copyText(text: string): Promise<boolean> {

@@ -1,4 +1,4 @@
-# Kinto firmware builder
+# Klinto firmware builder
 
 Отдельный build-сервис, который собирает прошивки ESP32 по JSON-конфигурации
 из визарда клиента. Внутри — `arduino-cli`, шаблон скетча и HTTP-обёртка без
@@ -7,7 +7,7 @@
 ## Возможности
 
 - `POST /build` — принимает `FirmwareConfig`, генерирует `config.h` и
-  `swarm_module.ino`, запускает `arduino-cli compile`, возвращает `.bin`
+  `klinto_module.ino`, запускает `arduino-cli compile`, возвращает `.bin`
   в base64.
 - Кэш по `sha256(config)` в `/data/cache` (TTL 7 дней).
 - Очередь: одновременно выполняется один билд, остальные ждут.
@@ -22,7 +22,7 @@
   LoRa mesh с TTL/hops (14 Wi-Fi / 12 LoRa).
 - Wi-Fi и LoRa работают одновременно: узел с обеими средами пересылает
   пакеты между ними (bridge), дедуп по `packetId` общий.
-- Mesh v2 (`SG_MESH_V2=1` по умолчанию): cluster_id/border/neighbor_clusters
+- Mesh v2 (`KL_MESH_V2=1` по умолчанию): cluster_id/border/neighbor_clusters
   в ADVERT/PRESENCE, выбор border-нод, route table с TTL Wi-Fi↔LoRa и
   handover-контролем поверх `MT_DATA` (`"kind":"handover"`).
 - LoRa-фрагментация: крупные конверты режутся на 150 Б × до 16 фрагментов
@@ -170,7 +170,7 @@ FIRMWARE_BUILDER_URL: http://host.docker.internal:8090
 
 ## Проверка сборки вручную
 
-Сервис не публикует порт наружу (доступен только внутри сети `swarm`),
+Сервис не публикует порт наружу (доступен только внутри сети `klinto`),
 поэтому проверяем изнутри контейнера:
 
 ```bash

@@ -138,7 +138,7 @@ export function AppNavbar() {
         >
           <Ionicons name="git-network" size={20} color={theme.onAccent} />
         </PressableScale>
-        <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 15 }}>Kinto</Text>
+        <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 15 }}>Klinto</Text>
       </View>
 
       {menuOpen && pathname ? <PCMenuDropdown onHide={() => setMenuOpen(false)} /> : null}

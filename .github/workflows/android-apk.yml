@@ -50,14 +50,14 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p ../artifacts
-          cp android/app/build/outputs/apk/release/*.apk ../artifacts/Kinto-android.apk
+          cp android/app/build/outputs/apk/release/*.apk ../artifacts/Klinto-android.apk
           cd ../artifacts
-          sha256sum Kinto-android.apk > Kinto-android.apk.sha256
+          sha256sum Klinto-android.apk > Klinto-android.apk.sha256
           ls -lh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Kinto-android-apk
+          name: Klinto-android-apk
           path: artifacts/
 
       - name: Release APK
@@ -65,6 +65,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-v${{ github.run_number }}
-          name: Kinto Android build ${{ github.run_number }}
+          name: Klinto Android build ${{ github.run_number }}
           files: artifacts/*
           generate_release_notes: true

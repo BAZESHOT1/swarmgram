@@ -162,7 +162,7 @@ export async function meshHttpFetch(
     body,
   });
   const blob = toB64(utf8Encode(JSON.stringify(enc)));
-  // Один mesh-кадр несёт не больше SG_MAX_PAYLOAD (1024); JSON-обёртка и
+  // Один mesh-кадр несёт не больше KL_MAX_PAYLOAD (1024); JSON-обёртка и
   // base64 дают запас ~900 байт. Крупный POST не влезет — не ждём 35 с.
   if (blob.length > 900) return null;
 

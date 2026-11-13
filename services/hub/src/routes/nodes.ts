@@ -72,7 +72,7 @@ const nodeRoutes: FastifyPluginAsync = async (app) => {
 
     const ownerUsername = str(body.ownerUsername, 'ownerUsername').toLowerCase();
     const claimToken = str(body.claimToken ?? '', 'claimToken', { max: 64 });
-    const name = str(body.name ?? 'swarm-node', 'name', { max: 64 });
+    const name = str(body.name ?? 'klinto-node', 'name', { max: 64 });
     const publicUrl = str(body.publicUrl, 'publicUrl', { max: 300 });
     if (!/^https?:\/\//.test(publicUrl)) throw badRequest('invalid_public_url');
     const capacityBytes = Math.max(0, Number(body.capacityBytes ?? 0) || 0);

@@ -1,7 +1,7 @@
 {
-  "name": "Kinto",
-  "short_name": "Kinto",
-  "description": "Приватный мессенджер на рое узлов Kinto",
+  "name": "Klinto",
+  "short_name": "Klinto",
+  "description": "Приватный мессенджер на рое узлов Klinto",
   "lang": "ru",
   "start_url": "/chats",
   "scope": "/",

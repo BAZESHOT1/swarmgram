@@ -1,17 +1,17 @@
-# SwarmGram — эксплуатация и восстановление
+# Klinto — эксплуатация и восстановление
 
 ## Адреса
 
-- HTTP: `http://150.251.143.212:3000` / `http://swarmgram.is-a.dev`
+- HTTP: `http://150.251.143.212:3000` / `http://klinto.is-a.dev`
 - HTTPS (для Web Serial и безопасного контекста):
-  `https://swarmgram.is-a.dev` (после выпуска сертификата),
+  `https://klinto.is-a.dev` (после выпуска сертификата),
   резервный `https://150-251-143-212.nip.io:3443`
-- Hub API: `https://api.swarmgram.is-a.dev` (внутри web — `/api`)
+- Hub API: `https://api.klinto.is-a.dev` (внутри web — `/api`)
 
 HTTPS использует сертификат Let's Encrypt на `nip.io` + `is-a.dev`. Продление —
-`/etc/cron.d/certbot-swarmgram`, сертификат копируется в
-`/opt/swarmgram/certs` и nginx перезагружается. Ручной выпуск:
-`/opt/swarmgram/scripts/issue-ssl.sh`.
+`/etc/cron.d/certbot-klinto`, сертификат копируется в
+`/opt/klinto/certs` и nginx перезагружается. Ручной выпуск:
+`/opt/klinto/scripts/issue-ssl.sh`.
 
 > Прошивка модуля из браузера работает только на HTTPS-адресе или
 > `localhost`: Web Serial недоступен в незащищённом контексте.
@@ -32,12 +32,12 @@ HTTPS использует сертификат Let's Encrypt на `nip.io` + `i
 
 ## Резервные копии
 
-- Скрипт: `/opt/swarmgram/scripts/backup-hub.sh`
+- Скрипт: `/opt/klinto/scripts/backup-hub.sh`
 - Cron: каждые 6 часов (`15 */6 * * *`)
 - В архиве: `pg_dump` (включая `chat_key_versions`, `account_chat_keys`,
   `chat_keys`, `key_backups`, медиа-объекты) + `.env` с `HUB_KEY_SECRET` +
   compose.
-- Шифрование: AES-256-CBC, пароль `/root/.swarmgram-backup.pass`.
+- Шифрование: AES-256-CBC, пароль `/root/.klinto-backup.pass`.
   **Пароль храните вне сервера.**
 - Проверка восстановлением выполняется вручную/по чек-листу:
   `pg_restore` в отдельную БД и сверка количества ключей/сообщений.
@@ -74,7 +74,7 @@ HTTPS использует сертификат Let's Encrypt на `nip.io` + `i
   Wi-Fi часть работает через AP+STA mesh со скрытым `SG-MESH` и UDP-флудингом;
   пакеты мостятся между Wi-Fi и LoRa на каждом узле с обеими средами.
   Крупные конверты режутся на LoRa-фрагменты 150 Б × до 16 и собираются по
-  `packetId`. Полный ESP-WIFI-MESH-путь остаётся за флагом `SG_USE_ESP_MESH`
+  `packetId`. Полный ESP-WIFI-MESH-путь остаётся за флагом `KL_USE_ESP_MESH`
   и требует core 3.x + отладки на железе.
 - **Core 3.3.12 установлен**, доступны C3, ESP32 Lite и S3 (4 МБ), сборка
   `min_spiffs`. Для длинных сборок Hub/builder ждут до ~20 минут, а build-path
@@ -109,8 +109,8 @@ HTTPS использует сертификат Let's Encrypt на `nip.io` + `i
 
 ```bash
 curl -s localhost:8080/health
-docker exec swarmgram-firmware curl -s localhost:8090/health
-docker logs swarmgram-hub 2>&1 | grep -E 'key_material_check|error' | tail
+docker exec klinto-firmware curl -s localhost:8090/health
+docker logs klinto-hub 2>&1 | grep -E 'key_material_check|error' | tail
 df -h /                      # свободно должно быть > 300 МБ
 docker ps --format '{{.Names}} {{.Status}}'
 ```

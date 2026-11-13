@@ -3,25 +3,25 @@
 #include <stdio.h>
 #include <string.h>
 
-void kinto_telemetry_init(kinto_telemetry_t *t, const char *mesh_addr) {
+void klinto_telemetry_init(klinto_telemetry_t *t, const char *mesh_addr) {
   if (!t) return;
   memset(t, 0, sizeof(*t));
   if (mesh_addr) snprintf(t->mesh_addr, sizeof(t->mesh_addr), "%s", mesh_addr);
 }
 
-void kinto_telemetry_neighbor(kinto_telemetry_t *t, int16_t rssi) {
+void klinto_telemetry_neighbor(klinto_telemetry_t *t, int16_t rssi) {
   if (!t || t->neighbors_count >= KINTO_TELEMETRY_MAX_NEIGHBORS) return;
   t->neighbor_rssi[t->neighbors_count++] = rssi;
 }
 
-static int avg_rssi(const kinto_telemetry_t *t) {
+static int avg_rssi(const klinto_telemetry_t *t) {
   if (!t->neighbors_count) return 0;
   int sum = 0;
   for (uint8_t i = 0; i < t->neighbors_count; i++) sum += t->neighbor_rssi[i];
   return sum / t->neighbors_count;
 }
 
-unsigned kinto_telemetry_to_json(const kinto_telemetry_t *t, char *out, unsigned cap) {
+unsigned klinto_telemetry_to_json(const klinto_telemetry_t *t, char *out, unsigned cap) {
   if (!t || !out || !cap) return 0;
   int n = snprintf(
       out, cap,

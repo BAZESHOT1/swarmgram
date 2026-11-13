@@ -4,7 +4,7 @@
  * Android: пока модуль подключён, держим foreground service через notifee
  * (`asForegroundService`). Это не отдельный native-модуль — используется уже
  * установленный @notifee/react-native, поэтому новых зависимостей и нативного
- * кода не требуется. Канал `kinto-mesh` намеренно LOW importance: постоянное
+ * кода не требуется. Канал `klinto-mesh` намеренно LOW importance: постоянное
  * уведомление не должно звучать и висеть поверх чата.
  *
  * iOS: полноценный background BLE даёт UIBackgroundModes: bluetooth-central
@@ -24,8 +24,8 @@ import notifee, {
 } from '@notifee/react-native';
 import { Platform } from 'react-native';
 
-export const MESH_CHANNEL_ID = 'kinto-mesh';
-const SERVICE_NOTIFICATION_ID = 'kinto-mesh-service';
+export const MESH_CHANNEL_ID = 'klinto-mesh';
+const SERVICE_NOTIFICATION_ID = 'klinto-mesh-service';
 
 export interface MeshServiceInfo {
   publicId?: string;
@@ -58,7 +58,7 @@ async function ensureMeshChannel(): Promise<void> {
       .then(() => undefined)
       .catch((error) => {
         channelPromise = null;
-        warn('Не удалось создать канал kinto-mesh', error);
+        warn('Не удалось создать канал klinto-mesh', error);
       });
   }
   return channelPromise;
@@ -98,7 +98,7 @@ export async function startMeshForegroundService(info?: MeshServiceInfo): Promis
     const suffix = info?.publicId ? ` · ${info.publicId}` : info?.role ? ` · ${info.role}` : '';
     await notifee.displayNotification({
       id: SERVICE_NOTIFICATION_ID,
-      title: 'Kinto',
+      title: 'Klinto',
       body: `Mesh-соединение активно${suffix}`,
       android: {
         channelId: MESH_CHANNEL_ID,

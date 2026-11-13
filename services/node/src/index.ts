@@ -1,5 +1,5 @@
 /**
- * Kinto Node — узел хранения, который пользователь поднимает на своём сервере.
+ * Klinto Node — узел хранения, который пользователь поднимает на своём сервере.
  *
  * Что делает:
  *  1. При старте сам регистрируется на главном сервере (MAIN_SERVER_URL из .env),
@@ -37,7 +37,7 @@ const config = {
   ownerUsername: env('OWNER_USERNAME'),
   claimToken: env('NODE_CLAIM_TOKEN'),
   publicUrl: env('NODE_PUBLIC_URL'),
-  name: env('NODE_NAME', 'swarm-node'),
+  name: env('NODE_NAME', 'klinto-node'),
   region: env('NODE_REGION', 'unknown'),
   capacityGb: Number(env('NODE_CAPACITY_GB', '20')) || 20,
   port: Number(env('NODE_PORT', '9090')) || 9090,
@@ -315,7 +315,7 @@ app.addContentTypeParser('application/octet-stream', (_req, payload, done) => {
 app.get('/health', async (_req, reply) => {
   return reply.send({
     ok: true,
-    service: 'swarmgram-node',
+    service: 'klinto-node',
     version: config.version,
     registered: Boolean(identity),
     nodeId: identity?.nodeId ?? null,

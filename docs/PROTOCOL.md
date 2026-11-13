@@ -1,7 +1,7 @@
-# Kinto Mesh Protocol v2
+# Протокол Klinto Mesh v2
 
 Протокол обмена между модулями (ESP32) и модуля → Hub. Описывает
-фактический формат пакетов прошивки `swarm_module.ino`; архитектура и
+фактический формат пакетов прошивки `klinto_module.ino`; архитектура и
 выбор транспорта — в `docs/module-mesh-architecture.md`.
 
 Прикладной слой (API телефона через mesh) — **KMT v1**, см. `docs/KMT.md`.
@@ -11,7 +11,7 @@
 | Идентификатор | Размер | Как получается |
 |---|---|---|
 | `mesh_addr` | 6 байт | заводской MAC Wi-Fi STA (`esp_read_mac`, `ESP_MAC_WIFI_STA`) |
-| `hardwareId` | строка | `esp32-<12 hex>` из того же MAC, кэш в NVS `swarm/hw_id` |
+| `hardwareId` | строка | `esp32-<12 hex>` из того же MAC, кэш в NVS `klinto/hw_id` |
 | `nodeId` | u32 | FNV-1a 32 от `hardwareId` |
 | `cluster_id` | u32 | CRC32 по отсортированным строкам якорей через `\|`; `0` = кластера нет |
 | `packetId` | u32 | случайный (`esp_random`), уникален в пределах отправителя |
@@ -21,7 +21,7 @@
 маршрутизации не участвует.
 
 Для таблиц маршрутов и поля `addr` в ADVERT используется 8-байтная проекция
-`kinto_mesh_addr_from_u32(nodeId)`, а на проводе в `srcMac`/`dstMac` — реальные
+`klinto_mesh_addr_from_u32(nodeId)`, а на проводе в `srcMac`/`dstMac` — реальные
 6 байт MAC. Это разные представления одного узла, не два разных адреса.
 
 ## 2. MeshHeader (36 байт)
@@ -54,7 +54,7 @@ static_assert(sizeof(MeshHeader) == 36);
 - `dstMac` заполняется по таблице соседей; для неизвестного узла — нули,
   доставка идёт по `dst`.
 - Лимиты payload: ESP-NOW v1 кадр ≤ 240 байт, LoRa ≤ 180 байт, общий
-  предел `SG_MAX_PAYLOAD = 1024`. Крупное режется `MT_FRAG`.
+  предел `KL_MAX_PAYLOAD = 1024`. Крупное режется `MT_FRAG`.
 
 ## 3. Типы пакетов
 
@@ -98,7 +98,7 @@ enum MeshType {
 payload = origId u32 | index u8 | total u8 | chunk (<= 150 байт)
 ```
 
-- `total <= 16` (`SG_MAX_FRAGMENTS`), сборка в 2 слотах.
+- `total <= 16` (`KL_MAX_FRAGMENTS`), сборка в 2 слотах.
 - `packetId` фрагмента = `origId ^ ((index + 1) << 24)`.
 - После сборки пакет проходит обычный путь `handleMeshPacket` (локальная
   обработка + пересылка). Лог: `[frag] reassembled …`.
@@ -278,7 +278,7 @@ metric = ewma_ms + hops * 35 + queue_depth * 8
 
 ## 8. KMT v1
 
-Kinto Mesh Transport инкапсулирует HTTP API приложения в `MT_DATA`:
+Klinto Mesh Transport инкапсулирует HTTP API приложения в `MT_DATA`:
 AES-256-GCM blob, `chatId="__http__"`, `kind:"http"` / `"http_resp"` /
 `"http_resend"`, чанки по 280 байт, id идемпотентности, повторная отправка
 потерянных чанков. Полное описание, ключи и ограничения — `docs/KMT.md`.

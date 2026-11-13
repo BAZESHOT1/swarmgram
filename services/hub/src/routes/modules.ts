@@ -2371,7 +2371,7 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     await query(`UPDATE module_ota_jobs SET status = 'downloading', updated_at = now() WHERE id = $1`, [jobId]);
     reply
       .header('content-type', 'application/octet-stream')
-      .header('content-disposition', `attachment; filename="kinto-ota-${row.version || jobId}.bin"`);
+      .header('content-disposition', `attachment; filename="klinto-ota-${row.version || jobId}.bin"`);
     return reply.send(createReadStream(row.app_path));
   });
 

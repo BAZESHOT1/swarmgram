@@ -1,4 +1,4 @@
-# Module debug & flashing
+# Отладка и прошивка модуля
 
 Отладка модулей: веб-админка → вкладка **«Отладка»**
 (`client/app/(app)/admin.tsx`, `client/src/components/admin/ModuleDebugPanel.tsx`)
@@ -30,8 +30,8 @@ Bridge слушает `127.0.0.1:8787` и даёт браузеру:
 
 | Порт | Роль | Что прошиваем |
 |---|---|---|
-| `COM4` | `gateway` | сборка с `SG_ROLE=gateway`, `SG_CONNECTIVITY=wifi` |
-| `COM5` | `wearable` | сборка с `SG_ROLE=wearable` |
+| `COM4` | `gateway` | сборка с `KL_ROLE=gateway`, `KL_CONNECTIVITY=wifi` |
+| `COM5` | `wearable` | сборка с `KL_ROLE=wearable` |
 | `COMx` | `repeater` | по потребности |
 
 - Скорость монитора: **115200** 8N1.
@@ -74,7 +74,7 @@ Bridge слушает `127.0.0.1:8787` и даёт браузеру:
 | `ready if=0` | узел работает через STA-интерфейс |
 | `rate=normal` | LR выключен (штатно) |
 | `rate=LR250K` | LR включён, uplink через тот же Wi-Fi не заработает |
-| `PHY normal (LR needs…)` | `SG_ESPNOW_LR=0`, это норма |
+| `PHY normal (LR needs…)` | `KL_ESPNOW_LR=0`, это норма |
 | `peer … mac=…` | MAC соседа выучен, unicast возможен |
 | `channel X -> Y, reinit` | смена канала, пиры пересозданы |
 | `sync ch=N after sta` | канал подтянут за STA (после ассоциации) |
@@ -169,7 +169,7 @@ Bridge слушает `127.0.0.1:8787` и даёт браузеру:
 | `peer channel != home channel` / silent drop | пир создан с `channel=0` после смены канала | лог `[espnow] channel X -> Y, reinit`; `peer.channel` должен равняться `gEspNowChannel` |
 | `espnow send err` после смены канала | пиры не пересозданы | должен быть `reinit`, затем `ready` |
 | `discover failed` | шлюз не поднял SoftAP или другой канал | `[wifi] softAP`, `[channel] discover … -> ack` на шлюзе |
-| `PHY normal` при `SG_ESPNOW_LR=1` | IDF не даёт LR на AP, пока шлюз держит STA к роутеру | лог `[espnow] LR phy if=1 err=… -> normal`; выключить LR или использовать вариант B (два радио) |
+| `PHY normal` при `KL_ESPNOW_LR=1` | IDF не даёт LR на AP, пока шлюз держит STA к роутеру | лог `[espnow] LR phy if=1 err=… -> normal`; выключить LR или использовать вариант B (два радио) |
 | `relay_expired` в ответе Hub | повтор запроса со старым `ts` | модуль должен ACK до похода в Hub; проверить `[http] relay failed`, синхронизацию времени |
 | ответ KMT не собирается | потеряны чанки | `[http] resend …`, `part/total` в клиенте, 35 с таймаут |
 | `[lora] bridge fwd` нет | нет записи `cluster_id -> nextHop` | `[lora] bridge advert … via=` давно не появлялся |
