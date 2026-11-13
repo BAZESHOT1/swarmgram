@@ -50,6 +50,7 @@ abstract class BaseModuleConnection implements ModuleConnection {
 
   info: ModuleInfo | null = null;
   protected readonly envelopeHandlers = new Set<(message: ModuleEnvelope) => void>();
+  protected readonly infoHandlers = new Set<(info: ModuleInfo) => void>();
   protected readonly disconnectHandlers = new Set<() => void>();
   protected disconnected = false;
 
@@ -71,9 +72,33 @@ abstract class BaseModuleConnection implements ModuleConnection {
     return () => this.envelopeHandlers.delete(callback);
   }
 
+  onInfo(callback: (info: ModuleInfo) => void): () => void {
+    this.infoHandlers.add(callback);
+    if (this.info) {
+      try {
+        callback(this.info);
+      } catch {
+        /* ignore */
+      }
+    }
+    return () => this.infoHandlers.delete(callback);
+  }
+
   onDisconnect(callback: () => void): () => void {
     this.disconnectHandlers.add(callback);
     return () => this.disconnectHandlers.delete(callback);
+  }
+
+  /** Обновить info и уведомить подписчиков (шапка чатов, транспорт). */
+  protected emitInfo(info: ModuleInfo): void {
+    this.info = info;
+    for (const handler of this.infoHandlers) {
+      try {
+        handler(info);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   protected emitEnvelope(message: ModuleEnvelope): void {
@@ -264,7 +289,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
     this.startHelloRetry();
     try {
       const info = await this.waitInfo(Math.max(timeoutMs, USB_INFO_TIMEOUT_MS));
-      this.info = info;
+      this.emitInfo(info);
       return info;
     } catch (error) {
       await this.close().catch(() => undefined);
@@ -336,7 +361,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
         const parsed = parseModuleInfo(frame.payload);
         if (parsed) {
           const info = normalizeInfo(parsed);
-          this.info = info;
+          this.emitInfo(info);
           this.stopHelloRetry();
           if (this.infoWaiter) {
             clearTimeout(this.infoWaiter.timer);
@@ -374,7 +399,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
       }
     })();
     if (!raw || typeof raw !== 'object') return;
-    this.info = {
+    this.emitInfo({
       ...this.info,
       attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
@@ -382,7 +407,12 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,
       meshRole: typeof raw.meshRole === 'string' ? raw.meshRole : this.info.meshRole,
       firmware: typeof raw.firmware === 'string' ? raw.firmware : this.info.firmware,
-    };
+      gateway: raw.gateway === true || Number(raw.gateway) === 1 ? true : this.info.gateway,
+      neighbors: Number.isFinite(Number(raw.neighbors))
+        ? Math.max(0, Number(raw.neighbors))
+        : this.info.neighbors,
+      border: raw.border === true || Number(raw.border) === 1 ? true : this.info.border,
+    });
   }
 
   private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
@@ -649,7 +679,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
         throw error;
       },
     );
-    this.info = info;
+    this.emitInfo(info);
     return info;
   }
 
@@ -673,7 +703,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
         const parsed = parseModuleInfo(frame.payload);
         if (parsed) {
           const info = normalizeInfo(parsed);
-          this.info = info;
+          this.emitInfo(info);
           if (this.infoWaiter) {
             clearTimeout(this.infoWaiter.timer);
             this.infoWaiter.resolve(info);
@@ -707,13 +737,18 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
       raw = null;
     }
     if (!raw) return;
-    this.info = {
+    this.emitInfo({
       ...this.info,
       attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,
-    };
+      gateway: raw.gateway === true || Number(raw.gateway) === 1 ? true : this.info.gateway,
+      neighbors: Number.isFinite(Number(raw.neighbors))
+        ? Math.max(0, Number(raw.neighbors))
+        : this.info.neighbors,
+      border: raw.border === true || Number(raw.border) === 1 ? true : this.info.border,
+    });
   }
 
   private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
