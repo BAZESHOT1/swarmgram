@@ -23,6 +23,12 @@ start.cmd
 node server.mjs --port=8787
 ```
 
+Автозапуск при входе в Windows (задача планировщика, один раз):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-autostart.ps1
+```
+
 Python ищется по пути `%LOCALAPPDATA%\Programs\Python\Python312\python.exe`.
 Можно задать свой: `set KINTO_PYTHON=C:\Python312\python.exe`.
 
