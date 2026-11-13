@@ -47,10 +47,34 @@ jobs:
           EXPO_NO_TELEMETRY: 1
           CI: 1
 
-      - name: Collect APK
+      - name: Sign release APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          set -e
           mkdir -p ../artifacts
-          cp android/app/build/outputs/apk/release/*.apk ../artifacts/Klinto-android.apk
+          APK="$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/klinto.keystore"
+            BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$RUNNER_TEMP/klinto.keystore" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+              --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+              --out ../artifacts/Klinto-android.apk \
+              "$APK"
+            "$BUILD_TOOLS/apksigner" verify --verbose ../artifacts/Klinto-android.apk | tail -n 5
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 не задан — APK останется неподписанным"
+            cp "$APK" ../artifacts/Klinto-android.apk
+          fi
+
+      - name: Collect APK checksum
+        run: |
           cd ../artifacts
           sha256sum Klinto-android.apk > Klinto-android.apk.sha256
           ls -lh
