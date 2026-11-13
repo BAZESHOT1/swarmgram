@@ -435,8 +435,14 @@ static HttpRespCache *httpCacheFind(const String &id) {
 
 static void httpCacheStore(const String &id, const String &blob, uint16_t total) {
   // Очень крупный ответ не дублируем: на C3 это риск фрагментации heap.
+  // String() освобождает буфер, "" лишь обнуляет длину и оставляет capacity.
   if (blob.length() > 24000) {
-    for (auto &slot : gHttpCache) { slot.id = ""; slot.blob = ""; slot.total = 0; }
+    for (auto &slot : gHttpCache) {
+      slot.id = String();
+      slot.blob = String();
+      slot.total = 0;
+    }
+    return;
   }
   HttpRespCache &slot = gHttpCache[gHttpCacheNext];
   gHttpCacheNext = (uint8_t)((gHttpCacheNext + 1) % 2);

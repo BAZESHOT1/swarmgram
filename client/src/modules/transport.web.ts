@@ -401,7 +401,7 @@ export class WebSerialModuleTransport extends BaseModuleConnection {
     if (!raw || typeof raw !== 'object') return;
     this.emitInfo({
       ...this.info,
-      attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
+      attached: raw.attached === true || Number(raw.attached) === 1 ? true : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,
@@ -739,7 +739,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
     if (!raw) return;
     this.emitInfo({
       ...this.info,
-      attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
+      attached: raw.attached === true || Number(raw.attached) === 1 ? true : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,

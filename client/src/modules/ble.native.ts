@@ -558,7 +558,7 @@ export class NativeBleTransport implements ModuleConnection {
     };
     const next: ModuleInfo = {
       ...this.info,
-      attached: typeof raw.attached === 'boolean' ? raw.attached : this.info.attached,
+      attached: raw.attached === true || Number(raw.attached) === 1 ? true : this.info.attached,
       queue: Number.isFinite(Number(raw.queue)) ? Number(raw.queue) : this.info.queue,
       rssi: Number.isFinite(Number(raw.rssi)) ? Number(raw.rssi) : this.info.rssi,
       battery: Number.isFinite(Number(raw.battery)) ? Number(raw.battery) : this.info.battery,

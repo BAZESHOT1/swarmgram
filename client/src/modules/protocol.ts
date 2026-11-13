@@ -220,6 +220,11 @@ export class FrameDecoder {
           };
         }
         const fragment = this.fragment;
+        // Битая/враждебная длина не должна ронять декодер RangeError-ом.
+        if (offset + chunk.length > fragment.total) {
+          this.fragment = null;
+          continue;
+        }
         fragment.data.set(chunk, offset);
         fragment.parts.set(offset, chunk.length);
         fragment.at = Date.now();
@@ -301,9 +306,9 @@ export interface ModuleInfoPayload {
   firmware?: string;
   battery?: number;
   meshRole?: string;
-  attached?: boolean;
+  attached?: boolean | number;
   /** Есть ли путь к серверам через шлюз (свой Wi-Fi или сосед-шлюз). */
-  gateway?: boolean;
+  gateway?: boolean | number;
   queue?: number;
   rssi?: number;
   /** Живые данные mesh-кластера для шапки «Чаты». */
@@ -382,7 +387,7 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     firmware: source.firmware != null ? String(source.firmware) : undefined,
     battery: num(source.battery, 0),
     meshRole: source.meshRole != null ? String(source.meshRole) : source.mesh_role != null ? String(source.mesh_role) : undefined,
-    attached: typeof source.attached === 'boolean' ? source.attached : undefined,
+    attached: source.attached === true || Number(source.attached) === 1,
     gateway: source.gateway === true || Number(source.gateway) === 1,
     queue: num(source.queue, 0),
     rssi: num(source.rssi, 0),

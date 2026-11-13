@@ -49,9 +49,16 @@ export async function sendViaMesh(chatId: string, envelope: unknown): Promise<bo
   }
 }
 
-/** ModuleProvider вызывает при входящем mesh DATA_DOWN. */
+/**
+ * ModuleProvider вызывает при входящем mesh DATA_DOWN.
+ *
+ * Внутри одного mesh-конверта едут разные формы: сообщение (chatId +
+ * envelopeB64) и служебный KMT-ответ (kind:'http_resp' без chatId).
+ * Раньше guard требовал chatId и молча выбрасывал все http_resp, поэтому
+ * API-туннель никогда не завершался. Слушатели сами проверяют свою форму.
+ */
 export function emitMeshEnvelope(envelope: Envelope): void {
-  if (!envelope || typeof envelope.chatId !== 'string') return;
+  if (!envelope || typeof envelope !== 'object') return;
   for (const listener of listeners) {
     try {
       listener(envelope);

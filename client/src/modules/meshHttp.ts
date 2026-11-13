@@ -7,7 +7,7 @@
  */
 import { ApiError, getSession } from '../data/api';
 import { decryptJson, encryptJson, fromB64, toB64, utf8Encode } from '../crypto/core';
-import { onMeshEnvelope, sendViaMesh, canSendViaMesh } from './meshLink';
+import { onMeshEnvelope, sendViaMesh, canSendViaMesh, getMeshCapabilities } from './meshLink';
 
 interface Pending {
   resolve: (value: MeshHttpResponse) => void;
@@ -127,7 +127,8 @@ function utf8Decode(bytes: Uint8Array): string {
 
 /** Доступен ли туннель: есть ключ и подключённый модуль с шлюзом. */
 export function meshHttpAvailable(): boolean {
-  return Boolean(getSession()?.meshRelayKey && canSendViaMesh());
+  // Без подтверждённого шлюза запрос уйдёт в пустоту и провисит 35 с.
+  return Boolean(getSession()?.meshRelayKey && canSendViaMesh() && getMeshCapabilities().gateway);
 }
 
 /**
@@ -161,6 +162,9 @@ export async function meshHttpFetch(
     body,
   });
   const blob = toB64(utf8Encode(JSON.stringify(enc)));
+  // Один mesh-кадр несёт не больше SG_MAX_PAYLOAD (1024); JSON-обёртка и
+  // base64 дают запас ~900 байт. Крупный POST не влезет — не ждём 35 с.
+  if (blob.length > 900) return null;
 
   const result = await new Promise<MeshHttpResponse | null>((resolve) => {
     const timer = setTimeout(() => {

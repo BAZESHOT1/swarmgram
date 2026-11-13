@@ -97,7 +97,7 @@ export function normalizeInfo(raw: {
   firmware?: string;
   battery?: number;
   meshRole?: string;
-  attached?: boolean;
+  attached?: boolean | number | string;
   gateway?: boolean | number | string;
   queue?: number;
   rssi?: number;
@@ -117,7 +117,7 @@ export function normalizeInfo(raw: {
     firmware: raw.firmware ?? '',
     battery: Math.max(0, Math.min(100, Number(raw.battery ?? 0))),
     meshRole: raw.meshRole,
-    attached: Boolean(raw.attached),
+    attached: truthy(raw.attached),
     gateway: truthy(raw.gateway),
     queue: Math.max(0, Number(raw.queue ?? 0)),
     rssi: Number(raw.rssi ?? 0),
