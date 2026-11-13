@@ -72,9 +72,14 @@ KDF-метки транспорта: `KLINTO-KMESH1-ENC`, `KLINTO-KMESH1-MAC`.
    и `com.pink_project.kintoapp` также сохранены, иначе перестанут работать
    Firebase/Google Services и обновления из стора.
 
-## Проверка
+## Нативные приложения
 
-| Проверка | Результат |
+- `Klinto-android.apk` — подписан release-ключом (`apksigner`, v1/v2/v3),
+  готов к установке. Версия 1.5.0 (versionCode 10500).
+- `Klinto-unsigned.ipa` — unsigned IPA для Sideloadly (Apple ID пользователя).
+- SHA-256 приложений лежит рядом с файлами.
+
+## Проверка| Проверка | Результат |
 | --- | --- |
 | Host C++ | 518 проверок, 0 ошибок |
 | ESP32 devkit (Arduino 3.3.12, RadioLib 7.8.1) | SUCCESS, flash 2.18 MB |
