@@ -1525,10 +1525,13 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const method = String(request.method ?? 'GET').toUpperCase();
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw badRequest('method_invalid');
     // Только небольшой прикладной API. Никаких auth/admin/upload.
-    if (!/^\/v1\/(me|chats|users|modules|notifications|channels|groups|search|firmware)(\/|\?|$)/.test(request.path)) {
+    // Разрешаем весь прикладной API, кроме чувствительных upload/auth/admin.
+    // Раньше allowlist был слишком узким, и шлюз получал 403 на /v1/requests,
+    // /v1/invites, /v1/presence и т.п. — из-за этого «Соединение» висело.
+    if (!request.path.startsWith('/v1/')) {
       throw forbidden('relay_path_forbidden');
     }
-    if (request.path.startsWith('/v1/admin') || request.path.startsWith('/v1/auth') || request.path.startsWith('/v1/objects')) {
+    if (/^\/v1\/(admin|auth|objects|uploads|keys|account\/keys)\b/.test(request.path)) {
       throw forbidden('relay_path_forbidden');
     }
 
@@ -2088,12 +2091,17 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
 
     const q = req.query as { since?: string; cursor?: string };
     let since: string | null = null;
-    if (typeof q.since === 'string' && q.since.trim()) {
-      const d = new Date(q.since);
-      if (!Number.isFinite(d.getTime())) throw badRequest('invalid_since');
-      since = d.toISOString();
-    }
     let cursor: number | null = null;
+    if (typeof q.since === 'string' && q.since.trim()) {
+      if (/^\d+$/.test(q.since.trim())) {
+        // Прошивка присылает числовой since как seq-курсор.
+        cursor = Math.trunc(Number(q.since));
+      } else {
+        const d = new Date(q.since);
+        if (!Number.isFinite(d.getTime())) throw badRequest('invalid_since');
+        since = d.toISOString();
+      }
+    }
     if (typeof q.cursor === 'string' && q.cursor.trim()) {
       const n = Number(q.cursor);
       if (!Number.isFinite(n) || n < 0) throw badRequest('invalid_cursor');
@@ -2194,7 +2202,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
         },
       });
     }
-    return reply.send({ ok: true, items, cursor: rows.length ? rows[rows.length - 1].seq : cursor });
+    const nextCursor = rows.length ? rows[rows.length - 1].seq : cursor;
+    return reply.send({ ok: true, items, cursor: nextCursor, nextSince: nextCursor ?? 0 });
   });
 
   /** Подтверждение обработки записей mesh_inbox (опционально). */

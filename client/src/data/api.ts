@@ -6,6 +6,7 @@
 import { Platform } from 'react-native';
 import { storage, toB64u, type Session } from '../crypto/core';
 import { beginRequest, endRequest } from './loading';
+import { useStore } from '../state/useStore';
 
 export type { Session } from '../crypto/core';
 
@@ -185,6 +186,18 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isAuthCall = path.startsWith('/v1/auth/');
   // Проактивно обновляем токен за минуту до истечения.
   if (!isAuthCall) await ensureAccessToken();
+
+  // Нет интернета, но модуль подключён: не ждём HTTP-таймауты, сразу mesh.
+  if (!isAuthCall && !useStore.getState().transportOnline && useStore.getState().transportModule) {
+    const meshHttp = await import('../modules/meshHttp').catch(() => null);
+    if (meshHttp?.meshHttpAvailable()) {
+      const tunneled = await meshHttp.meshHttpFetch(path, init).catch(() => null);
+      if (tunneled) {
+        meshHttp.throwIfMeshError(tunneled);
+        return tunneled.body as T;
+      }
+    }
+  }
 
   const run = async (): Promise<Response> => {
     const headers = new Headers(init.headers ?? {});

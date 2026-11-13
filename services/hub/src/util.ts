@@ -80,6 +80,14 @@ export function clientIp(req: FastifyRequest): string {
 
 export function errorHandler(err: unknown, _req: FastifyRequest, reply: FastifyReply): void {
   if (err instanceof ApiError) {
+    if (err.status >= 400) {
+      log('warn', 'api_error', {
+        status: err.status,
+        code: err.code,
+        url: _req.url,
+        ip: _req.ip,
+      });
+    }
     void reply.status(err.status).send({ error: err.code, message: err.message, details: err.details });
     return;
   }

@@ -674,6 +674,32 @@ static String b64Encode(const String &in) {
   return out;
 }
 
+/** Base64 decode (терпит URL-safe варианты). */
+static String b64Decode(const String &in) {
+  auto val = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    return -1;
+  };
+  String out;
+  out.reserve((in.length() * 3) / 4 + 3);
+  int acc = 0, bits = 0;
+  for (size_t i = 0; i < in.length(); i++) {
+    const int v = val(in[i]);
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += (char)((acc >> bits) & 0xFF);
+    }
+  }
+  return out;
+}
+
 static String jsonEsc(const String &s) {
   String out;
   out.reserve(s.length() + 8);
