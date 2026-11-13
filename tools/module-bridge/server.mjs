@@ -144,7 +144,13 @@ async function closePort(path) {
   const session = sessions.get(path);
   if (!session) return null;
   if (session.port?.isOpen) {
-    await new Promise((resolve) => session.port.close(() => resolve()));
+    // close() может не вызвать callback, если в порт стоит незавершённая
+    // запись. Не даём bridge зависнуть и держать COM-порт.
+    await Promise.race([
+      new Promise((resolve) => session.port.close(() => resolve())),
+      sleep(1500),
+    ]);
+    try { session.port?.destroy?.(); } catch { /* ignore */ }
   }
   session.port = null;
   broadcastStatus(path);

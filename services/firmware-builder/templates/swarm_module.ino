@@ -600,18 +600,26 @@ static void initIdentity() {
     mac[5] = (uint8_t)(efuse & 0xFF);
   }
 
-  // Стабильный кэш идентичности: MAC — источник истины, NVS — страховка.
+  // Канонический MAC всегда вычисляется из eFuse. NVS — только кэш для
+  // обратной совместимости; если там лежит старое/перевёрнутое значение,
+  // перезаписываем его. Иначе один физический модуль навсегда остаётся с
+  // «чужим» ID и плодит дубли в БД.
+  const String computed = macToHardwareId(mac);
   Preferences prefs;
   String stored;
   if (prefs.begin("swarm", false)) {
     stored = prefs.getString("hw_id", "");
-    if (!stored.length() || !stored.startsWith("esp32-") || stored.length() != 18) {
-      stored = macToHardwareId(mac);
+    if (stored != computed) {
+      if (stored.length()) {
+        sgLog("[identity] NVS %s != eFuse %s -> canonical", stored.c_str(), computed.c_str());
+      }
+      stored = computed;
       prefs.putString("hw_id", stored);
+      prefs.putString("hw_ver", "2");
     }
     prefs.end();
   }
-  gHardwareId = stored.length() ? stored : macToHardwareId(mac);
+  gHardwareId = computed;
   // Восстанавливаем gMac из канонической строки (NVS может хранить её).
   {
     const char *hex = gHardwareId.c_str();

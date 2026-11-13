@@ -522,6 +522,67 @@ async function loadOwnedModule(id: string, ownerId: string): Promise<ModuleRecor
 }
 
 /** Канонический MAC-идентификатор платы: esp32-<12 hex>. */
+/** Обратный порядок байт MAC: esp32-<hex> -> esp32-<reversed hex>. */
+function reversedHardwareId(value: string): string | null {
+  const hex = value.toLowerCase().replace(/^esp32-/, '');
+  if (!/^[0-9a-f]{12}$/.test(hex)) return null;
+  const bytes = hex.match(/.{2}/g);
+  return bytes ? `esp32-${bytes.reverse().join('')}` : null;
+}
+
+/**
+ * Сливает исторический дубль с перевёрнутым MAC в каноническую запись.
+ * Раньше прошивка форматировала eFuse MAC в обратном порядке, из-за чего
+ * один физический модуль попадал в БД дважды (esp32-ab.. и esp32-..ba).
+ */
+async function mergeReversedModule(canonical: string): Promise<void> {
+  const reversed = reversedHardwareId(canonical);
+  if (!reversed || reversed === canonical) return;
+  try {
+    const exact = await one<{ id: string }>(
+      'SELECT id FROM modules WHERE lower(hardware_id) = $1 LIMIT 1',
+      [canonical],
+    );
+    const legacy = await one<{ id: string }>(
+      'SELECT id FROM modules WHERE lower(hardware_id) = $1 LIMIT 1',
+      [reversed],
+    );
+    if (!legacy) return;
+    const system = await one<{ id: string }>("SELECT id FROM users WHERE username = 'system_modules' LIMIT 1");
+    if (!exact) {
+      await query(
+        `UPDATE modules SET hardware_id = $2, board_uuid = $2, mesh_addr = $2,
+                updated_at = now() WHERE id = $1`,
+        [legacy.id, canonical],
+      );
+      log('info', 'module_mac_canonicalized', { id: legacy.id, from: reversed, to: canonical });
+      return;
+    }
+    // Обе записи существуют: переносим владельца/имя/токен и удаляем старую.
+    // Сначала освобождаем BLE-алиас, иначе unique index не даст обновить target.
+    await query("UPDATE modules SET ble_mac = '' WHERE id = $1", [legacy.id]);
+    await query(
+      `UPDATE modules t SET
+         owner_id = CASE WHEN t.owner_id = $3 THEN s.owner_id ELSE t.owner_id END,
+         name = COALESCE(NULLIF(t.name, ''), s.name),
+         ble_mac = CASE WHEN t.ble_mac <> '' THEN t.ble_mac ELSE s.ble_mac END,
+         token_version = GREATEST(t.token_version, s.token_version),
+         last_seen_at = GREATEST(COALESCE(t.last_seen_at, s.last_seen_at), COALESCE(s.last_seen_at, t.last_seen_at)),
+         updated_at = now()
+       FROM modules s
+       WHERE t.id = $1 AND s.id = $2`,
+      [exact.id, legacy.id, system?.id ?? ''],
+    );
+    await query('DELETE FROM modules WHERE id = $1', [legacy.id]);
+    log('info', 'module_duplicate_merged', { kept: exact.id, removed: legacy.id, from: reversed, to: canonical });
+  } catch (error) {
+    log('warn', 'module_duplicate_merge_failed', {
+      canonical,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function canonicalHardwareId(value: string): string | null {
   const raw = value.trim().toLowerCase();
   const hex = raw.replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
@@ -538,8 +599,8 @@ function normalizeBleMac(value: unknown): string {
 function hardwareIdOrThrow(value: string, field = 'hardwareId'): string {
   const canonical = canonicalHardwareId(value);
   if (canonical) return canonical;
-  // Легаси-значения без MAC (старые записи) сохраняем, но новые — только MAC.
-  if (!/^esp32-/.test(value.trim().toLowerCase())) return value.trim().toLowerCase();
+  // Идентичность — только заводской MAC. UUID/публичные ID/имена запрещены:
+  // иначе один модуль создаёт новую запись при каждом pairing.
   throw badRequest(`${field}_invalid`);
 }
 
@@ -798,6 +859,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId ?? body.boardUuid, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
     const bleMac = normalizeBleMac(body.bleMac ?? body.ble_mac);
+    // Сначала сливаем исторический дубль с перевёрнутым MAC, если он есть.
+    await mergeReversedModule(hardwareId);
 
     const computedPublicId = publicIdFromHardware(hardwareId);
     const providedPublicId = body.publicId === undefined || body.publicId === null
@@ -822,8 +885,10 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       `SELECT id, owner_id, blocked, public_id, role, transport, token_version FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
            OR ($2 <> '' AND lower(ble_mac) = $2)
-        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC LIMIT 1`,
-      [hardwareId, bleMac],
+           OR ($3 <> '' AND public_id = $3)
+        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC,
+                 (public_id = $3) DESC LIMIT 1`,
+      [hardwareId, bleMac, providedPublicId],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
 
@@ -1507,6 +1572,8 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
     const hardwareId = hardwareIdOrThrow(str(body.hardwareId, 'hardwareId', { max: 64 }));
     if (hardwareId.length < 8) throw badRequest('invalid_hardware_id');
     const bleMac = normalizeBleMac(body.bleMac ?? body.ble_mac);
+    // Сначала сливаем исторический дубль с перевёрнутым MAC, если он есть.
+    await mergeReversedModule(hardwareId);
     const computed = publicIdFromHardware(hardwareId);
     const provided = body.publicId === undefined || body.publicId === null ? '' : String(body.publicId).trim();
     if (provided && !isPublicId(provided)) throw badRequest('public_id_mismatch');
@@ -1544,8 +1611,10 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       `SELECT id, owner_id, blocked, public_id, role, transport, token_version, cluster_id FROM modules
         WHERE lower(hardware_id) = $1 OR lower(board_uuid) = $1
            OR ($2 <> '' AND lower(ble_mac) = $2)
-        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC LIMIT 1`,
-      [hardwareId, bleMac],
+           OR ($3 <> '' AND public_id = $3)
+        ORDER BY (lower(hardware_id) = $1) DESC, (lower(board_uuid) = $1) DESC,
+                 (public_id = $3) DESC LIMIT 1`,
+      [hardwareId, bleMac, provided],
     );
     if (existing?.blocked) throw new ApiError(403, 'hardware_blocked', 'hardware_blocked');
 
