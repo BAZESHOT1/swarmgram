@@ -112,6 +112,19 @@
 - `SET_CONFIG` и `SET_OWNER` отправляются бинарными кадрами KMesh_v1
   (`ClientFrameType.CONFIG = 6`, `SET_OWNER = 14`).
 
+## UI и питание C3 (1.10.4)
+
+- `chats.tsx` подписан на `onKmeshSearch`: при офлайне результаты поиска
+  из модуля добавляются отдельной секцией «Из модуля».
+- `onKmeshFeed` обновляет превью чатов, `onKmeshHistory` догружает
+  сообщения в кэш при открытии чата.
+- `requestKmeshSearch/Feed/History` живут в `kmesh/v1/runtime.ts`,
+  активный клиент регистрирует `ModuleProvider`.
+- `tools/module-bridge` открывает COM с `dtr: false, rts: false`:
+  RTS больше не удерживает boot-strap C3 в ROM-download.
+- На C3 Wi-Fi TX ограничен 8.5 dBm и включён modem sleep: BLE + ESP-NOW
+  не дают brownout при подключении телефона.
+
 ## Трассировка
 
 После прошивки в Serial выводятся четыре метки:
