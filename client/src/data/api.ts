@@ -1647,6 +1647,13 @@ export const api = {
       '/v1/kmesh/v1/me/identity',
     ),
 
+  /** Зарегистрировать chat_ref = CRC16(chatId) для серверной маршрутизации. */
+  kmeshV1RegisterRef: (chatId: string) =>
+    req<{ ok: true; chat_ref: number }>('/v1/kmesh/v1/ref', {
+      method: 'POST',
+      body: JSON.stringify({ chat_id: chatId }),
+    }),
+
   kmeshV1Modules: () =>
     req<{
       ok: true;

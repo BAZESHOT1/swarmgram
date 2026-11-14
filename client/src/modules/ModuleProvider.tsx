@@ -22,12 +22,15 @@ import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { emitMeshEnvelope, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
 import { crc16 } from '../kmesh/v1/protocol';
+import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
 import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
 import {
   addPendingBleClaim,
   listPendingBleClaims,
+  kmeshV1List,
+  kmeshV1Update,
   removePendingBleClaim,
 } from '../data/db';
 import {
@@ -280,7 +283,51 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const v1 = new KMeshV1Client({
           link: { send: (frame) => raw.send(frame) },
           resolveChatByRef: resolveChat,
-          onInfo: (info) => setMeshCapabilities({ queue: info.queue }),
+          onInfo: (info) => {
+            setMeshCapabilities({ queue: info.queue });
+            if (info.nodeId) void api.kmeshV1NodeBind(info.nodeId).catch(() => undefined);
+          },
+          onSearch: (reqId, results, more) => emitKmeshSearch({ reqId, results, more }),
+          onFeed: (entries, more) => emitKmeshFeed({ entries, more }),
+          onHistory: (chatRef, messages, more) => emitKmeshHistory({ chatRef, messages, more }),
+          onStatus: (event) => {
+            void (async () => {
+              const list = await kmeshV1List().catch(() => []);
+              const item = list.find((row) => row.msgUuid === event.msgUuid);
+              if (!item) return;
+              const nextState =
+                event.status === 5
+                  ? 'FAILED'
+                  : event.status === 4
+                    ? 'SYNCED_PERMANENT'
+                    : event.status >= 2
+                      ? 'SYNC_PENDING'
+                      : item.state;
+              if (nextState !== item.state) {
+                await kmeshV1Update({ ...item, state: nextState, serverSeq: event.serverSeq }).catch(
+                  () => undefined,
+                );
+              }
+              // Оптимистичное сообщение в ленте: снимаем «часики» по ACK/доставке.
+              const delivered = event.status >= 2 && event.status !== 5;
+              qc.setQueryData<unknown[]>(['messages', item.chatId], (prev) => {
+                const rows = Array.isArray(prev) ? [...prev] : [];
+                const index = rows.findIndex(
+                  (row) =>
+                    (row as { text?: string })?.text === item.text &&
+                    Boolean((row as { pending?: boolean })?.pending),
+                );
+                if (index < 0) return prev;
+                rows[index] = {
+                  ...(rows[index] as object),
+                  pending: event.status === 5 ? true : !delivered,
+                  delivered,
+                  failed: event.status === 5,
+                };
+                return rows;
+              });
+            })();
+          },
           onMessage: (message) => {
             if (!message.text || message.srcNodeId === v1.getNodeId()) return;
             const chatId = resolveChat(message.chatRef);
@@ -319,6 +366,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
         setMeshV1Sender(async (chatId, text) => {
           try {
+            void api.kmeshV1RegisterRef(chatId).catch(() => undefined);
             const result = await v1.sendText({
               chatId,
               chatRef: refOf(chatId),
@@ -332,6 +380,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           }
         });
         void v1.hello();
+        const cachedChats =
+          qc.getQueryData<Array<{ id?: unknown }>>(['chats', session?.username]) ?? [];
+        for (const chat of cachedChats.slice(0, 50)) {
+          if (typeof chat?.id === 'string') {
+            void api.kmeshV1RegisterRef(chat.id).catch(() => undefined);
+          }
+        }
       }
 
       // Profile-presence: только username/publicId/userId, без списка чатов.
@@ -390,7 +445,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           const claim = await api.kmeshV1ClaimModule(nextInfo.hardwareId);
           const decoded = claim.claimToken ? decodeOwnerClaimToken(claim.claimToken) : null;
           if (decoded) {
-            await transport.setOwner(decoded);
+            if (v1ClientRef.current) await v1ClientRef.current.setOwner(decoded);
+            else await transport.setOwner(decoded);
             useStore.getState().pushToast({
               kind: 'success',
               message: `Модуль привязан: KL-${decoded.prefix}-${claim.mod6 ?? ''}`,
@@ -563,7 +619,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     if (current.role !== 'gateway') {
       return fail('Настройка Wi-Fi доступна только шлюзу.');
     }
-    if (!transport.sendConfig) {
+    if (!transport.sendConfig && !v1ClientRef.current) {
       return fail('Эта прошивка не поддерживает смену Wi-Fi роутера. Обновите прошивку шлюза.');
     }
     const wifiSsid = ssid.trim();
@@ -577,7 +633,15 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       setError(null);
     }
     try {
-      await transport.sendConfig({ wifiSsid, wifiPassword: password });
+      const v1 = v1ClientRef.current;
+      if (v1) {
+        const ok = await v1.sendConfig(wifiSsid, password);
+        if (!ok) throw new Error('kmesh_config_failed');
+      } else if (transport.sendConfig) {
+        await transport.sendConfig({ wifiSsid, wifiPassword: password });
+      } else {
+        throw new Error('config_unsupported');
+      }
       useStore.getState().pushToast({
         kind: 'success',
         message: `Настройки Wi-Fi отправлены шлюзу · ${wifiSsid}`,
@@ -644,7 +708,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             setAutoModule({ key: device.id, name: device.name, isMine: true, phase: 'connecting' });
             if (transport.openDevice) await transport.openDevice(device.id);
             else await transport.openKnown?.(undefined, 5000);
-            await transport.setOwner(claim);
+            if (transport.rawLink) {
+              const temp = new KMeshV1Client({ link: { send: (frame) => transport.rawLink!.send(frame) } });
+              const un = transport.rawLink.onData((chunk) => temp.handleData(chunk));
+              try {
+                await temp.hello();
+                await temp.setOwner(claim);
+              } finally {
+                un();
+              }
+            } else {
+              await transport.setOwner(claim);
+            }
             await transport.close().catch(() => undefined);
             await removePendingBleClaim(pending.bleName);
             const consumed = incomingClaims.find((c) => c.oldBleName === pending.bleName);

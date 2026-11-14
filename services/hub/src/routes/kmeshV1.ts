@@ -14,7 +14,7 @@
  * Каноническая строка подписи (UTF-8, хэшируется один раз перед ECDSA/Ed25519):
  *   KLINTO-KMESH1-PERM|<msg_uuid hex>|<sender_id>|<receiver_id>|<timestamp_ms>|<cipher hex>
  */
-import { createHash, createPublicKey, verify as verifyRawSignature } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, verify as verifyRawSignature } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth.js';
 import { requireModule } from './modules.js';
@@ -24,7 +24,24 @@ import { one, query, tx } from '../db.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { requireAdmin } from '../auth.js';
 import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, type OtaManifest } from '../ota.js';
-import { moduleMod6, normalizeModuleMac, userNetIdentityFromUuid } from '../meshId.js';
+import { moduleMod6, normalizeModuleMac, userNetIdentityFromUuid, fnv1a32 } from '../meshId.js';
+import {
+  buildPacket,
+  crc16,
+  decodeFeedRequest,
+  decodeHistoryRequest,
+  decodeSearchRequest,
+  decodeTextRpc,
+  encodeFeedResponse,
+  encodeHistoryResponse,
+  encodeSearchResponse,
+  msgUuidHex,
+  openTemp,
+  parsePacket,
+  RpcOp,
+  rpcPrefix,
+  sealTemp,
+} from '../kmeshRpc.js';
 import { publish as publishRealtime } from '../realtime.js';
 import { sendSystemNotification } from '../push.js';
 
@@ -248,6 +265,259 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     await requireModule()(req);
   }
 
+  /* ---------------------- маршрутизация KMesh_v1 ------------------------ */
+
+  function randomU32(): number {
+    return randomBytes(4).readUInt32LE(0) || 1;
+  }
+
+  function randomU64(): bigint {
+    const value = randomBytes(8).readBigUInt64LE(0);
+    return value === 0n ? 1n : value;
+  }
+
+  async function userForNode(nodeId: number): Promise<string | null> {
+    if (!Number.isInteger(nodeId) || nodeId <= 1) return null;
+    const bound = await one<{ user_id: string }>(
+      'SELECT user_id::text FROM kmesh_v1_node_bindings WHERE node_id = $1',
+      [nodeId],
+    );
+    if (bound?.user_id) return bound.user_id;
+    const presence = await one<{ user_id: string | null }>(
+      `SELECT user_id::text FROM kmesh_v1_presence
+        WHERE node_id = $1 AND expires_at > now() LIMIT 1`,
+      [nodeId],
+    );
+    return presence?.user_id ?? null;
+  }
+
+  /** Узел пользователя и шлюз, через который он сейчас слышен. */
+  async function nodeForUser(userId: string): Promise<{ nodeId: number; gatewayId: number } | null> {
+    const presence = await one<{ node_id: string; gateway_id: string }>(
+      `SELECT node_id::text, gateway_id::text FROM kmesh_v1_presence
+        WHERE user_id = $1 AND expires_at > now()
+        ORDER BY last_seen_at DESC LIMIT 1`,
+      [userId],
+    );
+    if (presence) {
+      return { nodeId: Number(presence.node_id), gatewayId: Number(presence.gateway_id) };
+    }
+    const bound = await one<{ node_id: string }>(
+      `SELECT node_id::text FROM kmesh_v1_node_bindings
+        WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+      [userId],
+    );
+    return bound ? { nodeId: Number(bound.node_id), gatewayId: 0 } : null;
+  }
+
+  /** Собрать зашифрованный пакет и положить его в downlink по node_id. */
+  async function queuePacket(input: {
+    gatewayId: number;
+    dstNodeId: number;
+    srcNodeId: number;
+    msgUuid: bigint;
+    rpc: Buffer;
+    type?: number;
+  }): Promise<boolean> {
+    const packetId = randomU32();
+    const sealed = sealTemp(
+      config.tempMeshKey,
+      {
+        packetId,
+        msgUuid: input.msgUuid,
+        srcId: input.srcNodeId,
+        dstId: input.dstNodeId,
+        type: input.type ?? 1,
+      },
+      input.rpc,
+    );
+    if (!sealed) return false;
+    const wire = buildPacket({
+      packetId,
+      msgUuid: input.msgUuid,
+      srcId: input.srcNodeId,
+      dstId: input.dstNodeId,
+      nextHopId: input.dstNodeId,
+      type: input.type ?? 1,
+      flags: sealed.flags,
+      payload: sealed.payload,
+    });
+    await query(
+      `INSERT INTO kmesh_v1_downlink
+         (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64)
+       VALUES ($1,$2,'packet',$3,$4,$5)`,
+      [input.gatewayId, input.dstNodeId, packetId, msgUuidHex(input.msgUuid),
+       wire.toString('base64')],
+    );
+    return true;
+  }
+
+  async function routeText(packet: ReturnType<typeof parsePacket> & object, plain: Buffer,
+                           gatewayId: number): Promise<void> {
+    const rpc = decodeTextRpc(plain);
+    if (!rpc) return;
+    const chat = await one<{ chat_id: string }>(
+      `SELECT chat_id::text FROM kmesh_v1_chat_refs
+        WHERE chat_ref = $1 LIMIT 1`,
+      [rpc.chatRef],
+    );
+    if (!chat) return;
+    const sender = await userForNode(packet.srcId);
+    const members = await query<{ user_id: string }>(
+      'SELECT user_id::text FROM chat_members WHERE chat_id = $1',
+      [chat.chat_id],
+    );
+    for (const member of members) {
+      if (sender && member.user_id === sender) continue;
+      const target = await nodeForUser(member.user_id);
+      if (!target || target.nodeId === packet.srcId) continue;
+      await queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: packet.srcId,
+        msgUuid: packet.msgUuid,
+        rpc: plain,
+      });
+    }
+  }
+
+  async function routeServiceRpc(packet: ReturnType<typeof parsePacket> & object, plain: Buffer,
+                                 gatewayId: number): Promise<boolean> {
+    const prefix = rpcPrefix(plain);
+    if (!prefix) return false;
+    const userId = await userForNode(packet.srcId);
+    if (!userId) return false;
+    const target = await nodeForUser(userId);
+    if (!target) return false;
+
+    if (prefix.op === RpcOp.SEARCH_REQ) {
+      const req = decodeSearchRequest(plain);
+      if (!req) return false;
+      const like = `%${req.query.trim().toLowerCase()}%`;
+      const items: Array<{ entityId: number; type: number; name: string }> = [];
+      if (req.type === 0 || req.type === 1) {
+        const users = await query<{ id: string; username: string; display_name: string }>(
+          `SELECT id::text, username, display_name FROM users
+            WHERE lower(username) LIKE $1 OR lower(display_name) LIKE $1
+            ORDER BY username LIMIT 5`,
+          [like],
+        );
+        for (const u of users) {
+          items.push({ entityId: fnv1a32(u.id), type: 1, name: (u.display_name || u.username).slice(0, 40) });
+        }
+      }
+      if (req.type === 0 || req.type === 2 || req.type === 3) {
+        const types = req.type === 2 ? ['group'] : req.type === 3 ? ['channel'] : ['group', 'channel'];
+        const chats = await query<{ id: string; title: string; type: string }>(
+          `SELECT id::text, title, type FROM chats
+            WHERE lower(title) LIKE $1 AND type = ANY($2::text[])
+            ORDER BY title LIMIT 5`,
+          [like, types],
+        );
+        for (const c of chats) {
+          items.push({ entityId: fnv1a32(c.id), type: c.type === 'channel' ? 3 : 2, name: c.title.slice(0, 40) });
+        }
+      }
+      const resp = encodeSearchResponse(prefix.chatRef, req.reqId, items);
+      return queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: gatewayId,
+        msgUuid: randomU64(),
+        rpc: resp,
+      });
+    }
+
+    if (prefix.op === RpcOp.FEED_SYNC_REQ) {
+      const req = decodeFeedRequest(plain);
+      if (!req) return false;
+      const rows = await query<{
+        id: string; title: string; msg_uuid: string | null; created_at: string | null; unread: string;
+      }>(
+        `SELECT c.id::text, c.title, m.msg_uuid, m.created_at::text,
+                (SELECT count(*)::text FROM messages x
+                  WHERE x.chat_id = c.id AND x.seq > cm.last_read_seq) AS unread
+           FROM chat_members cm
+           JOIN chats c ON c.id = cm.chat_id
+           LEFT JOIN LATERAL (
+             SELECT msg_uuid, created_at FROM messages
+              WHERE chat_id = c.id ORDER BY seq DESC LIMIT 1
+           ) m ON true
+          WHERE cm.user_id = $1
+          ORDER BY COALESCE(m.created_at, c.created_at) DESC
+          LIMIT 5`,
+        [userId],
+      );
+      const entries = rows.map((r) => ({
+        chatRef: crc16(Buffer.from(r.id, 'utf8')),
+        unreadCount: Math.min(65535, Number(r.unread) || 0),
+        lastMsgUuid: r.msg_uuid ? BigInt(`0x${r.msg_uuid}`) : 0n,
+        timestamp: r.created_at ? Math.floor(new Date(r.created_at).getTime() / 1000) : 0,
+        preview: r.title.slice(0, 48),
+      }));
+      return queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: gatewayId,
+        msgUuid: randomU64(),
+        rpc: encodeFeedResponse(prefix.chatRef, entries),
+      });
+    }
+
+    if (prefix.op === RpcOp.CHAT_HISTORY_REQ) {
+      const req = decodeHistoryRequest(plain);
+      if (!req) return false;
+      const chat = await one<{ chat_id: string }>(
+        `SELECT r.chat_id::text FROM kmesh_v1_chat_refs r
+           JOIN chat_members cm ON cm.chat_id = r.chat_id AND cm.user_id = $2
+          WHERE r.chat_ref = $1 LIMIT 1`,
+        [prefix.chatRef, userId],
+      );
+      if (!chat) return false;
+      const rows = await query<{ msg_uuid: string; sender_node_id: string; synced_at: string }>(
+        `SELECT msg_uuid, sender_node_id::text, synced_at::text
+           FROM kmesh_v1_messages
+          WHERE chat_id = $1
+          ORDER BY synced_at DESC LIMIT $2`,
+        [chat.chat_id, Math.min(8, Math.max(1, req.limit || 8))],
+      );
+      const items = rows.map((r) => ({
+        msgUuid: BigInt(`0x${r.msg_uuid}`),
+        senderId: Number(r.sender_node_id) || 0,
+        timestamp: Math.floor(new Date(r.synced_at).getTime() / 1000),
+        text: '',
+      }));
+      return queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: gatewayId,
+        msgUuid: randomU64(),
+        rpc: encodeHistoryResponse(prefix.chatRef, items),
+      });
+    }
+    return false;
+  }
+
+  async function routeRelayedPacket(body: Record<string, unknown>, gatewayId: number): Promise<void> {
+    if (!config.tempMeshKey) return;
+    const packetB64 = String(body.packet_b64 ?? '');
+    if (!packetB64) return;
+    let wire: Buffer;
+    try {
+      wire = Buffer.from(packetB64, 'base64');
+    } catch {
+      return;
+    }
+    const packet = parsePacket(wire);
+    if (!packet) return;
+    if (!(packet.flags & 0x08) || packet.payload[0] !== 1) return;
+    const plain = openTemp(config.tempMeshKey, packet);
+    if (!plain) return;
+    if (!(await routeServiceRpc(packet, plain, gatewayId))) {
+      await routeText(packet, plain, gatewayId);
+    }
+  }
+
   /* --------------------------------------------------------- gateway ---- */
 
   app.post('/kmesh/v1/presence', { onRequest: [requireModule()] }, async (req, reply) => {
@@ -408,7 +678,28 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         [gatewayId, src, packetId, String(body.msg_uuid ?? '')],
       );
     }
+    // Сообщения и сервисные RPC: маршрутизация по node_id/chat_ref.
+    await routeRelayedPacket(body, gatewayId);
     return reply.send({ ok: true, status: 200, kind: 'archive' });
+  });
+
+  /** Клиент сообщает Hub соответствие chat_ref = CRC16(chatId). */
+  app.post('/kmesh/v1/ref', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as { chat_id?: unknown };
+    const chatId = String(body.chat_id ?? '');
+    if (!UUID_RE.test(chatId)) throw badRequest('invalid_chat_id');
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
+      [chatId, auth.userId]);
+    if (!member) throw forbidden('not_a_member');
+    const ref = crc16(Buffer.from(chatId, 'utf8')) || 1;
+    await query(
+      `INSERT INTO kmesh_v1_chat_refs (chat_ref, chat_id, user_id)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (chat_ref, chat_id) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()`,
+      [ref, chatId, auth.userId],
+    );
+    return reply.send({ ok: true, chat_ref: ref });
   });
 
   /** Короткий поллинг ответов шлюзом (MQTT не требуется). */
@@ -423,7 +714,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     }>(
       `SELECT id::text, dst_node_id::text, kind, packet_id::text, packet_b64
          FROM kmesh_v1_downlink
-        WHERE gateway_id = $1 AND id > $2 AND delivered_at IS NULL
+        WHERE (gateway_id = $1 OR gateway_id = 0)
+          AND id > $2 AND delivered_at IS NULL AND expires_at > now()
         ORDER BY id ASC LIMIT 20`,
       [gatewayId, since],
     );

@@ -195,6 +195,24 @@ export class KMeshV1Client {
     return this.link.send(encodeClientFrame(ClientFrameType.CONFIG, payload, this.seq++));
   }
 
+  /** SET_OWNER в бинарном KMesh_v1: prefix(8) net(4) epoch(4) sig_len(1) DER. */
+  async setOwner(claim: { prefix: string; netId: number; epoch: number; signature: string }): Promise<boolean> {
+    const sig: number[] = [];
+    for (let i = 0; i + 1 < claim.signature.length; i += 2) {
+      sig.push(parseInt(claim.signature.slice(i, i + 2), 16));
+    }
+    if (!sig.length || sig.length > 72) return false;
+    const payload = new Uint8Array(17 + sig.length);
+    const prefix = claim.prefix.toLowerCase();
+    for (let i = 0; i < 8; i += 1) payload[i] = prefix.charCodeAt(i) & 0xff;
+    const view = new DataView(payload.buffer);
+    view.setUint32(8, claim.netId >>> 0, true);
+    view.setUint32(12, claim.epoch >>> 0, true);
+    payload[16] = sig.length;
+    payload.set(sig, 17);
+    return this.link.send(encodeClientFrame(ClientFrameType.SET_OWNER, payload, this.seq++));
+  }
+
   /**
    * Отправить текст через mesh. Сообщение сначала сохраняется локально,
    * поэтому переживает перезапуск и уходит в облако при появлении интернета.

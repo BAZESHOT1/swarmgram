@@ -94,6 +94,7 @@ export const ClientFrameType = {
   PROXY_UP: 11,
   PROXY_DOWN: 12,
   INET_STATUS: 13,
+  SET_OWNER: 14,
 } as const;
 
 export const CLIENT_MAGIC = [0x53, 0x47] as const;
@@ -457,11 +458,11 @@ export interface FeedEntry {
 }
 
 export function decodeFeedResponse(payload: Uint8Array): { entries: FeedEntry[]; more: boolean } | null {
-  if (payload.length < 5 || payload[0] !== RpcOp.FEED_SYNC_RESP) return null;
+  if (payload.length < 7 || payload[0] !== RpcOp.FEED_SYNC_RESP) return null;
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const total = payload[4];
+  const total = payload[6];
   const entries: FeedEntry[] = [];
-  let offset = 5;
+  let offset = 7;
   for (let i = 0; i < total && offset + 16 <= payload.length; i += 1) {
     const chatRef = view.getUint16(offset, true);
     const unreadCount = view.getUint16(offset + 2, true);
