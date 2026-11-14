@@ -51,17 +51,20 @@ const FQBN = {
   esp32c3: 'esp32:esp32:esp32c3:PartitionScheme=min_spiffs',
   esp32: 'esp32:esp32:esp32:PartitionScheme=min_spiffs',
   esp32s3: 'esp32:esp32:esp32s3:PartitionScheme=min_spiffs',
+  esp32c6: 'esp32:esp32:esp32c6:PartitionScheme=min_spiffs',
 };
 
 /**
- * KMesh_v1 links the Wi-Fi + BLE + RadioLib stacks at once. On a 4 MB module
- * that exceeds the 1.9 MB OTA slot, so v3 uses the 3 MB single-app layout.
- * OTA for v3 requires an 8 MB module (partition scheme `max_app_8MB`).
+ * KMesh_v1: собственные таблицы разделов с двумя OTA-слотами.
+ *   klinto_4mb_ota.csv  — 4 МБ: app0/app1 по 1.75 МБ + 448 КБ LittleFS;
+ *   klinto_8mb_ota.csv  — 8/16 МБ (S3): слоты по 3.125 МБ + 1.625 МБ LittleFS.
+ * CSV передаётся в arduino-cli через build.partitions и живёт в templates/.
  */
 const FQBN_KMESH = {
-  esp32c3: 'esp32:esp32:esp32c3:PartitionScheme=huge_app',
-  esp32: 'esp32:esp32:esp32:PartitionScheme=huge_app',
-  esp32s3: 'esp32:esp32:esp32s3:PartitionScheme=huge_app',
+  esp32c3: 'esp32:esp32:esp32c3',
+  esp32: 'esp32:esp32:esp32',
+  esp32s3: 'esp32:esp32:esp32s3',
+  esp32c6: 'esp32:esp32:esp32c6',
 };
 
 /**
@@ -81,6 +84,37 @@ function readFirmwareVersion() {
 }
 
 const FIRMWARE_VERSION = readFirmwareVersion();
+
+/** Монотонный номер сборки (uint16) для анти-отката OTA. */
+function readFirmwareBuild() {
+  const fromEnv = Number(process.env.KLINTO_FIRMWARE_BUILD || 0);
+  if (Number.isInteger(fromEnv) && fromEnv > 0 && fromEnv <= 65535) return fromEnv;
+  try {
+    const value = Number(readFileSync(join(CORE_DIR, 'BUILD'), 'utf8').trim());
+    if (Number.isInteger(value) && value > 0 && value <= 65535) return value;
+  } catch {
+    /* файл не скопирован */
+  }
+  return 1;
+}
+
+const FIRMWARE_BUILD = readFirmwareBuild();
+
+/** Публичный ключ разработчика для проверки OTA-манифестов. */
+function readOtaPubkey() {
+  const fromEnv = String(process.env.KLINTO_OTA_PUBKEY || '').trim();
+  if (/^[0-9a-fA-F]{130}$/.test(fromEnv)) return fromEnv.toLowerCase();
+  try {
+    const text = readFileSync(join(CORE_DIR, 'include', 'klinto_ota_pubkey.h'), 'utf8');
+    const match = /KL_OTA_PUBKEY_HEX\s+"([0-9a-fA-F]{130})"/.exec(text);
+    if (match) return match[1].toLowerCase();
+  } catch {
+    /* ключ не найден — OTA-манифесты будут отвергнуты */
+  }
+  return '';
+}
+
+const OTA_PUBKEY = readOtaPubkey();
 
 const log = (msg, meta = {}) => {
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...meta }));
@@ -205,6 +239,7 @@ function generateConfigHeader(config, version) {
     esp32c3: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
     esp32: { sck: 18, miso: 19, mosi: 23, cs: 5, rst: 14, dio0: 26, busy: 27, chip: 'sx1278' },
     esp32s3: { sck: 12, miso: 13, mosi: 11, cs: 10, rst: 9, dio0: 8, busy: 7, chip: 'sx1262' },
+    esp32c6: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
   };
   const defaults = LORA_DEFAULTS[board] || LORA_DEFAULTS.esp32c3;
 
@@ -234,6 +269,13 @@ function generateConfigHeader(config, version) {
     // Гибридный носимый узел включён по умолчанию для wearable.
     `#define KL_HYBRID_PORTABLE ${role === 'wearable' ? 1 : 0}`,
     `#define KL_RELAY_ALLOWED 1`,
+    // Аппаратная архитектура и монотонный build_number для телеметрии/OTA.
+    `#define KL_CHIP_ARCH ${CHIP_ARCH[board] || 1}`,
+    `#define KL_FIRMWARE_BUILD ${FIRMWARE_BUILD}`,
+    `#define KL_HAS_LORA ${useLora ? 1 : 0}`,
+    `#define KL_HAS_BLE ${role === 'wearable' ? 1 : 0}`,
+    `#define KL_HAS_MQTT ${role === 'gateway' ? 1 : 0}`,
+    `#define KL_OTA_PUBKEY_HEX ${cString(OTA_PUBKEY)}`,
     `#define KL_CONNECTIVITY ${cString(connectivity)}`,
     `#define KL_IS_GATEWAY ${role === 'gateway' ? 1 : 0}`,
     `#define KL_IS_WEARABLE ${role === 'wearable' ? 1 : 0}`,
@@ -374,7 +416,8 @@ async function findBinary(outDir, sketchName) {
   return anyBin.length ? join(outDir, anyBin[0]) : null;
 }
 
-const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3' };
+const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3', esp32c6: 'esp32c6' };
+const CHIP_ARCH = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4 };
 
 /** Р РµРєСѓСЂСЃРёРІРЅС‹Р№ РїРѕРёСЃРє С„Р°Р№Р»Р° (flash_args Р»РµР¶РёС‚ РІРЅСѓС‚СЂРё build-path). */
 async function findFileRecursive(dir, name, depth = 0) {
@@ -522,6 +565,9 @@ async function mergeBinary(board, buildDir, workDir) {
 async function compileFirmware(config, version) {
   const board = config.board;
   const useKmeshV1 = cfgBoolean(config.kmesh?.v1, false);
+  const role = String(config.role || 'wearable');
+  const connectivity = String(config.connectivity || 'wifi').toLowerCase();
+  const useLora = connectivity.includes('lora') || connectivity === 'both' || Boolean(config.lora);
   const fqbn = (useKmeshV1 ? FQBN_KMESH : FQBN)[board];
   if (!fqbn) throw new Error(`unsupported_board:${board}`);
 
@@ -565,11 +611,42 @@ async function compileFirmware(config, version) {
 
     log('build_start', { board, fqbn, version });
     log('build_stage', { board, stage: 'compiling' });
+    const partitionName = board === 'esp32s3' ? 'klinto_8mb_ota.csv' : 'klinto_4mb_ota.csv';
+    /* arduino-esp32 prebuild hook копирует {build.source.path}/partitions.csv. */
+    await copyFile(join(TEMPLATE_DIR, partitionName), join(sketchDir, 'partitions.csv')).catch(() => undefined);
+    const radioExcludes = [
+      'RADIOLIB_EXCLUDE_CC1101', 'RADIOLIB_EXCLUDE_NRF24', 'RADIOLIB_EXCLUDE_RF69',
+      'RADIOLIB_EXCLUDE_SX1231', 'RADIOLIB_EXCLUDE_SX128X', 'RADIOLIB_EXCLUDE_SI443X',
+      'RADIOLIB_EXCLUDE_RFM2X', 'RADIOLIB_EXCLUDE_STM32WLX', 'RADIOLIB_EXCLUDE_APRS',
+      'RADIOLIB_EXCLUDE_AX25', 'RADIOLIB_EXCLUDE_MORSE', 'RADIOLIB_EXCLUDE_RTTY',
+      'RADIOLIB_EXCLUDE_SSTV', 'RADIOLIB_EXCLUDE_AFSK', 'RADIOLIB_EXCLUDE_HELLSCHREIBER',
+      'RADIOLIB_EXCLUDE_LORAWAN', 'RADIOLIB_EXCLUDE_FSK4', 'RADIOLIB_EXCLUDE_BELL',
+      'RADIOLIB_EXCLUDE_PAGER', 'RADIOLIB_EXCLUDE_LR11X0',
+    ].map((name) => `-D${name}=1`).join(' ');
+    const bleFlags = role === 'wearable'
+      ? [
+          '-DCONFIG_BT_NIMBLE_ROLE_CENTRAL_DISABLED=1',
+          '-DCONFIG_BT_NIMBLE_ROLE_OBSERVER_DISABLED=1',
+          '-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=1',
+          '-DCONFIG_BT_NIMBLE_LOG_LEVEL=0',
+        ].join(' ')
+      : '-DCONFIG_BT_ENABLED=0';
+    const sizeFlags = [
+      '-Os', '-ffunction-sections', '-fdata-sections', '-fno-rtti', '-fno-exceptions',
+      '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-DNDEBUG',
+      '-DCORE_DEBUG_LEVEL=0',
+    ].join(' ');
+    const extraFlags = [sizeFlags, bleFlags, useLora ? radioExcludes : ''].filter(Boolean).join(' ');
+    const slotBytes = board === 'esp32s3' ? 0x320000 : 0x1c0000;
     const compileArgs = [
       'compile',
       '--fqbn', fqbn,
       '--build-path', buildDir,
       '--output-dir', outDir,
+      '--build-property', `upload.maximum_size=${slotBytes}`,
+      '--build-property', `compiler.cpp.extra_flags=${extraFlags}`,
+      '--build-property', `compiler.c.extra_flags=${extraFlags}`,
+      '--build-property', 'compiler.c.elf.extra_flags=-Wl,--gc-sections',
       join(work, 'sketch', sketchName),
     ];
     let stdout = '';
@@ -608,6 +685,10 @@ async function compileFirmware(config, version) {
     // OTA-РѕР±СЂР°Р·: С‚РѕР»СЊРєРѕ РїСЂРёР»РѕР¶РµРЅРёРµ (Р±РµР· bootloader/partitions). РРјРµРЅРЅРѕ РµРіРѕ
     // РїСЂРёРЅРёРјР°РµС‚ Update.h РЅР° РјРѕРґСѓР»Рµ.
     const appBin = binPath ? await readFile(binPath) : Buffer.alloc(0);
+    const flashMatch = /Sketch uses\s+(\d+)\s+bytes/.exec(compileLog);
+    const ramMatch = /Global variables use\s+(\d+)\s+bytes/.exec(compileLog);
+    const flashBytes = flashMatch ? Number(flashMatch[1]) : appBin.length;
+    const ramBytes = ramMatch ? Number(ramMatch[1]) : 0;
 
     return {
       bin,
@@ -616,6 +697,13 @@ async function compileFirmware(config, version) {
       app: appBin,
       appSize: appBin.length,
       appSha256: appBin.length ? sha256(appBin) : '',
+      flashBytes,
+      ramBytes,
+      slotBytes,
+      flashPercent: slotBytes ? Math.round((flashBytes / slotBytes) * 1000) / 10 : 0,
+      firmwareBuild: FIRMWARE_BUILD,
+      firmwareVersion: version,
+      chipArch: CHIP_ARCH[board] || 1,
       log: output.slice(0, 64 * 1024),
     };
   } finally {
@@ -682,10 +770,10 @@ async function handleBuild(config) {
   const useKmeshV1 = cfgBoolean(config.kmesh?.v1, false);
   const templateHash = sha256(
     (await readFile(join(TEMPLATE_DIR, useKmeshV1 ? 'klinto_module_kmesh_v1.ino' : 'klinto_module_v2.ino'), 'utf8')) +
-      (useKmeshV1 ? await readFile(join(CORE_DIR, 'src', 'klinto_router.cpp'), 'utf8') : ''),
+      (useKmeshV1 ? await coreSourceHash() : ''),
   ).slice(0, 16);
   const version = FIRMWARE_VERSION;
-  const key = sha256(`merged4:${templateHash}:${version}:${stableStringify(config)}`);
+  const key = sha256(`merged4:v13-os-noexcept-ota:${templateHash}:${version}:${stableStringify(config)}`);
   // Версия прошивки понятная (1.1, 1.2, ...) и общая для всех модулей,
   // собранных из текущего шаблона. Это нужно для OTA-бейджа и UI.
 
@@ -702,6 +790,13 @@ async function handleBuild(config) {
       appBase64: cached.appBase64,
       appSize: cached.appSize,
       appSha256: cached.appSha256,
+      flashBytes: cached.flashBytes,
+      ramBytes: cached.ramBytes,
+      slotBytes: cached.slotBytes,
+      flashPercent: cached.flashPercent,
+      firmwareBuild: cached.firmwareBuild,
+      firmwareVersion: cached.firmwareVersion,
+      chipArch: cached.chipArch,
       log: `${cached.log ? `${cached.log}\n` : ''}[builder] РІР·СЏС‚Рѕ РёР· РєСЌС€Р°`,
       cached: true,
     };
@@ -717,11 +812,31 @@ async function handleBuild(config) {
     appBase64: result.app.toString('base64'),
     appSize: result.appSize,
     appSha256: result.appSha256,
+    flashBytes: result.flashBytes,
+    ramBytes: result.ramBytes,
+    slotBytes: result.slotBytes,
+    flashPercent: result.flashPercent,
+    firmwareBuild: result.firmwareBuild,
+    firmwareVersion: result.firmwareVersion,
+    chipArch: result.chipArch,
     log: result.log,
   };
   await writeCache(key, payload);
 
   return { ok: true, ...payload, cached: false };
+}
+
+async function coreSourceHash() {
+  const parts = [];
+  for (const sub of ['src', 'include']) {
+    const dir = join(CORE_DIR, sub);
+    const files = (await readdir(dir).catch(() => [])).sort();
+    for (const name of files) {
+      if (!/\.(c|cpp|h|hpp|ino)$/i.test(name)) continue;
+      parts.push(name, await readFile(join(dir, name), 'utf8'));
+    }
+  }
+  return sha256(parts.join('\n')).slice(0, 32);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -735,6 +850,8 @@ const server = http.createServer(async (req, res) => {
       freeMb,
       coreVersion: process.env.ESP32_CORE_VERSION || null,
       firmwareVersion: FIRMWARE_VERSION,
+      firmwareBuild: FIRMWARE_BUILD,
+      otaPubkey: OTA_PUBKEY ? `${OTA_PUBKEY.slice(0, 10)}...` : null,
       boards: String(process.env.ESP32_BOARDS || 'esp32c3').split(',').map((b) => b.trim()).filter(Boolean),
     });
   }

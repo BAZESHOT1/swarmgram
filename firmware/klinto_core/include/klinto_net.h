@@ -20,7 +20,8 @@
 enum kl_tx_priority_t : uint8_t {
   KL_PRIO_HIGH = 0,   /* L3 ACK, RREP */
   KL_PRIO_MEDIUM = 1, /* direct messages */
-  KL_PRIO_LOW = 2     /* beacons, telemetry, background sync */
+  KL_PRIO_LOW = 2,    /* beacons, telemetry, background sync */
+  KL_PRIO_OTA_IDLE = 3 /* OTA-чанки: только когда эфир свободен */
 };
 
 typedef void (*kl_rx_callback_t)(void *ctx, const uint8_t *data, size_t len, int16_t rssi,

@@ -55,6 +55,9 @@ export async function connectKMeshV1(
           const rssi = packet.payload.length >= 6 ? (packet.payload[5] << 24) >> 24 : 0;
           const battery = packet.payload.length >= 5 ? packet.payload[4] : 0;
           const role = packet.payload.length >= 7 ? packet.payload[6] : 0;
+          const fwBuild = packet.payload.length >= 10
+            ? packet.payload[8] | (packet.payload[9] << 8)
+            : 0;
           void api
             .kmeshV1MobilePresence({
               gateway_id: instance.getNodeId(),
@@ -63,6 +66,12 @@ export async function connectKMeshV1(
               hops: packet.hopCount,
               battery,
               role,
+              fw_build: fwBuild,
+              chip_arch: packet.payload.length >= 11 ? packet.payload[10] : 0,
+              node_role: packet.payload.length >= 12 ? packet.payload[11] : 0,
+              radio_caps: packet.payload.length >= 13 ? packet.payload[12] : 0,
+              ota_state: packet.payload.length >= 14 ? packet.payload[13] : 0,
+              battery_pct: packet.payload.length >= 15 ? packet.payload[14] : battery,
             })
             .catch(() => undefined);
           return;

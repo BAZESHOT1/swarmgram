@@ -8,6 +8,15 @@
 #ifndef KLINTO_CONFIG_H
 #define KLINTO_CONFIG_H
 
+/* Сгенерированный сборщиком config.h содержит KL_HAS_LORA/BLE/MQTT,
+ * KL_CHIP_ARCH, KL_FIRMWARE_BUILD и ключ OTA. Подключаем его во всех
+ * единицах трансляции, иначе драйверы соберутся в stub-режиме. */
+#if defined(ARDUINO) && defined(__has_include)
+#if __has_include("config.h")
+#include "config.h"
+#endif
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -23,10 +32,68 @@
 #define KL_DEFAULT_TTL 7
 #define KL_DEFAULT_GW_HOPS 8
 #define KL_DEFAULT_PRESENCE_MS 180000u
+/* Стационарные узлы (роутеры/шлюзы) шлют телеметрию по Trickle реже. */
+#define KL_DEFAULT_STATION_PRESENCE_MS 600000u
 #define KL_DEFAULT_GW_BEACON_MS 90000u
 #define KL_DEFAULT_ROUTE_EXPIRY_MS 120000u
 #define KL_DEFAULT_ACK_TIMEOUT_MS 1800u
 #define KL_DEFAULT_ACK_RETRIES 3
+
+/* Архитектура чипа для телеметрии и OTA. */
+enum kl_chip_arch_t : uint8_t {
+  KL_CHIP_ESP32 = 1,
+  KL_CHIP_ESP32C3 = 2,
+  KL_CHIP_ESP32S3 = 3,
+  KL_CHIP_ESP32C6 = 4
+};
+
+/* Битовая маска радио-возможностей в NODE_PRESENCE. */
+enum kl_radio_caps_t : uint8_t {
+  KL_RADIO_LORA = 0x01,
+  KL_RADIO_SX1262 = 0x02,
+  KL_RADIO_SX127X = 0x04,
+  KL_RADIO_BLE = 0x08,
+  KL_RADIO_WIFI_MESH = 0x10
+};
+
+/* Роль узла в телеметрии (клиент/hybrid/роутер/шлюз). */
+enum kl_node_role_t : uint8_t {
+  KL_NODE_CLIENT = 0,
+  KL_NODE_HYBRID = 1,
+  KL_NODE_ROUTER = 2,
+  KL_NODE_GATEWAY = 3
+};
+
+/* Состояние OTA, отображаемое в телеметрии. */
+enum kl_ota_state_t : uint8_t {
+  KL_OTA_IDLE = 0,
+  KL_OTA_DOWNLOADING = 1,
+  KL_OTA_VERIFYING = 2,
+  KL_OTA_PENDING_REBOOT = 3,
+  KL_OTA_FAILED_ROLLBACK = 4
+};
+
+/* Совместимость: старые сборки задавали только KL_USE_LORA. */
+#ifndef KL_HAS_LORA
+#ifdef KL_USE_LORA
+#define KL_HAS_LORA KL_USE_LORA
+#else
+#define KL_HAS_LORA 0
+#endif
+#endif
+#ifndef KL_HAS_BLE
+#define KL_HAS_BLE 0
+#endif
+#ifndef KL_HAS_MQTT
+#define KL_HAS_MQTT 0
+#endif
+#ifndef KL_FIRMWARE_BUILD
+#define KL_FIRMWARE_BUILD 1
+#endif
+#ifndef KL_CHIP_ARCH
+#define KL_CHIP_ARCH KL_CHIP_ESP32
+#endif
+
 
 enum kl_role_t : uint8_t {
   KL_ROLE_CLIENT = 0,  /* носимый: гибридный клиент + ретранслятор + мобильный шлюз */
@@ -87,6 +154,7 @@ struct kl_config_t {
   uint8_t ttl;
   uint8_t gw_max_hops;
   uint32_t presence_interval_ms;
+  uint32_t station_presence_ms;
   uint32_t gw_beacon_interval_ms;
   uint32_t route_expiry_ms;
   uint32_t ack_timeout_ms;

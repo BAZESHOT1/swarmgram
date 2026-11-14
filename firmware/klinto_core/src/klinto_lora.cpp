@@ -3,7 +3,7 @@
 
 #include <string.h>
 
-#if defined(ESP32)
+#if defined(ESP32) && KL_HAS_LORA
 
 #include <Arduino.h>
 #include <RadioLib.h>
@@ -127,6 +127,8 @@ bool LoraInterface::sendPacket(const uint8_t *data, size_t len, uint32_t next_ho
                                uint8_t priority) {
   if (!inited_ || !data || len == 0 || len > KL_MAX_PACKET_SIZE) return false;
   KlintoGuard guard(queue_lock_);
+  /* OTA-чанки идут только в полностью свободный эфир. */
+  if (priority == KL_PRIO_OTA_IDLE && count_ > 0) return false;
   if (count_ >= 12) {
     if (priority == KL_PRIO_LOW) return false;
     /* Preempt the oldest LOW entry. */
@@ -141,8 +143,7 @@ bool LoraInterface::sendPacket(const uint8_t *data, size_t len, uint32_t next_ho
     memmove(&queue_[victim], &queue_[victim + 1], sizeof(TxItem) * (11 - victim));
     count_--;
   }
-  if (priority == KL_PRIO_LOW && count_ * 100 >= 12 * cfg_.lora_low_watermark) {
-    return false; /* low-priority drop before the queue saturates */
+  if (priority == KL_PRIO_LOW && count_ * 100 >= 12 * cfg_.lora_low_watermark) {    return false; /* low-priority drop before the queue saturates */
   }
   TxItem &item = queue_[count_];
   item.priority = priority;
@@ -294,4 +295,31 @@ bool LoraInterface::isBusy() const { return count_ > 0 || transmitting_; }
 
 int8_t LoraInterface::getLinkQuality() const { return last_quality_; }
 
+#elif defined(ESP32)
+/* Сборка без LoRa: RadioLib полностью исключён из линковки. */
+LoraInterface::LoraInterface() : cb_(nullptr), cb_ctx_(nullptr), count_(0), seq_(0), inited_(false),
+                                 transmitting_(false), self_id_(0), self_gateway_(false),
+                                 last_quality_(0), cad_busy_(0), cad_total_(0),
+                                 airtime_window_ms_(0), airtime_used_ms_(0),
+                                 channel_pending_(false), pending_channel_(1), module_(nullptr),
+                                 sx1262_(nullptr), sx1278_(nullptr), phys_(nullptr) {
+  memset(&cfg_, 0, sizeof(cfg_));
+}
+bool LoraInterface::init(const kl_config_t &) { return false; }
+void LoraInterface::shutdown() {}
+bool LoraInterface::sendPacket(const uint8_t *, size_t, uint32_t, uint8_t) { return false; }
+void LoraInterface::poll(uint32_t) {}
+bool LoraInterface::isBusy() const { return false; }
+int8_t LoraInterface::getLinkQuality() const { return 0; }
+void LoraInterface::setReceiveCallback(kl_rx_callback_t cb, void *ctx) { cb_ = cb; cb_ctx_ = ctx; }
+bool LoraInterface::setChannel(uint8_t) { return false; }
+void LoraInterface::taskEntry(void *) {}
+void LoraInterface::taskLoop() {}
+bool LoraInterface::trySendNow(const TxItem &, uint32_t) { return false; }
+void LoraInterface::remove_item(uint32_t) {}
+bool LoraInterface::cadClear() { return false; }
+bool LoraInterface::applyRadioConfig() { return false; }
+void LoraInterface::applyPendingChannel() {}
+void LoraInterface::pushRx(const uint8_t *, size_t, int16_t) {}
 #endif  // ESP32
+

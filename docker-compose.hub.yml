@@ -30,7 +30,7 @@ services:
     build:
       context: ./services/hub
       dockerfile: Dockerfile
-    image: klinto/hub:1.2.0
+    image: klinto/hub:1.3.0
     container_name: klinto-hub
     restart: unless-stopped
     depends_on:
@@ -59,6 +59,7 @@ services:
       SQL_DIR: /app/sql
       TMP_DIR: /tmp/klinto
       FIRMWARE_BUILDER_URL: http://firmware-builder:8090
+      OTA_SIGNING_KEY: ${OTA_SIGNING_KEY:-}
     volumes:
       - hubtmp:/tmp/klinto
       - ./firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
@@ -91,7 +92,7 @@ services:
       - ESP32_CORE_VERSION=${ESP32_CORE_VERSION:-3.3.12}
       # Платы через запятую. Полный набор тулчейнов не влезает на малый диск:
       # по умолчанию ставим только C3; добавьте esp32,esp32s3 при наличии места.
-      - ESP32_BOARDS=${ESP32_BOARDS:-esp32c3,esp32,esp32s3}
+      - ESP32_BOARDS=${ESP32_BOARDS:-esp32c3,esp32,esp32s3,esp32c6}
       # Минимум свободного места для установки ядра (C3-only ~1.5–2 ГБ).
       - MIN_FREE_MB=${MIN_FREE_MB:-2200}
     volumes:

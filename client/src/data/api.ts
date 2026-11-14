@@ -1661,6 +1661,12 @@ export const api = {
     hops: number;
     battery?: number;
     role?: number;
+    fw_build?: number;
+    chip_arch?: number;
+    node_role?: number;
+    radio_caps?: number;
+    ota_state?: number;
+    battery_pct?: number;
   }) =>
     req<{ ok: true }>('/v1/kmesh/v1/mobile/presence', {
       method: 'POST',
@@ -1707,6 +1713,40 @@ export const api = {
     req<{ ok: true; chatId: string; gateways: Array<{ gatewayId: number; members: number }> }>(
       `/v1/kmesh/v1/channel/gateways?chatId=${encodeURIComponent(chatId)}`,
     ),
+
+  kmeshV1AdminNodesStatus: (params: { outdatedOnly?: boolean; role?: string; chip?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.outdatedOnly) q.set('outdated_only', 'true');
+    if (params.role) q.set('role', params.role);
+    if (params.chip) q.set('chip', params.chip);
+    return req<{
+      ok: true;
+      summary: {
+        total: number;
+        upToDate: number;
+        outdated: number;
+        downloading: number;
+        pendingReboot: number;
+        failed: number;
+        byChip: Record<string, number>;
+        byRole: Record<string, number>;
+        latestByChip: Record<string, number>;
+      };
+      nodes: Array<{
+        nodeId: number;
+        chip: string;
+        role: string;
+        fwBuild: number;
+        fwVersion: string;
+        latestBuild: number;
+        outdated: boolean;
+        otaState: number;
+        batteryPct: number;
+        lastGatewayId: number;
+        lastSeenAt: string;
+      }>;
+    }>(`/v1/kmesh/v1/admin/nodes/status${q.toString() ? `?${q}` : ''}`);
+  },
 };
 
 export { toB64u };

@@ -145,6 +145,15 @@ class KlintoRouter {
   void set_relay_allowed(bool allowed);
   void set_internet_status(bool has_internet, uint16_t rtt_ms, bool allow_relay);
   void set_capabilities(uint8_t caps) { capabilities_ = caps; }
+  /** Телеметрия прошивки для NODE_PRESENCE. */
+  void set_telemetry(uint16_t fw_build, uint8_t chip_arch, uint8_t radio_caps) {
+    fw_build_ = fw_build;
+    chip_arch_ = chip_arch;
+    radio_caps_ = radio_caps;
+  }
+  void set_ota_state(uint8_t state) { ota_state_ = state; }
+  uint16_t fw_build() const { return fw_build_; }
+  uint8_t chip_arch() const { return chip_arch_; }
 
   bool relay_enabled() const;
   bool mobile_gateway_active() const;
@@ -234,6 +243,10 @@ class KlintoRouter {
   bool inet_has_;
   bool mobile_gateway_;
   uint16_t inet_rtt_ms_;
+  uint16_t fw_build_;
+  uint8_t chip_arch_;
+  uint8_t radio_caps_;
+  uint8_t ota_state_;
   uint32_t last_presence_ms_;
   uint32_t last_presence_gw_hop_;
   uint32_t last_beacon_ms_;

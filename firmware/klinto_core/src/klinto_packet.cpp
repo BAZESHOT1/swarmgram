@@ -154,6 +154,9 @@ const char *kl_packet_type_name(uint8_t type) {
     case KL_TYPE_GW_BEACON: return "GW_BEACON";
     case KL_TYPE_NODE_PRESENCE: return "NODE_PRESENCE";
     case KL_TYPE_SYNC_ARCHIVE: return "SYNC_ARCHIVE";
+    case KL_TYPE_OTA_ANNOUNCE: return "OTA_ANNOUNCE";
+    case KL_TYPE_OTA_CHUNK: return "OTA_CHUNK";
+    case KL_TYPE_OTA_NACK: return "OTA_NACK";
     default: return "?";
   }
 }

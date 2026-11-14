@@ -17,7 +17,10 @@ enum kl_packet_type_t : uint8_t {
   KL_TYPE_RREP = 4,
   KL_TYPE_GW_BEACON = 5,
   KL_TYPE_NODE_PRESENCE = 6,
-  KL_TYPE_SYNC_ARCHIVE = 7
+  KL_TYPE_SYNC_ARCHIVE = 7,
+  KL_TYPE_OTA_ANNOUNCE = 8,
+  KL_TYPE_OTA_CHUNK = 9,
+  KL_TYPE_OTA_NACK = 10
 };
 
 enum kl_packet_flags_t : uint8_t {

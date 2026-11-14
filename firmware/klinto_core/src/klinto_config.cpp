@@ -48,6 +48,7 @@ void kl_config_defaults(kl_config_t *cfg) {
   cfg->ttl = KL_DEFAULT_TTL;
   cfg->gw_max_hops = KL_DEFAULT_GW_HOPS;
   cfg->presence_interval_ms = KL_DEFAULT_PRESENCE_MS;
+  cfg->station_presence_ms = KL_DEFAULT_STATION_PRESENCE_MS;
   cfg->gw_beacon_interval_ms = KL_DEFAULT_GW_BEACON_MS;
   cfg->route_expiry_ms = KL_DEFAULT_ROUTE_EXPIRY_MS;
   cfg->ack_timeout_ms = KL_DEFAULT_ACK_TIMEOUT_MS;
@@ -79,6 +80,9 @@ bool kl_config_validate(kl_config_t *cfg) {
   if (cfg->relay_penalty_lora_ms < cfg->relay_penalty_espnow_ms) cfg->relay_penalty_lora_ms = 250;
   if (cfg->ack_timeout_ms < 300) cfg->ack_timeout_ms = 300;
   if (cfg->presence_interval_ms < 30000) cfg->presence_interval_ms = 30000;
+  if (cfg->station_presence_ms < cfg->presence_interval_ms) {
+    cfg->station_presence_ms = KL_DEFAULT_STATION_PRESENCE_MS;
+  }
   if (cfg->gw_beacon_interval_ms < 30000) cfg->gw_beacon_interval_ms = 30000;
   if (cfg->lora.sf < 6 || cfg->lora.sf > 12) cfg->lora.sf = 9;
   if (cfg->lora.cr < 5 || cfg->lora.cr > 8) cfg->lora.cr = 5;
@@ -228,6 +232,7 @@ bool kl_config_from_json(kl_config_t *cfg, const char *json) {
   if (kl_json_get_uint(json, "ttl", &u)) cfg->ttl = (uint8_t)u;
   if (kl_json_get_uint(json, "gw_max_hops", &u)) cfg->gw_max_hops = (uint8_t)u;
   if (kl_json_get_uint(json, "presence_interval_ms", &u)) cfg->presence_interval_ms = u;
+  if (kl_json_get_uint(json, "station_presence_ms", &u)) cfg->station_presence_ms = u;
   if (kl_json_get_uint(json, "gw_beacon_interval_ms", &u)) cfg->gw_beacon_interval_ms = u;
   if (kl_json_get_uint(json, "route_expiry_ms", &u)) cfg->route_expiry_ms = u;
   if (kl_json_get_uint(json, "ack_timeout_ms", &u)) cfg->ack_timeout_ms = u;
@@ -295,7 +300,8 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
       "\"mobile_gw_beacon_ms\":%u,\"mobile_gw_ttl_ms\":%u,\"mobile_gw_hops\":%u,"
       "\"relay_penalty_espnow_ms\":%u,\"relay_penalty_lora_ms\":%u,"
       "\"ttl\":%u,\"gw_max_hops\":%u,"
-      "\"presence_interval_ms\":%lu,\"gw_beacon_interval_ms\":%lu,\"route_expiry_ms\":%lu,"
+      "\"presence_interval_ms\":%lu,\"station_presence_ms\":%lu,"
+      "\"gw_beacon_interval_ms\":%lu,\"route_expiry_ms\":%lu,"
       "\"ack_timeout_ms\":%lu,\"ack_retries\":%u,\"lora_low_watermark\":%u,"
       "\"temp_mesh_key\":\"%s\",\"hub_url\":\"%s\",\"module_token\":\"%s\","
       "\"lora\":{\"present\":%s,\"chip\":\"%s\",\"sck\":%d,\"miso\":%d,\"mosi\":%d,"
@@ -309,6 +315,7 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
       (unsigned)cfg->mobile_gw_hops, (unsigned)cfg->relay_penalty_espnow_ms,
       (unsigned)cfg->relay_penalty_lora_ms,
       (unsigned)cfg->ttl, (unsigned)cfg->gw_max_hops, (unsigned long)cfg->presence_interval_ms,
+      (unsigned long)cfg->station_presence_ms,
       (unsigned long)cfg->gw_beacon_interval_ms, (unsigned long)cfg->route_expiry_ms,
       (unsigned long)cfg->ack_timeout_ms, (unsigned)cfg->ack_retries,
       (unsigned)cfg->lora_low_watermark, keyhex, cfg->hub_url, cfg->module_token,

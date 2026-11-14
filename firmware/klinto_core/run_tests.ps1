@@ -14,7 +14,8 @@ $core = @(
   'src/klinto_codec.cpp', 'src/klinto_crypto.cpp', 'src/klinto_dedup.cpp',
   'src/klinto_router.cpp', 'src/klinto_flash_queue.cpp', 'src/klinto_net.cpp',
   'src/klinto_channel_plan.cpp', 'src/klinto_cell.cpp',
-  'src/klinto_gateway.cpp', 'src/klinto_bridge.cpp'
+  'src/klinto_gateway.cpp', 'src/klinto_bridge.cpp',
+  'src/klinto_ota.cpp', 'src/klinto_ota_patcher.cpp'
 )
 
 if ($zig) {

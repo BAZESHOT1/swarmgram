@@ -7,14 +7,18 @@ on:
       - 'client/src/kmesh/v1/**'
       - 'client/scripts/test-kmesh-v1.ts'
       - 'services/hub/src/routes/kmeshV1.ts'
+      - 'services/hub/src/ota.ts'
+      - 'services/hub/scripts/test-ota.mjs'
       - 'services/hub/sql/036_kmesh_v1_rename.sql'
+      - 'services/hub/sql/038_kmesh_ota_telemetry.sql'
       - '.github/workflows/kmesh-core.yml'
   pull_request:
     paths:
       - 'firmware/klinto_core/**'
       - 'client/src/kmesh/v1/**'
       - 'services/hub/src/routes/kmeshV1.ts'
-      - 'services/hub/sql/036_kmesh_v1_rename.sql'
+      - 'services/hub/src/ota.ts'
+      - 'services/hub/sql/038_kmesh_ota_telemetry.sql'
 
 jobs:
   core:
@@ -43,3 +47,6 @@ jobs:
         run: |
           npm ci
           npm run typecheck
+      - name: Hub OTA delta test
+        working-directory: services/hub
+        run: npm run test:ota

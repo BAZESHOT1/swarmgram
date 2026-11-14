@@ -18,6 +18,8 @@
 #include "klinto_bridge.h"
 #include "klinto_channel_plan.h"
 #include "klinto_cell.h"
+#include "klinto_ota.h"
+#include "klinto_ota_patcher.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -1095,6 +1097,307 @@ static void test_hybrid_mode(void) {
   CHECK(router.relay_penalty_ms(KL_IFACE_LORA) == 0);
 }
 
+/* ------------------------------------------------ дельта-патч и OTA ------ */
+
+static size_t make_test_patch(const uint8_t *base, size_t base_len, const uint8_t *target,
+                              size_t target_len, const uint8_t *add, size_t add_len,
+                              size_t split, uint8_t *out, size_t cap) {
+  if (!base || !target || !out || split > base_len || split > target_len) return 0;
+  const size_t copy1 = split;
+  const size_t copy2 = target_len - split - add_len;
+  const size_t need = KL_PATCH_HEADER_SIZE + 1 + 8 + 1 + 2 + add_len + 1 + 8 + 1;
+  if (cap < need || split + add_len > target_len) return 0;
+  size_t o = 0;
+  memcpy(out + o, "KLDP", 4);
+  o += 4;
+  out[o++] = KL_PATCH_VERSION;
+  kl_write_le32(out + o, (uint32_t)base_len);
+  o += 4;
+  kl_write_le32(out + o, (uint32_t)target_len);
+  o += 4;
+  uint8_t sha[32];
+  kl_sha256(target, target_len, sha);
+  memcpy(out + o, sha, 32);
+  o += 32;
+  out[o++] = KL_PATCH_OP_COPY;
+  kl_write_le32(out + o, 0);
+  o += 4;
+  kl_write_le32(out + o, (uint32_t)copy1);
+  o += 4;
+  out[o++] = KL_PATCH_OP_ADD;
+  kl_write_le16(out + o, (uint16_t)add_len);
+  o += 2;
+  memcpy(out + o, add, add_len);
+  o += add_len;
+  out[o++] = KL_PATCH_OP_COPY;
+  kl_write_le32(out + o, (uint32_t)(split + add_len));
+  o += 4;
+  kl_write_le32(out + o, (uint32_t)copy2);
+  o += 4;
+  out[o++] = KL_PATCH_OP_END;
+  return o;
+}
+
+static void test_delta_patcher(void) {
+  uint8_t base[120];
+  for (size_t i = 0; i < sizeof(base); ++i) base[i] = (uint8_t)(i * 7 + 3);
+  const uint8_t add[10] = {0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4, 5, 6};
+  uint8_t target[120];
+  memcpy(target, base, 40);
+  memcpy(target + 40, add, sizeof(add));
+  memcpy(target + 50, base + 50, 70);
+
+  uint8_t patch[256];
+  const size_t plen = make_test_patch(base, sizeof(base), target, sizeof(target), add,
+                                      sizeof(add), 40, patch, sizeof(patch));
+  CHECK(plen > 0);
+  kl_patch_header_t hdr;
+  CHECK(kl_patch_parse_header(patch, plen, &hdr));
+  CHECK(hdr.base_size == sizeof(base));
+  CHECK(hdr.target_size == sizeof(target));
+
+  uint8_t out[120];
+  size_t out_len = 0;
+  uint8_t sha[32];
+  CHECK(kl_patch_apply_memory(base, sizeof(base), patch, plen, out, sizeof(out), &out_len, sha));
+  CHECK(out_len == sizeof(target));
+  CHECK(!memcmp(out, target, sizeof(target)));
+  uint8_t expect[32];
+  kl_sha256(target, sizeof(target), expect);
+  CHECK(!memcmp(sha, expect, 32));
+
+  /* Испорченный target_sha256 — патч не применяется. */
+  patch[13] ^= 0xff;
+  CHECK(!kl_patch_apply_memory(base, sizeof(base), patch, plen, out, sizeof(out), &out_len, sha));
+  patch[13] ^= 0xff;
+
+  /* Обрезанный патч. */
+  CHECK(!kl_patch_apply_memory(base, sizeof(base), patch, plen - 3, out, sizeof(out), &out_len,
+                               sha));
+  CHECK(!kl_patch_parse_header(patch, 10, &hdr));
+}
+
+struct FakeOta {
+  uint8_t base[120];
+  size_t base_len;
+  uint8_t patch[512];
+  size_t patch_len;
+  uint8_t target[120];
+  size_t target_len;
+  uint8_t target_sha[32];
+  kl_ota_manifest_t committed;
+  bool commit_ok;
+  bool verify_ok;
+  bool rebooted;
+  bool marked;
+  bool aborted;
+};
+
+static bool fake_patch_write(void *ctx, uint32_t off, const uint8_t *data, size_t len) {
+  FakeOta *f = (FakeOta *)ctx;
+  if (off + len > sizeof(f->patch)) return false;
+  memcpy(f->patch + off, data, len);
+  if (off + len > f->patch_len) f->patch_len = off + len;
+  return true;
+}
+static bool fake_patch_read(void *ctx, uint32_t off, uint8_t *out, size_t len) {
+  FakeOta *f = (FakeOta *)ctx;
+  if (off + len > f->patch_len) return false;
+  memcpy(out, f->patch + off, len);
+  return true;
+}
+static bool fake_patch_erase(void *ctx) {
+  FakeOta *f = (FakeOta *)ctx;
+  f->patch_len = 0;
+  return true;
+}
+static bool fake_read_running(void *ctx, uint32_t off, uint8_t *out, size_t len) {
+  FakeOta *f = (FakeOta *)ctx;
+  if (off + len > f->base_len) return false;
+  memcpy(out, f->base + off, len);
+  return true;
+}
+static bool fake_begin_target(void *ctx, uint32_t size) {
+  FakeOta *f = (FakeOta *)ctx;
+  f->target_len = 0;
+  return size <= sizeof(f->target);
+}
+static bool fake_write_target(void *ctx, const uint8_t *data, size_t len) {
+  FakeOta *f = (FakeOta *)ctx;
+  if (f->target_len + len > sizeof(f->target)) return false;
+  memcpy(f->target + f->target_len, data, len);
+  f->target_len += len;
+  return true;
+}
+static bool fake_commit_target(void *ctx, const uint8_t sha[32], const kl_ota_manifest_t *m) {
+  FakeOta *f = (FakeOta *)ctx;
+  if (!f->commit_ok || memcmp(sha, m->target_sha256, 32) != 0) return false;
+  f->committed = *m;
+  memcpy(f->target_sha, sha, 32);
+  return true;
+}
+static void fake_abort_target(void *ctx) { ((FakeOta *)ctx)->aborted = true; }
+static void fake_reboot(void *ctx) { ((FakeOta *)ctx)->rebooted = true; }
+static bool fake_verify(void *ctx, const uint8_t *digest, const uint8_t *sig, size_t sig_len) {
+  FakeOta *f = (FakeOta *)ctx;
+  return f->verify_ok && digest && sig && sig_len == 4 && !memcmp(sig, "SIGN", 4);
+}
+static void fake_mark_valid(void *ctx) { ((FakeOta *)ctx)->marked = true; }
+
+static void test_ota(void) {
+  FakeOta f;
+  memset(&f, 0, sizeof(f));
+  f.base_len = 120;
+  for (size_t i = 0; i < f.base_len; ++i) f.base[i] = (uint8_t)(i * 5 + 1);
+  const uint8_t add[8] = {9, 8, 7, 6, 5, 4, 3, 2};
+  const size_t split = 48;
+  uint8_t target[120];
+  memcpy(target, f.base, split);
+  memcpy(target + split, add, sizeof(add));
+  memcpy(target + split + sizeof(add), f.base + split + sizeof(add),
+          sizeof(target) - split - sizeof(add));
+  const size_t patch_len = make_test_patch(f.base, f.base_len, target, sizeof(target), add,
+                                           sizeof(add), split, f.patch, sizeof(f.patch));
+  CHECK(patch_len > 0);
+  f.commit_ok = true;
+  f.verify_ok = true;
+
+  kl_ota_platform_t plat = {&f, fake_patch_write, fake_patch_read, fake_patch_erase,
+                            fake_read_running, fake_begin_target, fake_write_target,
+                            fake_commit_target, fake_abort_target, fake_reboot, fake_verify,
+                            fake_mark_valid};
+  KlintoOta ota;
+  ota.init(&plat, KL_CHIP_ESP32C3, 120, 120);
+  ota.set_battery(30, false);
+
+  kl_ota_manifest_t m;
+  memset(&m, 0, sizeof(m));
+  m.patch_id = 7;
+  m.chip = KL_CHIP_ESP32C3;
+  m.base_build = 120;
+  m.target_build = 130;
+  m.total_chunks = (uint16_t)((patch_len + KL_OTA_CHUNK_DATA - 1) / KL_OTA_CHUNK_DATA);
+  m.patch_size = (uint32_t)patch_len;
+  kl_sha256(f.patch, patch_len, m.patch_sha256);
+  kl_sha256(target, sizeof(target), m.target_sha256);
+  m.sig_len = 4;
+  memcpy(m.sig, "SIGN", 4);
+
+  uint8_t payload[200];
+  const size_t ann_len = kl_ota_encode_announce(&m, payload, sizeof(payload));
+  CHECK(ann_len > 0);
+  kl_ota_manifest_t decoded;
+  CHECK(kl_ota_decode_announce(payload, ann_len, &decoded));
+  CHECK(decoded.target_build == 130);
+  CHECK(decoded.total_chunks == m.total_chunks);
+
+  /* Подпись манифеста детерминирована. */
+  uint8_t d1[32], d2[32];
+  kl_ota_manifest_digest(&m, d1);
+  kl_ota_manifest_digest(&decoded, d2);
+  CHECK(!memcmp(d1, d2, 32));
+
+  kl_packet_t pkt;
+  memset(&pkt, 0, sizeof(pkt));
+  pkt.type = KL_TYPE_OTA_ANNOUNCE;
+  pkt.payload_len = (uint8_t)ann_len;
+  memcpy(pkt.payload, payload, ann_len);
+
+  /* АКБ < 40%: скачивание отложено. */
+  CHECK(ota.handle_packet(&pkt, 1000));
+  CHECK(ota.state() == KL_OTA_IDLE);
+  CHECK(f.patch_len == 0);
+
+  ota.set_battery(55, false);
+  ota.tick(2000);
+  CHECK(ota.state() == KL_OTA_DOWNLOADING);
+
+  /* Чанки приходят в обратном порядке — сборка всё равно возможна. */
+  for (int i = (int)m.total_chunks - 1; i >= 0; --i) {
+    const uint32_t off = (uint32_t)i * KL_OTA_CHUNK_DATA;
+    const uint32_t left = m.patch_size - off;
+    const uint8_t take = (uint8_t)(left > KL_OTA_CHUNK_DATA ? KL_OTA_CHUNK_DATA : left);
+    uint8_t cpayload[200];
+    const size_t clen = kl_ota_encode_chunk(m.patch_id, (uint16_t)i, f.patch + off, take,
+                                            cpayload, sizeof(cpayload));
+    CHECK(clen > 0);
+    kl_packet_t cpkt;
+    memset(&cpkt, 0, sizeof(cpkt));
+    cpkt.type = KL_TYPE_OTA_CHUNK;
+    cpkt.payload_len = (uint8_t)clen;
+    memcpy(cpkt.payload, cpayload, clen);
+    CHECK(ota.handle_packet(&cpkt, 3000 + (uint32_t)i));
+  }
+  CHECK(ota.state() == KL_OTA_VERIFYING);
+  ota.tick(5000);
+  CHECK(ota.state() == KL_OTA_PENDING_REBOOT);
+  CHECK(f.target_len == sizeof(target));
+  CHECK(!memcmp(f.target, target, sizeof(target)));
+  CHECK(f.committed.target_build == 130);
+  ota.tick(6000);
+  ota.tick(9000);
+  CHECK(f.rebooted);
+
+  /* Анти-откат: старый build игнорируется. */
+  KlintoOta ota2;
+  ota2.init(&plat, KL_CHIP_ESP32C3, 130, 130);
+  ota2.set_battery(80, false);
+  kl_ota_manifest_t old = m;
+  old.target_build = 125;
+  kl_ota_manifest_digest(&old, d1);
+  const size_t old_len = kl_ota_encode_announce(&old, payload, sizeof(payload));
+  pkt.payload_len = (uint8_t)old_len;
+  memcpy(pkt.payload, payload, old_len);
+  CHECK(ota2.handle_packet(&pkt, 1000));
+  CHECK(ota2.state() == KL_OTA_IDLE);
+
+  /* Неверная подпись — отказ. */
+  KlintoOta ota3;
+  ota3.init(&plat, KL_CHIP_ESP32C3, 120, 120);
+  ota3.set_battery(80, false);
+  f.verify_ok = false;
+  const size_t good_len = kl_ota_encode_announce(&m, payload, sizeof(payload));
+  pkt.payload_len = (uint8_t)good_len;
+  memcpy(pkt.payload, payload, good_len);
+  CHECK(ota3.handle_packet(&pkt, 1000));
+  CHECK(ota3.state() == KL_OTA_IDLE);
+
+  uint8_t nack[8];
+  CHECK(kl_ota_encode_nack(7, 32, 0xA5A5A5A5u, nack, sizeof(nack)) == 8);
+  uint16_t pid = 0, win = 0;
+  uint32_t mask = 0;
+  CHECK(kl_ota_decode_nack(nack, sizeof(nack), &pid, &win, &mask));
+  CHECK(pid == 7 && win == 32 && mask == 0xA5A5A5A5u);
+
+  ota.mark_boot_valid();
+  CHECK(f.marked);
+}
+
+static void test_presence_telemetry(void) {
+  kl_presence_telemetry_t t;
+  t.fw_build = 130;
+  t.chip_arch = KL_CHIP_ESP32C6;
+  t.node_role = KL_NODE_HYBRID;
+  t.radio_caps = KL_RADIO_LORA | KL_RADIO_SX1262 | KL_RADIO_BLE;
+  t.ota_state = KL_OTA_DOWNLOADING;
+  t.battery_pct = 77;
+  uint8_t payload[24];
+  const size_t n = kl_codec_encode_presence_ex(payload, sizeof(payload), 76, -70, 0, 3, &t);
+  CHECK(n == 15);
+  kl_presence_telemetry_t out;
+  CHECK(kl_codec_decode_presence_telemetry(payload, n, &out));
+  CHECK(out.fw_build == 130);
+  CHECK(out.chip_arch == KL_CHIP_ESP32C6);
+  CHECK(out.node_role == KL_NODE_HYBRID);
+  CHECK(out.radio_caps == (KL_RADIO_LORA | KL_RADIO_SX1262 | KL_RADIO_BLE));
+  CHECK(out.ota_state == KL_OTA_DOWNLOADING);
+  CHECK(out.battery_pct == 77);
+  /* Старый 8-байтный формат остаётся читаемым. */
+  const size_t old_n = kl_codec_encode_presence(payload, sizeof(payload), 50, -80, 0, 1);
+  CHECK(old_n == 8);
+  CHECK(!kl_codec_decode_presence_telemetry(payload, old_n, &out));
+}
+
 int main(void) {
   setbuf(stdout, NULL);
   printf("Klinto mesh core tests\n");
@@ -1114,6 +1417,9 @@ int main(void) {
   test_cell_manager();
   test_rpc_services();
   test_hybrid_mode();
+  test_delta_patcher();
+  test_ota();
+  test_presence_telemetry();
   printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

@@ -19,6 +19,10 @@ KlintoRouter::KlintoRouter()
       inet_has_(false),
       mobile_gateway_(false),
       inet_rtt_ms_(0),
+      fw_build_(KL_FIRMWARE_BUILD),
+      chip_arch_((uint8_t)KL_CHIP_ARCH),
+      radio_caps_(0),
+      ota_state_(KL_OTA_IDLE),
       last_presence_ms_(0),
       last_presence_gw_hop_(0xFF),
       last_beacon_ms_(0),
@@ -58,6 +62,9 @@ void KlintoRouter::init(const kl_config_t *cfg, const kl_router_sink_t *sink) {
   inet_has_ = false;
   mobile_gateway_ = false;
   inet_rtt_ms_ = 0;
+  fw_build_ = KL_FIRMWARE_BUILD;
+  chip_arch_ = (uint8_t)KL_CHIP_ARCH;
+  ota_state_ = KL_OTA_IDLE;
   last_presence_ms_ = 0;
   last_presence_gw_hop_ = 0xFF;
   last_beacon_ms_ = 0;
@@ -819,26 +826,44 @@ void KlintoRouter::emit_mobile_beacon(uint32_t now_ms) {
 }
 
 void KlintoRouter::maybe_presence(uint32_t now_ms) {
-  if (gateway_like()) return;
-  const bool gw_changed = gw_.valid && gw_.hops != last_presence_gw_hop_;
-  const bool due = last_presence_ms_ == 0 || now_ms - last_presence_ms_ >= cfg_.presence_interval_ms;
+  /* NODE_CLIENT (в т.ч. гибридный) — раз в 3 минуты; стационарные узлы —
+   * по Trickle раз в 10–30 минут, но сразу после старта/OTA. */
+  const bool station = cfg_.role != KL_ROLE_CLIENT;
+  const uint32_t interval = station ? cfg_.station_presence_ms : cfg_.presence_interval_ms;
+  const bool gw_changed = !station && gw_.valid && gw_.hops != last_presence_gw_hop_;
+  const bool due = last_presence_ms_ == 0 || now_ms - last_presence_ms_ >= interval;
   if (!due && !gw_changed) return;
 
-  uint8_t payload[16];
-  const size_t plen = kl_codec_encode_presence(payload, sizeof(payload), battery_, last_rssi_,
-                                               (uint8_t)cfg_.role, capabilities_);
+  kl_presence_telemetry_t telemetry;
+  telemetry.fw_build = fw_build_;
+  telemetry.chip_arch = chip_arch_;
+  telemetry.node_role = (uint8_t)(cfg_.role == KL_ROLE_GATEWAY
+                                      ? KL_NODE_GATEWAY
+                                      : cfg_.role == KL_ROLE_ROUTER
+                                            ? KL_NODE_ROUTER
+                                            : (cfg_.hybrid_portable ? KL_NODE_HYBRID : KL_NODE_CLIENT));
+  telemetry.radio_caps = radio_caps_;
+  telemetry.ota_state = ota_state_;
+  /* 255 = внешнее питание, иначе реальный процент АКБ. */
+  telemetry.battery_pct = charging_ ? 255 : battery_;
+
+  uint8_t payload[24];
+  const size_t plen = kl_codec_encode_presence_ex(payload, sizeof(payload), battery_, last_rssi_,
+                                                  (uint8_t)cfg_.role, capabilities_, &telemetry);
   if (!plen) return;
   kl_packet_t pkt;
   kl_packet_init(&pkt, KL_TYPE_NODE_PRESENCE, cfg_.node_id, KL_ANY_GATEWAY_ID, KL_BROADCAST_ID,
                  KL_FLAG_TO_INTERNET);
   kl_packet_set_payload(&pkt, payload, plen);
-  if (gw_.valid) {
-    if (transmit(&pkt, gw_.iface, gw_.next_hop_id, now_ms)) {
-      stats_.presence_sent++;
-    }
-  } else {
+  const bool local_only = gateway_like();
+  if (!local_only && station && gw_.valid) {
+    if (transmit(&pkt, gw_.iface, gw_.next_hop_id, now_ms)) stats_.presence_sent++;
+  } else if (!local_only) {
     if (transmit_on_all(&pkt, now_ms)) stats_.presence_sent++;
   }
+  /* Шлюз/мобильный шлюз — сам себе точка присутствия: публикуем локально,
+   * чтобы телеметрия ушла на Hub без лишнего пакета в эфире. */
+  if (local_only && sink_.presence) sink_.presence(sink_.ctx, &pkt, last_rssi_, 0xFF);
   last_presence_ms_ = now_ms;
   last_presence_gw_hop_ = gw_.valid ? gw_.hops : 0xFF;
 }

@@ -1,6 +1,8 @@
 #include "klinto_mqtt.h"
 
-#if defined(ESP32)
+#include <string.h>
+
+#if defined(ESP32) && KL_HAS_MQTT
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -316,5 +318,35 @@ void MqttTlsTransport::loop() {
   }
   if (!sock()->connected()) disconnect();
 }
+
+#elif defined(ESP32)
+
+/* Клиент/носимый узел без MQTT: TLS-стек и WiFiClientSecure не линкуются. */
+MqttTlsTransport::MqttTlsTransport()
+    : port_(1883), tls_(false), last_error_("disabled"), connected_(false), packet_id_(1),
+      last_ping_ms_(0), last_rx_ms_(0), rx_len_(0) {
+  memset(host_, 0, sizeof(host_));
+  memset(user_, 0, sizeof(user_));
+  memset(pass_, 0, sizeof(pass_));
+  memset(ca_, 0, sizeof(ca_));
+  memset(client_id_, 0, sizeof(client_id_));
+  memset(down_topic_, 0, sizeof(down_topic_));
+  memset(rx_, 0, sizeof(rx_));
+}
+bool MqttTlsTransport::begin(const char *, uint16_t, bool, const char *, const char *, const char *,
+                             const char *, const char *) {
+  return false;
+}
+bool MqttTlsTransport::connect() { return false; }
+void MqttTlsTransport::disconnect() {}
+bool MqttTlsTransport::publish(const char *, const uint8_t *, size_t) { return false; }
+int MqttTlsTransport::read(char *, size_t, uint8_t *, size_t) { return -1; }
+void MqttTlsTransport::loop() {}
+bool MqttTlsTransport::sendConnect() { return false; }
+bool MqttTlsTransport::sendSubscribe() { return false; }
+bool MqttTlsTransport::writeAll(const uint8_t *, size_t) { return false; }
+bool MqttTlsTransport::readPacket(uint8_t *, uint8_t *, size_t, size_t *, uint32_t) { return false; }
+size_t MqttTlsTransport::encodeRemaining(uint8_t *, size_t) { return 0; }
+bool MqttTlsTransport::decodeRemaining(const uint8_t *, size_t, size_t *, size_t *) { return false; }
 
 #endif  // ESP32

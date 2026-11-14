@@ -12,6 +12,7 @@
 
 #include "klinto_codec.h"
 #include "klinto_platform_esp32.h"
+#include "klinto_ota_esp32.h"
 #include "klinto_util.h"
 
 #if __has_include("config.h")
@@ -194,7 +195,7 @@ KlintoNode &KlintoNode::instance() {
 }
 
 KlintoNode::KlintoNode()
-    : client_link_(nullptr), hardware_id_{0}, started_(false) {
+    : client_link_(nullptr), hardware_id_{0}, started_(false), boot_valid_ms_(0) {
   memset(&cfg_, 0, sizeof(cfg_));
 }
 
@@ -299,6 +300,26 @@ bool KlintoNode::begin() {
                            &KlintoNode::sinkPresence,        &KlintoNode::sinkBeacon};
   router_.init(&cfg_, &sink);
 
+  /* OTA: телеметрия версии и каскадный приём дельта-патчей. */
+  kl_ota_esp32_begin();
+  ota_.init(kl_ota_esp32_platform(), (uint8_t)KL_CHIP_ARCH, (uint16_t)KL_FIRMWARE_BUILD,
+            kl_ota_esp32_stored_build());
+  ota_.set_send(&KlintoNode::otaSend, this);
+  ota_.set_state_cb(&KlintoNode::otaState, this);
+  {
+    uint8_t radio_caps = 0;
+    if (cfg_.lora_present) {
+      radio_caps |= KL_RADIO_LORA;
+      radio_caps |= cfg_.lora.chip == KL_LORA_SX1262 ? KL_RADIO_SX1262 : KL_RADIO_SX127X;
+    }
+#if KL_HAS_BLE
+    radio_caps |= KL_RADIO_BLE;
+#endif
+    if (cfg_.espnow_enabled) radio_caps |= KL_RADIO_WIFI_MESH;
+    router_.set_telemetry((uint16_t)KL_FIRMWARE_BUILD, (uint8_t)KL_CHIP_ARCH, radio_caps);
+  }
+  boot_valid_ms_ = millis();
+
   /* Частотное кластерирование: шлюз фиксирует канал AP, остальные ищут соту. */
   kl_cell_host_t cell_host = {this, &KlintoNode::cellApplyChannel, &KlintoNode::cellLocked,
                               &KlintoNode::cellOffline};
@@ -320,21 +341,28 @@ bool KlintoNode::begin() {
   if (kl_nvs_get_str("klinto3", "client_link", chosen, sizeof(chosen))) {
     /* already copied */
   }
+#if KL_HAS_BLE
   ble_.begin("Klinto-Node");
-  if (!strncmp(chosen, "serial", 6)) {
-    serial_.begin(115200);
+  ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
+#endif
+  serial_.begin(115200);
+  serial_.setReceiveCallback(&KlintoNode::onClientLink, this);
+  if (!strncmp(chosen, "serial", 6)
+#if !KL_HAS_BLE
+      || true
+#endif
+  ) {
     client_link_ = &serial_;
   } else {
     client_link_ = &ble_;
   }
-  ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
-  serial_.setReceiveCallback(&KlintoNode::onClientLink, this);
 
   kl_bridge_sink_t bridge_sink = {this, &KlintoNode::onConfig, &KlintoNode::onLog,
                                   &KlintoNode::onInetStatus};
   bridge_.init(&router_, &cfg_, client_link_, &down_queue_, &bridge_sink);
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
+#if KL_HAS_MQTT
     char host[96] = {0};
     uint16_t port = 1883;
     bool tls = false;
@@ -360,6 +388,7 @@ bool KlintoNode::begin() {
     kl_gateway_sink_t gsink = {this, &KlintoNode::sinkInjectDownlink,
                                &KlintoNode::sinkGatewayStatus};
     gateway_.init(&cfg_, &mqtt_, &up_queue_, &gsink);
+#endif
   }
 
   startTasks();
@@ -371,7 +400,7 @@ void KlintoNode::startTasks() {
   xTaskCreatePinnedToCore(&KlintoNode::meshTaskEntry, "kl_mesh", 8192, this, 5, nullptr, 0);
   xTaskCreatePinnedToCore(&KlintoNode::clientTaskEntry, "kl_client", 8192, this, 3, nullptr, 1);
   if (cfg_.role == KL_ROLE_GATEWAY) {
-    xTaskCreatePinnedToCore(&KlintoNode::gatewayTaskEntry, "kl_gateway", 8192, this, 2, nullptr, 0);
+    xTaskCreatePinnedToCore(&KlintoNode::gatewayTaskEntry, "kl_gateway", 16384, this, 2, nullptr, 0);
   }
 }
 
@@ -392,7 +421,10 @@ bool KlintoNode::sinkSend(void *ctx, const kl_packet_t *pkt, uint8_t iface, uint
   if (!len) return false;
   uint8_t priority = KL_PRIO_MEDIUM;
   if (pkt->type == KL_TYPE_ACK || pkt->type == KL_TYPE_RREP) priority = KL_PRIO_HIGH;
-  else if (pkt->type == KL_TYPE_GW_BEACON || pkt->type == KL_TYPE_NODE_PRESENCE ||
+  else if (pkt->type == KL_TYPE_OTA_ANNOUNCE || pkt->type == KL_TYPE_OTA_CHUNK ||
+           pkt->type == KL_TYPE_OTA_NACK) {
+    priority = KL_PRIO_OTA_IDLE;
+  } else if (pkt->type == KL_TYPE_GW_BEACON || pkt->type == KL_TYPE_NODE_PRESENCE ||
            pkt->type == KL_TYPE_RREQ) {
     priority = KL_PRIO_LOW;
   } else if (pkt->type == KL_TYPE_DATA &&
@@ -407,6 +439,11 @@ bool KlintoNode::sinkSend(void *ctx, const kl_packet_t *pkt, uint8_t iface, uint
 void KlintoNode::sinkDeliver(void *ctx, const kl_packet_t *pkt, int16_t rssi, uint8_t iface) {
   KlintoNode *self = (KlintoNode *)ctx;
   if (!pkt) return;
+  if (pkt->type == KL_TYPE_OTA_ANNOUNCE || pkt->type == KL_TYPE_OTA_CHUNK ||
+      pkt->type == KL_TYPE_OTA_NACK) {
+    self->ota_.handle_packet(pkt, kl_uptime_ms());
+    return;
+  }
   if (pkt->type == KL_TYPE_NODE_PRESENCE) {
     /* Router.presence already reported it; avoid a duplicate publish. */
     return;
@@ -542,6 +579,30 @@ void KlintoNode::onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, boo
                 self->router_.mobile_gateway_active() ? 1 : 0);
 }
 
+bool KlintoNode::otaSend(void *ctx, uint8_t type, const uint8_t *payload, size_t len,
+                         bool broadcast) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  if (!payload || len > KL_MAX_PAYLOAD) return false;
+  /* OTA-чанки — только в пустой эфир: пользовательские очереди и ACK важнее. */
+  if (type == KL_TYPE_OTA_CHUNK &&
+      (self->router_.pending_count() > 0 || self->router_.ack_count() > 0 ||
+       (self->cfg_.lora_present && self->lora_.queueDepth() > 0))) {
+    return false;
+  }
+  kl_packet_t pkt;
+  kl_packet_init(&pkt, type, self->cfg_.node_id,
+                 broadcast ? KL_BROADCAST_ID : KL_ANY_GATEWAY_ID, KL_BROADCAST_ID, 0);
+  if (!kl_packet_set_payload(&pkt, payload, len)) return false;
+  return self->router_.send(&pkt, kl_uptime_ms(), 0xFF, false);
+}
+
+void KlintoNode::otaState(void *ctx, uint8_t state) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  self->router_.set_ota_state(state);
+  Serial.printf("[klinto] ota_state=%u build=%u\n", (unsigned)state,
+                (unsigned)self->ota_.current_build());
+}
+
 void KlintoNode::onConfigJson(const char *json, size_t len) {
   (void)len;  char ssid[64];
   char pass[64];
@@ -556,6 +617,7 @@ void KlintoNode::onConfigJson(const char *json, size_t len) {
 void KlintoNode::meshTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
   uint32_t last_tick = 0;
+  uint32_t last_ota_tick = 0;
   for (;;) {
     const uint32_t now = kl_uptime_ms();
     if (self->cfg_.espnow_enabled) self->espnow_.poll(now);
@@ -564,6 +626,16 @@ void KlintoNode::meshTaskEntry(void *arg) {
       self->cell_.tick(now);
       self->router_.tick(now);
       last_tick = now;
+    }
+    if (now - last_ota_tick >= 100) {
+      self->ota_.tick(now);
+      last_ota_tick = now;
+    }
+    /* 30 секунд стабильной работы: подтверждаем OTA-образ и фиксируем build. */
+    if (self->boot_valid_ms_ && now - self->boot_valid_ms_ >= 30000u) {
+      self->boot_valid_ms_ = 0;
+      self->ota_.mark_boot_valid();
+      kl_ota_esp32_store_build((uint16_t)KL_FIRMWARE_BUILD);
     }
     vTaskDelay(pdMS_TO_TICKS(5));
   }
@@ -579,8 +651,23 @@ void KlintoNode::clientTaskEntry(void *arg) {
 
 void KlintoNode::gatewayTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
+  uint32_t next_ota_check = 0;
   for (;;) {
-    self->gateway_.loop(kl_uptime_ms());
+    const uint32_t now = kl_uptime_ms();
+    self->gateway_.loop(now);
+    if (!self->ota_.source_active() && (next_ota_check == 0 || now >= next_ota_check)) {
+      next_ota_check = now + 300000u;
+      const char *url = strncmp(self->cfg_.hub_url, "http", 4) == 0
+                            ? self->cfg_.hub_url
+                            : "http://150.251.143.212:8080";
+      kl_ota_manifest_t manifest;
+      if (kl_ota_esp32_sync(url, self->cfg_.module_token, (uint8_t)KL_CHIP_ARCH,
+                            (uint16_t)KL_FIRMWARE_BUILD, &manifest)) {
+        self->ota_.start_source(manifest);
+        Serial.printf("[klinto] ota source build=%u patch=%lu\n",
+                      (unsigned)manifest.target_build, (unsigned long)manifest.patch_size);
+      }
+    }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }

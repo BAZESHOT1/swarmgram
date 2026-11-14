@@ -107,13 +107,40 @@ size_t kl_codec_encode_sync_request(uint8_t *out, size_t cap, const kl_rpc_sync_
 
 size_t kl_codec_encode_presence(uint8_t *out, size_t cap, uint8_t battery, int8_t rssi,
                                 uint8_t role, uint8_t capabilities) {
+  return kl_codec_encode_presence_ex(out, cap, battery, rssi, role, capabilities, nullptr);
+}
+
+size_t kl_codec_encode_presence_ex(uint8_t *out, size_t cap, uint8_t battery, int8_t rssi,
+                                   uint8_t role, uint8_t capabilities,
+                                   const kl_presence_telemetry_t *telemetry) {
   size_t head = put_prefix(out, cap, KL_RPC_PRESENCE, 0, KL_CODEC_NO_CHAT);
   if (!head || cap < head + 4) return 0;
   out[head] = battery;
   out[head + 1] = (uint8_t)rssi;
   out[head + 2] = role;
   out[head + 3] = capabilities;
-  return head + 4;
+  if (!telemetry) return head + 4;
+  if (cap < head + 11) return 0;
+  kl_write_le16(out + head + 4, telemetry->fw_build);
+  out[head + 6] = telemetry->chip_arch;
+  out[head + 7] = telemetry->node_role;
+  out[head + 8] = telemetry->radio_caps;
+  out[head + 9] = telemetry->ota_state;
+  out[head + 10] = telemetry->battery_pct;
+  return head + 11;
+}
+
+bool kl_codec_decode_presence_telemetry(const uint8_t *payload, size_t len,
+                                        kl_presence_telemetry_t *out) {
+  if (!payload || !out || len < KL_RPC_HEADER_SIZE + 11) return false;
+  if (payload[0] != KL_RPC_PRESENCE) return false;
+  out->fw_build = (uint16_t)(payload[8] | ((uint16_t)payload[9] << 8));
+  out->chip_arch = payload[10];
+  out->node_role = payload[11];
+  out->radio_caps = payload[12];
+  out->ota_state = payload[13];
+  out->battery_pct = payload[14];
+  return true;
 }
 
 bool kl_codec_peek(const uint8_t *payload, size_t len, uint8_t *op, uint8_t *rpc_flags,

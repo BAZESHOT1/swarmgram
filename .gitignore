@@ -48,3 +48,5 @@ client/.tmp/
 
 # release build artifacts (stored in GitHub Releases)
 release/*.zip
+# private OTA signing key (public key is committed)
+firmware/klinto_core/ota_signing_key.pem

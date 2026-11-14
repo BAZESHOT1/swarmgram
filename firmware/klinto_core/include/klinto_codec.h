@@ -101,6 +101,24 @@ size_t kl_codec_encode_sync_request(uint8_t *out, size_t cap, const kl_rpc_sync_
 size_t kl_codec_encode_presence(uint8_t *out, size_t cap, uint8_t battery, int8_t rssi,
                                 uint8_t role, uint8_t capabilities);
 
+/* ------------------------- телеметрия версии (NODE_PRESENCE +7 байт) ------ */
+
+struct kl_presence_telemetry_t {
+  uint16_t fw_build;
+  uint8_t chip_arch;
+  uint8_t node_role;
+  uint8_t radio_caps;
+  uint8_t ota_state;
+  uint8_t battery_pct; /* 255 = внешнее питание */
+};
+
+/** Расширенный NODE_PRESENCE: старые 8 байт + 7 байт телеметрии. */
+size_t kl_codec_encode_presence_ex(uint8_t *out, size_t cap, uint8_t battery, int8_t rssi,
+                                   uint8_t role, uint8_t capabilities,
+                                   const kl_presence_telemetry_t *telemetry);
+bool kl_codec_decode_presence_telemetry(const uint8_t *payload, size_t len,
+                                        kl_presence_telemetry_t *out);
+
 /* --------------------------------------------------- поиск/лента/история -- */
 
 struct kl_search_request_t {

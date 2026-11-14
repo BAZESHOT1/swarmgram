@@ -10,7 +10,7 @@
 
 #include "klinto_gateway.h"
 
-#if defined(ESP32)
+#if defined(ESP32) && KL_HAS_MQTT
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #endif
@@ -53,7 +53,7 @@ class MqttTlsTransport : public IGatewayTransport {
   uint8_t rx_[512];
   size_t rx_len_;
 
-#if defined(ESP32)
+#if defined(ESP32) && KL_HAS_MQTT
   WiFiClientSecure secure_;
   WiFiClient plain_;
   Client *sock() { return tls_ ? (Client *)&secure_ : (Client *)&plain_; }

@@ -20,6 +20,7 @@
 #include "klinto_gateway.h"
 #include "klinto_lora.h"
 #include "klinto_mqtt.h"
+#include "klinto_ota.h"
 #include "klinto_router.h"
 
 class KlintoNode {
@@ -32,11 +33,13 @@ class KlintoNode {
   KlintoRouter &router() { return router_; }
   KlintoClientBridge &bridge() { return bridge_; }
   KlintoGateway &gateway() { return gateway_; }
+  KlintoOta &ota() { return ota_; }
   const kl_config_t &config() const { return cfg_; }
 
   void setBattery(uint8_t percent, bool charging = false) {
     router_.set_battery(percent, -60);
     router_.set_charging(charging);
+    ota_.set_battery(percent, charging);
   }
 
  private:
@@ -63,6 +66,8 @@ class KlintoNode {
   static void onConfig(void *ctx, const char *json, size_t len);
   static void onLog(void *ctx, const char *text);
   static void onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
+  static bool otaSend(void *ctx, uint8_t type, const uint8_t *payload, size_t len, bool broadcast);
+  static void otaState(void *ctx, uint8_t state);
   static bool cellApplyChannel(void *ctx, uint8_t wifi_channel);
   static void cellLocked(void *ctx, uint8_t channel, uint32_t gateway_id, int16_t rssi,
                          uint8_t hops, uint8_t reason);
@@ -81,9 +86,11 @@ class KlintoNode {
   KlintoFlashQueue down_queue_;
   MqttTlsTransport mqtt_;
   KlintoGateway gateway_;
+  KlintoOta ota_;
   KlintoCellManager cell_;
   char hardware_id_[24];
   volatile bool started_;
+  uint32_t boot_valid_ms_;
 };
 
 #endif  // ESP32

@@ -1,6 +1,10 @@
 #include "klinto_ble_link.h"
 
 #if defined(ESP32)
+#include <Arduino.h>
+#endif
+
+#if defined(ESP32) && KL_HAS_BLE
 
 #include <Arduino.h>
 #include <BLEDevice.h>
@@ -153,6 +157,40 @@ bool SerialClientLink::send(const uint8_t *data, size_t len) {
   return Serial.write(data, len) == len;
 }
 
+void SerialClientLink::poll(uint32_t now_ms) {
+  (void)now_ms;
+  uint8_t buf[256];
+  int budget = 4;
+  while (budget-- > 0 && Serial.available() > 0) {
+    const int n = Serial.readBytes(buf, sizeof(buf));
+    if (n <= 0) break;
+    last_rx_ms_ = millis();
+    if (cb_) cb_(cb_ctx_, buf, (size_t)n, 0, 0xFF);
+  }
+}
+
+#elif defined(ESP32)
+
+/* Стационарный узел без BLE-моста: BLE-стек не линкуется. */
+BleClientLink::BleClientLink()
+    : cb_(nullptr), cb_ctx_(nullptr), connected_(false), mtu_(23), conn_id_(0), hook_(nullptr),
+      hook_ctx_(nullptr), server_(nullptr), tx_(nullptr), rx_(nullptr), status_(nullptr) {}
+bool BleClientLink::begin(const char *) { return false; }
+void BleClientLink::end() {}
+bool BleClientLink::send(const uint8_t *, size_t) { return false; }
+uint16_t BleClientLink::mtu() const { return 23; }
+void BleClientLink::poll(uint32_t) {}
+void BleClientLink::notifyStatus(const char *) {}
+void BleClientLink::onConnected(uint16_t, uint16_t) {}
+void BleClientLink::onDisconnected() {}
+void BleClientLink::onWrite(const uint8_t *, size_t) {}
+
+SerialClientLink::SerialClientLink() : cb_(nullptr), cb_ctx_(nullptr), last_rx_ms_(0) {}
+void SerialClientLink::begin(unsigned long baud) { Serial.begin(baud); }
+bool SerialClientLink::send(const uint8_t *data, size_t len) {
+  if (!data || !len) return false;
+  return Serial.write(data, len) == len;
+}
 void SerialClientLink::poll(uint32_t now_ms) {
   (void)now_ms;
   uint8_t buf[256];
