@@ -12,6 +12,13 @@
  */
 import { Platform } from 'react-native';
 import { kv } from '../crypto/storage';
+import { syncKv } from '../storage/kv';
+import {
+  getCachedMessagesSync,
+  initMessageStore,
+  prefetchTopChats,
+  saveMessagesToStore,
+} from '../storage/messages';
 import type { Chat, User, UserProfile } from './api';
 
 /** Версия формата записей: при несовпадении запись игнорируется. */
@@ -374,6 +381,11 @@ function saveMessageIndex(): void {
 /** Последние сообщения из памяти (для мгновенного открытия чата). */
 export function getCachedMessages(chatId: string | null | undefined): unknown[] | null {
   if (!chatId) return null;
+  const fast = getCachedMessagesSync(chatId);
+  if (fast) {
+    if (!memory.has(`messages:${chatId}`)) memory.set(`messages:${chatId}`, fast);
+    return fast;
+  }
   const value = memory.get(`messages:${chatId}`);
   return Array.isArray(value) ? value : null;
 }
@@ -397,6 +409,7 @@ export function saveMessages(chatId: string | null | undefined, messages: unknow
   // Лента хранится от старых к новым: важны ПОСЛЕДНИЕ сообщения.
   const limited = messages.slice(-MAX_CACHED_MESSAGES);
   memory.set(`messages:${chatId}`, limited);
+  saveMessagesToStore(chatId, limited);
   writeEntry(messageKey(chatId), limited);
   if (messageIndex[0] !== chatId) {
     messageIndex = [chatId, ...messageIndex.filter((id) => id !== chatId)].slice(0, MAX_PRELOADED_MESSAGES);
@@ -433,6 +446,7 @@ export async function preloadMessageCaches(): Promise<void> {
  */
 export async function loadCaches(username?: string | null): Promise<void> {
   try {
+    initMessageStore();
     const me = await readEntry<User>(ME_KEY);
     if (isObject(me) && typeof me.username === 'string') memory.set('me', me);
 
@@ -450,6 +464,7 @@ export async function loadCaches(username?: string | null): Promise<void> {
       const index = await readEntry<string[]>(MESSAGE_INDEX_KEY);
       if (Array.isArray(index)) {
         messageIndex = index.filter((id): id is string => typeof id === 'string').slice(0, MAX_PRELOADED_MESSAGES);
+        void prefetchTopChats(messageIndex.slice(0, 5));
         const warm = messageIndex.slice(0, 8);
         const entries = await Promise.all(
           warm.map(async (chatId) => [chatId, await readEntry<unknown[]>(messageKey(chatId))] as const),

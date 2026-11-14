@@ -3,9 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  FlatList,
   Keyboard,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView as RNKeyboardAvoidingView,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   Platform,
@@ -17,6 +16,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
+import { FlashList } from '@shopify/flash-list';
+import { KeyboardAvoidingView as KCKeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../../src/theme/useTheme';
@@ -58,6 +59,13 @@ import { useStore } from '../../../src/state/useStore';
 import { useSounds } from '../../../src/components/useSounds';
 import { useHaptics } from '../../../src/components/useHaptics';
 import { CONNECTION_LABEL, useConnectionPhase } from '../../../src/components/ConnectionStatus';
+import {
+  getDraft,
+  getLastReadMessageId,
+  setDraft,
+  setLastReadMessageId,
+  setSavedScrollOffset,
+} from '../../../src/storage/chatState';
 
 /** Chat + новые поля контракта (data-слой реализует параллельно). */
 type ChatExt = api.Chat & {
@@ -79,7 +87,7 @@ type ViewMessageExt = ViewMessage & {
 };
 
 /** Строка ленты: одиночное сообщение или альбом из подряд идущих фото. */
-type Row = { m: ViewMessage; group: BubbleGroup; album?: ViewMessage[] };
+type Row = { m: ViewMessage; group: BubbleGroup; album?: ViewMessage[]; divider?: boolean };
 
 /** Активная/неудачная загрузка медиа: отмена и повтор из состояния экрана. */
 type UploadHandle = { controller: AbortController; retry: () => void };
@@ -137,7 +145,7 @@ export default function ChatScreen() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => (chatId ? getDraft(chatId) : ''));
   const [inputHeight, setInputHeight] = useState(42);
   const [replyTo, setReplyTo] = useState<ViewMessage | null>(null);
   const [editing, setEditing] = useState<ViewMessage | null>(null);
@@ -147,6 +155,11 @@ export default function ChatScreen() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [matchIndex, setMatchIndex] = useState(-1);
+
+  // Черновик хранится синхронно: возврат в чат не теряет ввод даже офлайн.
+  useEffect(() => {
+    if (chatId) setDraft(chatId, text);
+  }, [chatId, text]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [commentsPost, setCommentsPost] = useState<CommentsPost | null>(null);
   const [creatingSecret, setCreatingSecret] = useState(false);
@@ -194,7 +207,8 @@ export default function ChatScreen() {
   const unreadCountRef = useRef(0);
   unreadCountRef.current = unreadCount;
 
-  const listRef = useRef<FlatList<Row> | null>(null);
+  const Avoider: React.ComponentType<any> = Platform.OS === 'web' ? RNKeyboardAvoidingView : KCKeyboardAvoidingView;
+  const listRef = useRef<FlashList<Row> | null>(null);
   const inputRef = useRef<TextInput | null>(null);
   const avatarRef = useRef<View | null>(null);
   const dragRootRef = useRef<View | null>(null);
@@ -204,6 +218,7 @@ export default function ChatScreen() {
   const sendScale = useRef(new Animated.Value(1)).current;
   const headerCollapsedRef = useRef(false);
   const lastScrollYRef = useRef(0);
+  const lastScrollSaveRef = useRef(0);
   const atBottomRef = useRef(true);
   const prevIdsRef = useRef<Set<string> | null>(null);
   const initialScrollRef = useRef(false);
@@ -568,6 +583,17 @@ export default function ChatScreen() {
         setUnreadCount((current) => Math.max(0, current - readNow));
       }
     }
+    // Синхронно запоминаем последнее видимое сообщение для мгновенного
+    // открытия чата в следующий раз (MMKV/localStorage).
+    for (let i = info.viewableItems.length - 1; i >= 0; i -= 1) {
+      const row = info.viewableItems[i]?.item;
+      const messages = row?.album ?? (row?.m ? [row.m] : []);
+      const last = [...messages].reverse().find((m) => m?.id && !m.pending);
+      if (last?.id) {
+        setLastReadMessageId(chatIdRef.current, last.id);
+        break;
+      }
+    }
     if (!isChannelRef.current) return;
     for (const viewable of info.viewableItems) {
       const row = viewable.item;
@@ -800,10 +826,17 @@ export default function ChatScreen() {
         : [],
     [allMessages, normalizedQuery],
   );
-  const visibleRows = useMemo<Row[]>(
-    () => (searchActive ? matchedRows.map((r) => ({ m: r.m, group: 'single' as BubbleGroup })) : rows),
-    [searchActive, matchedRows, rows],
-  );
+  const visibleRows = useMemo<Row[]>(() => {
+    if (searchActive) return matchedRows.map((r) => ({ m: r.m, group: 'single' as BubbleGroup }));
+    if (unreadCount <= 0 || !unreadReady) return rows;
+    const boundary = firstUnreadIndexRef.current;
+    if (boundary <= 0 || boundary >= rows.length) return rows;
+    return [
+      ...rows.slice(0, boundary),
+      { m: rows[boundary].m, group: 'single' as BubbleGroup, divider: true },
+      ...rows.slice(boundary),
+    ];
+  }, [searchActive, matchedRows, rows, unreadCount, unreadReady]);
 
   useEffect(() => {
     setMatchIndex(normalizedQuery ? 0 : -1);
@@ -885,7 +918,13 @@ export default function ChatScreen() {
 
     if (totalUnread > 0) {
       pendingScrollRef.current = false;
-      const target = Math.max(0, firstUnread - 1);
+      const cachedReadId = getLastReadMessageId(chatId);
+      const cachedReadIndex = cachedReadId
+        ? allMessages.findIndex((m) => m.id === cachedReadId)
+        : -1;
+      const target = cachedReadIndex >= 0
+        ? Math.min(allMessages.length - 1, cachedReadIndex + 1)
+        : Math.max(0, firstUnread - 1);
       const timers = [250, 650, 1100].map((delay) =>
         setTimeout(() => {
           if (userScrolledRef.current) return;
@@ -946,6 +985,10 @@ export default function ChatScreen() {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const y = contentOffset.y;
     scrollY.setValue(y);
+    if (Date.now() - lastScrollSaveRef.current > 700 && chatId) {
+      lastScrollSaveRef.current = Date.now();
+      setSavedScrollOffset(chatId, y);
+    }
 
     const bottom = contentSize.height - (y + layoutMeasurement.height) < 90;
 
@@ -1497,7 +1540,26 @@ export default function ChatScreen() {
     [flashIds, viewCounts, searchActive, searchQuery, matchIndex, secret, asChannel, canPostAsChannel, isChannel, chat?.title, myRole, rolesByUsername, memberPresence, theme],
   );
   const renderRowRef = useRef<(info: { item: Row; index: number }) => React.ReactElement | null>(() => null);
-  renderRowRef.current = ({ item: row, index }) => (
+  renderRowRef.current = ({ item: row, index }) => {
+    if (row.divider) {
+      return (
+        <View style={{ alignItems: 'center', paddingVertical: 10 }}>
+          <View
+            style={{
+              backgroundColor: theme.bubbleOther,
+              borderRadius: 12,
+              paddingHorizontal: 12,
+              paddingVertical: 5,
+            }}
+          >
+            <Text style={{ color: theme.accent, fontSize: 11.5, fontWeight: '700' }}>
+              Непрочитанные сообщения
+            </Text>
+          </View>
+        </View>
+      );
+    }
+    return (
                 <View>
                   {row.m.kind === 'system' ? (
                     <SystemMessage
@@ -1612,12 +1674,13 @@ export default function ChatScreen() {
                 </View>
 
   );
+  };
   const renderRow = useCallback(
     (info: { item: Row; index: number }) => renderRowRef.current(info),
     [],
   );
   return (
-    <KeyboardAvoidingView
+    <Avoider
       style={{
         flex: 1,
         backgroundColor: theme.background,
@@ -1717,11 +1780,14 @@ export default function ChatScreen() {
           ) : searchActive && matchedRows.length === 0 ? (
             <EmptyState title="Ничего не найдено" subtitle={`По запросу «${searchQuery.trim()}» совпадений нет`} />
           ) : (
-            <FlatList
+            <FlashList
               ref={listRef}
               onLayout={() => setTimeout(initialScrollToRead, 120)}
               data={visibleRows}
               keyExtractor={chatRowKey}
+              estimatedItemSize={72}
+              drawDistance={1000}
+              getItemType={(row) => (row.divider ? 'unread_divider' : row.m.kind)}
               ListHeaderComponent={
                 loadingOlder ? (
                   <View style={styles.olderSpinner} accessibilityLabel="Загружаем историю">
@@ -1743,7 +1809,8 @@ export default function ChatScreen() {
               onViewableItemsChanged={onViewableItemsChanged}
               viewabilityConfig={viewabilityConfig}
               keyboardShouldPersistTaps="handled"
-              keyboardDismissMode="on-drag"
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
               onScrollBeginDrag={() => {
                 userScrolledRef.current = true;
               }}
@@ -2061,7 +2128,7 @@ export default function ChatScreen() {
           </View>
         ) : null}
       </View>
-    </KeyboardAvoidingView>
+    </Avoider>
   );
 }
 

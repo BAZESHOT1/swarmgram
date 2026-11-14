@@ -1,12 +1,20 @@
 import React from 'react';
 import { Alert, Animated, Platform, Pressable, Text, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { MotiView } from 'moti';
 import { useTheme } from '../theme/useTheme';
 import { Avatar } from './Avatar';
 import { useReducedMotion } from './useReducedMotion';
 import { PressableScale } from './chat/PressableScale';
 import { motion } from '../theme/motion';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Reanimated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import type { ViewMessage } from '../data/messaging';
 import { MediaMessage } from './chat/MediaMessage';
 import { roleColor } from './chat/roles';
@@ -246,6 +254,37 @@ export function MessageBubble({
   const isFailed = failed ?? item.failed;
   // Лёгкое сжатие пузыря только на время нажатия.
   const pressScale = React.useRef(new Animated.Value(1)).current;
+  // Свайп влево — быстрый ответ. Всё на UI-потоке, без setState в движении.
+  const swipeX = useSharedValue(0);
+  const swipeStyle = useAnimatedStyle(() => ({ transform: [{ translateX: swipeX.value }] }));
+  const replyIconStyle = useAnimatedStyle(() => ({
+    opacity: Math.min(1, Math.max(0, -swipeX.value / 45)),
+    transform: [{ scale: 0.8 + Math.min(0.2, Math.max(0, -swipeX.value / 250)) }],
+  }));
+  const replyHaptic = React.useCallback(() => {
+    if (Platform.OS === 'web') return;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+  }, []);
+  const replyGesture = React.useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-15, 15])
+        .failOffsetY([-10, 10])
+        .onUpdate((event) => {
+          if (event.translationX < 0) {
+            const raw = Math.max(-96, event.translationX * 0.62);
+            swipeX.value = raw > -8 ? 0 : raw;
+          }
+        })
+        .onEnd(() => {
+          if (swipeX.value <= -54) {
+            runOnJS(replyHaptic)();
+            runOnJS(onReply)();
+          }
+          swipeX.value = withSpring(0, { damping: 20, stiffness: 240, mass: 0.6 });
+        }),
+    [onReply, replyHaptic, swipeX],
+  );
 
   const setPressed = React.useCallback(
     (pressed: boolean) => {
@@ -322,6 +361,12 @@ export function MessageBubble({
   const showAvatar = !item.mine && (Boolean(onAvatarPress) || asChannel);
 
   return (
+    <GestureDetector gesture={replyGesture}>
+      <View style={styles.swipeWrap}>
+        <Reanimated.View style={[styles.swipeReplyIcon, replyIconStyle]} pointerEvents="none">
+          <Ionicons name="arrow-undo" size={18} color={theme.accent} />
+        </Reanimated.View>
+        <Reanimated.View style={swipeStyle}>
     <MotiView
       from={reduced ? { opacity: 1 } : { opacity: 0, translateY: item.mine ? 26 : 10, scale: item.mine ? 0.94 : 0.98 }}
       animate={{ opacity: 1, translateY: 0, scale: 1 }}
@@ -568,6 +613,9 @@ export function MessageBubble({
         ) : null}
       </Animated.View>
     </MotiView>
+        </Reanimated.View>
+      </View>
+    </GestureDetector>
   );
 }
 
@@ -576,6 +624,16 @@ const styles = StyleSheet.create({
   systemPress: { alignItems: 'center', maxWidth: 560 },
   systemText: { fontSize: 12.5, lineHeight: 17, textAlign: 'center' },
   systemTime: { fontSize: 10.5, marginTop: 2, opacity: 0.75 },
+  swipeWrap: { position: 'relative', overflow: 'visible' },
+  swipeReplyIcon: {
+    position: 'absolute',
+    right: 16,
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.9,
+  },
   row: { flexDirection: 'row', paddingHorizontal: 6, alignItems: 'flex-end' },
   rowMine: { justifyContent: 'flex-end' },
   avatarBtn: { marginRight: 6, marginBottom: 2 },

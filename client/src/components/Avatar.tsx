@@ -1,5 +1,6 @@
 import React from 'react';
-import { Image, Text, View, StyleSheet } from 'react-native';
+import { Text, View, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
 import { MotiView } from 'moti';
 import { useTheme } from '../theme/useTheme';
 import { useReducedMotion } from './useReducedMotion';
@@ -246,7 +247,10 @@ export function Avatar({
           <Image
             source={{ uri: photo?.uri ?? '' }}
             style={{ width: inner, height: inner, borderRadius: innerRadius }}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={photo?.uri ?? name}
+            transition={120}
             accessibilityIgnoresInvertColors
           />
         ) : checkingCache ? (

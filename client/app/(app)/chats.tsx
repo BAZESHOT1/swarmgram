@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Easing,
-  FlatList,
+
   Keyboard,
   PanResponder,
   Platform,
@@ -25,6 +25,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
+import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
@@ -57,6 +58,8 @@ import { PressableScale } from '../../src/components/chat/PressableScale';
 import { ChatContextMenu } from '../../src/components/chat/ChatContextMenu';
 import { SelectionToolbar } from '../../src/components/chat/SelectionToolbar';
 import { ConfirmDialog } from '../../src/components/chat/ConfirmDialog';
+import { FlashList } from '@shopify/flash-list';
+import { prefetchTopChats } from '../../src/storage/messages';
 import { motion } from '../../src/theme/motion';
 import { useHaptics } from '../../src/components/useHaptics';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
@@ -469,6 +472,9 @@ function SwipeChatRow(props: {
         </View>
       )}
       onSwipeableWillOpen={() => {
+        if (Platform.OS !== 'web') {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+        }
         haptics.tap();
         onSwipeStart?.();
         onOpenChange(chat.id);
@@ -1427,6 +1433,11 @@ export default function ChatsScreen() {
     () => ({ wide, selecting, selected, openRowId, pinned, mutedSet, myUsername, theme, reduced }),
     [wide, selecting, selected, openRowId, pinned, mutedSet, myUsername, theme, reduced],
   );
+  useEffect(() => {
+    const ids = allChats.slice(0, 5).map((chat) => chat?.id).filter((id) => Boolean(id));
+    if (ids.length) void prefetchTopChats(ids);
+  }, [allChats]);
+
   const renderChatRowRef = useRef<(info: { item: ChatListRow; index: number }) => React.ReactElement | null>(() => null);
   renderChatRowRef.current = ({ item, index }) => {
               if (item.kind === 'section') {
@@ -1704,7 +1715,7 @@ export default function ChatsScreen() {
         </View>
       ) : (
         <>
-          <FlatList
+          <FlashList
             data={chatRows}
             keyExtractor={chatListKey}
             onEndReached={() => setChatPage((n) => n + 30)}
@@ -1717,11 +1728,8 @@ export default function ChatsScreen() {
             }}
             onScroll={onChatsListScroll}
             scrollEventThrottle={32}
-            initialNumToRender={12}
-            maxToRenderPerBatch={10}
-            updateCellsBatchingPeriod={40}
-            windowSize={9}
-            removeClippedSubviews={Platform.OS === 'android'}
+            estimatedItemSize={86}
+            drawDistance={900}
             contentContainerStyle={{
               // Док плавающий: резервируем высоту капсулы + safe-area + 24px воздуха,
               // чтобы последний чат не уходил под кнопки.
@@ -2146,10 +2154,11 @@ function SearchResults({
   return (
     <View style={{ flex: 1 }}>
       <FilterTabs theme={theme} filter={filter} counts={counts} total={total} onFilter={onFilter} />
-      <FlatList
+      <FlashList
         data={rows}
         keyExtractor={(r, i) => `${rowKey(r)}-${i}`}
         keyboardShouldPersistTaps="handled"
+        estimatedItemSize={72}
         contentContainerStyle={{ paddingBottom: 130 }}
         renderItem={({ item, index }) => {
           if (item.kind === 'section') {

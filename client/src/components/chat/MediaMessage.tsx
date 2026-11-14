@@ -2,7 +2,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
+
   Modal,
   Platform,
   Pressable,
@@ -12,6 +12,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
 import { MotiView } from 'moti';
 import { useTheme } from '../../theme/useTheme';
 import { useReducedMotion } from '../useReducedMotion';
@@ -90,7 +91,7 @@ export function MediaLightbox({
           onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
           renderItem={({ item }) => (
             <View style={{ width, height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-              <Image source={{ uri: item.uri }} style={{ width, height: '100%' }} resizeMode="contain" />
+              <Image source={{ uri: item.uri }} style={{ width, height: '100%' }} contentFit="contain" />
             </View>
           )}
         />
@@ -189,7 +190,7 @@ function MediaImage({
       <Image
         source={{ uri }}
         style={{ width: '100%', height: '100%', backgroundColor: theme.surface }}
-        resizeMode="cover"
+        contentFit="cover"
         onLoad={(e) => {
           const src = (e as unknown as { nativeEvent?: { source?: { width?: number; height?: number } } }).nativeEvent?.source;
           if (src?.width && src?.height) setAspect(src.width / src.height);
@@ -329,7 +330,7 @@ function MediaVideo({ item, width = MEDIA_W }: { item: ViewMessage; width?: numb
         { width, backgroundColor: theme.surface, borderColor: theme.line, opacity: pressed ? 0.9 : 1 },
       ]}
     >
-      {shownPoster ? <Image source={{ uri: shownPoster }} style={StyleSheet.absoluteFillObject as never} resizeMode="cover" /> : null}
+      {shownPoster ? <Image source={{ uri: shownPoster }} style={StyleSheet.absoluteFillObject as never} contentFit="cover" /> : null}
       <View style={[StyleSheet.absoluteFillObject, shownPoster ? { backgroundColor: 'rgba(0,0,0,0.28)' } : null]} />
       <View style={styles.playCircle}>
         {loading ? <ActivityIndicator color="#fff" /> : <Ionicons name={error ? 'alert-circle' : 'play'} size={30} color="#fff" />}

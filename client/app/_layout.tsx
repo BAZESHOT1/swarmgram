@@ -12,6 +12,7 @@ import { ThemeProvider, DefaultTheme, DarkTheme } from '@react-navigation/native
 import { StatusBar } from 'expo-status-bar';
 import { AppState, Platform, View, ActivityIndicator, StyleSheet, Text } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { useTheme } from '../src/theme/useTheme';
 import { ACCENTS, type AccentName } from '../src/theme/theme';
 import { useBodyBackground } from '../src/theme/useBodyBackground';
@@ -1003,6 +1004,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+    <KeyboardProvider>
     <View style={{ flex: 1, backgroundColor: theme.background }} suppressHydrationWarning>
       <StatusBar style={theme.dark ? 'light' : 'dark'} />
       <QueryClientProvider client={queryClient} suppressHydrationWarning>
@@ -1033,6 +1035,7 @@ export default function RootLayout() {
         </ThemeProvider>
       </QueryClientProvider>
     </View>
+    </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }
