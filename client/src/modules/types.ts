@@ -89,6 +89,11 @@ export interface ModuleConnection {
    * Необязательна: старые транспорты могут её не реализовывать.
    */
   onInfo?(callback: (info: ModuleInfo) => void): () => void;
+  /** Сырой бинарный канал того же GATT: используется KMesh_v1. */
+  rawLink?: {
+    send(bytes: Uint8Array): Promise<boolean>;
+    onData(callback: (chunk: Uint8Array) => void): () => void;
+  };
   /** Подписка на разрыв связи; возвращает функцию отписки. */
   onDisconnect(callback: () => void): () => void;
   close(): Promise<void>;

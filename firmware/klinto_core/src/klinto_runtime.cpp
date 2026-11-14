@@ -401,8 +401,16 @@ bool KlintoNode::begin() {
 }
 
 void KlintoNode::startTasks() {
+  /* ESP32-C3 одноядерный: xTaskCreatePinnedToCore(core=1) роняет assert.
+   * На dual-core оставляем mesh на core 0, BLE-клиент на core 1. */
+#if defined(CONFIG_FREERTOS_UNICORE) && CONFIG_FREERTOS_UNICORE
+  constexpr BaseType_t kClientCore = 0;
+#else
+  constexpr BaseType_t kClientCore = 1;
+#endif
   xTaskCreatePinnedToCore(&KlintoNode::meshTaskEntry, "kl_mesh", 8192, this, 5, nullptr, 0);
-  xTaskCreatePinnedToCore(&KlintoNode::clientTaskEntry, "kl_client", 8192, this, 3, nullptr, 1);
+  xTaskCreatePinnedToCore(&KlintoNode::clientTaskEntry, "kl_client", 8192, this, 3, nullptr,
+                          kClientCore);
   if (cfg_.role == KL_ROLE_GATEWAY) {
     xTaskCreatePinnedToCore(&KlintoNode::gatewayTaskEntry, "kl_gateway", 16384, this, 2, nullptr, 0);
   }

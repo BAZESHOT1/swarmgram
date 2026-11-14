@@ -79,6 +79,21 @@
   (HELLO/PING → INFO/PONG), чтобы текущая мобильная сборка могла
   подключиться к новой прошивке и получить `INFO`.
 
+### 5. Отправка сообщений всё ещё шла legacy-путём
+
+- `messaging.ts` вызывал `sendViaMesh()` со старым JSON-конвертом
+  `A5 5A DATA_UP`, который новая прошивка не разбирает.
+
+Исправлено:
+
+- `NativeBleTransport` отдаёт `rawLink` — тот же GATT без legacy-обёртки;
+- `ModuleProvider` поднимает `KMeshV1Client` поверх этого канала;
+- `meshLink.sendViaMesh()` сначала пробует `setMeshV1Sender` и только потом
+  legacy-конверт;
+- адресация — `chatRef = CRC16(chatId)`, `dst = ANY_GATEWAY`,
+  `TO_INTERNET`, поэтому сообщение уходит на шлюз и в архив Hub;
+- входящие `RPC_DOWN` кладутся в кэш сообщений и превью чата.
+
 ## Трассировка
 
 После прошивки в Serial выводятся четыре метки:

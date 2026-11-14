@@ -19,7 +19,9 @@ import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
 import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
-import { emitMeshEnvelope, setMeshCapabilities, setMeshSender } from './meshLink';
+import { emitMeshEnvelope, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
+import { KMeshV1Client } from '../kmesh/v1/client';
+import { crc16 } from '../kmesh/v1/protocol';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
 import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
@@ -126,6 +128,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const infoRef = useRef<ModuleInfo | null>(null);
   const lastRecordRef = useRef<LastModuleRecord | null>(null);
   const unsubEnvelopeRef = useRef<(() => void) | null>(null);
+  const v1ClientRef = useRef<KMeshV1Client | null>(null);
+  const v1UnsubRef = useRef<(() => void) | null>(null);
   const unsubInfoRef = useRef<(() => void) | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
@@ -144,6 +148,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     unsubEnvelopeRef.current?.();
     unsubInfoRef.current?.();
     unsubDisconnectRef.current?.();
+    v1UnsubRef.current?.();
+    v1UnsubRef.current = null;
+    v1ClientRef.current = null;
+    setMeshV1Sender(null);
     unsubEnvelopeRef.current = null;
     unsubInfoRef.current = null;
     unsubDisconnectRef.current = null;
@@ -249,6 +257,82 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       });
       // Пока модуль подключён, messaging может отправлять через mesh.
       setMeshSender((chatId, envelope) => transport.sendEnvelope(chatId, envelope));
+
+      // KMesh_v1: тот же GATT, но бинарный протокол. Он приоритетнее
+      // legacy-конвертов и уходит на шлюз флагом TO_INTERNET.
+      if (transport.rawLink) {
+        const raw = transport.rawLink;
+        const refOf = (chatId: string): number => crc16(new TextEncoder().encode(chatId)) || 1;
+        const resolveChat = (ref: number): string | undefined => {
+          const lists = [
+            qc.getQueryData<Array<{ id?: unknown }>>(['chats', session?.username]),
+            qc.getQueryData<Array<{ id?: unknown }>>(['chats']),
+          ];
+          for (const list of lists) {
+            if (!Array.isArray(list)) continue;
+            const found = list.find(
+              (row) => row && typeof row.id === 'string' && refOf(row.id) === ref,
+            );
+            if (found && typeof found.id === 'string') return found.id;
+          }
+          return undefined;
+        };
+        const v1 = new KMeshV1Client({
+          link: { send: (frame) => raw.send(frame) },
+          resolveChatByRef: resolveChat,
+          onInfo: (info) => setMeshCapabilities({ queue: info.queue }),
+          onMessage: (message) => {
+            if (!message.text || message.srcNodeId === v1.getNodeId()) return;
+            const chatId = resolveChat(message.chatRef);
+            if (!chatId) return;
+            const createdAt = new Date(message.createdAt || Date.now()).toISOString();
+            const entry = {
+              id: message.msgUuid,
+              chatId,
+              seq: 0,
+              kind: 'text',
+              text: message.text,
+              createdAt,
+              mine: false,
+              senderNodeId: message.srcNodeId,
+            };
+            qc.setQueryData<unknown[]>(['messages', chatId], (prev) => {
+              const list = Array.isArray(prev) ? prev : [];
+              if (list.some((m) => (m as { id?: string })?.id === entry.id)) return list;
+              return [...list, entry].sort(
+                (a, b) =>
+                  new Date((a as { createdAt?: string })?.createdAt ?? 0).getTime() -
+                  new Date((b as { createdAt?: string })?.createdAt ?? 0).getTime(),
+              );
+            });
+            useStore.getState().setChatPreview(chatId, {
+              id: entry.id,
+              text: entry.text,
+              kind: 'text',
+              mine: false,
+              at: createdAt,
+            });
+            void qc.invalidateQueries({ queryKey: ['chats'] });
+          },
+        });
+        v1ClientRef.current = v1;
+        v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
+        setMeshV1Sender(async (chatId, text) => {
+          try {
+            const result = await v1.sendText({
+              chatId,
+              chatRef: refOf(chatId),
+              peerNodeId: 1,
+              text,
+              toInternet: true,
+            });
+            return result.state !== 'FAILED';
+          } catch {
+            return false;
+          }
+        });
+        void v1.hello();
+      }
 
       // Profile-presence: только username/publicId/userId, без списка чатов.
       if (session) {

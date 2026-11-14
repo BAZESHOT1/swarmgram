@@ -193,6 +193,12 @@ export class NativeBleTransport implements ModuleConnection {
   readonly supported = true;
   info: ModuleInfo | null = null;
 
+  /** KMesh_v1 использует тот же GATT, но собственный бинарный протокол. */
+  readonly rawLink = {
+    send: (bytes: Uint8Array) => this.sendRaw(bytes),
+    onData: (callback: (chunk: Uint8Array) => void) => this.onRaw(callback),
+  };
+
   private deviceId: string | null = null;
   private mtu = 23;
   private decoder = new FrameDecoder();
@@ -202,6 +208,7 @@ export class NativeBleTransport implements ModuleConnection {
   private statusSub: Subscription | null = null;
   private disconnectSub: Subscription | null = null;
   private readonly envelopeHandlers = new Set<(message: ModuleEnvelope) => void>();
+  private readonly rawHandlers = new Set<(chunk: Uint8Array) => void>();
   private readonly infoHandlers = new Set<(info: ModuleInfo) => void>();
   private readonly disconnectHandlers = new Set<() => void>();
   /**
@@ -513,6 +520,13 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   private handleChunk(chunk: Uint8Array): void {
+    for (const handler of this.rawHandlers) {
+      try {
+        handler(chunk);
+      } catch {
+        /* ignore */
+      }
+    }
     for (const frame of this.decoder.push(chunk)) this.handleFrame(frame);
   }
 
@@ -614,14 +628,13 @@ export class NativeBleTransport implements ModuleConnection {
     });
   }
 
-  /** Чанк ровно 20 байт — как в web, чтобы не упираться в длинные write на iOS. */
-  private writeFrame(type: number, payload: Uint8Array): Promise<void> {
+  /** Сырая запись байтов в RX-характеристику (без A5 5A-конверта). */
+  private writeBytes(frame: Uint8Array): Promise<void> {
     const run = async (): Promise<void> => {
       const deviceId = this.deviceId;
       if (!deviceId || this.closing) {
         throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
       }
-      const frame = encodeFrame(type, payload);
       const chunkSize = 20;
       for (let offset = 0; offset < frame.length; offset += chunkSize) {
         const chunk = frame.slice(offset, offset + chunkSize);
@@ -637,6 +650,28 @@ export class NativeBleTransport implements ModuleConnection {
     // Ошибку одного кадра не тащим в очередь следующих запросов.
     this.writeChain = next.catch(() => undefined);
     return next;
+  }
+
+  /** Чанк ровно 20 байт — как в web, чтобы не упираться в длинные write на iOS. */
+  private writeFrame(type: number, payload: Uint8Array): Promise<void> {
+    return this.writeBytes(encodeFrame(type, payload));
+  }
+
+  /** KMesh_v1: отправить готовый бинарный кадр в тот же GATT. */
+  async sendRaw(frame: Uint8Array): Promise<boolean> {
+    if (!this.isOpen) return false;
+    try {
+      await this.writeBytes(frame);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** KMesh_v1: подписка на сырые чанки до разбора legacy-кадров. */
+  onRaw(callback: (chunk: Uint8Array) => void): () => void {
+    this.rawHandlers.add(callback);
+    return () => this.rawHandlers.delete(callback);
   }
 
   async sendEnvelope(chatId: string, envelope: unknown): Promise<void> {

@@ -8,9 +8,11 @@
 import type { Envelope } from '../data/api';
 
 type MeshSender = (chatId: string, envelope: unknown) => Promise<void>;
+type MeshV1Sender = (chatId: string, text: string) => Promise<boolean>;
 type MeshListener = (envelope: Envelope) => void;
 
 let sender: MeshSender | null = null;
+let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
 
 /** Возможности mesh на текущем подключении (для политики трафика). */
@@ -34,12 +36,26 @@ export function setMeshSender(next: MeshSender | null): void {
   sender = next;
 }
 
+/** Бинарный KMesh_v1: приоритетнее legacy-конвертов. */
+export function setMeshV1Sender(next: MeshV1Sender | null): void {
+  v1Sender = next;
+}
+
 export function canSendViaMesh(): boolean {
-  return sender !== null;
+  return sender !== null || v1Sender !== null;
 }
 
 /** Отправить конверт через модуль. false — модуль не подключён или ошибка. */
 export async function sendViaMesh(chatId: string, envelope: unknown): Promise<boolean> {
+  const item = (envelope ?? {}) as { text?: unknown; kind?: unknown };
+  const text = typeof item.text === 'string' ? item.text : '';
+  if (v1Sender && text) {
+    try {
+      if (await v1Sender(chatId, text)) return true;
+    } catch {
+      /* падаем в legacy-путь ниже */
+    }
+  }
   if (!sender) return false;
   try {
     await sender(chatId, envelope);
