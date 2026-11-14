@@ -40,6 +40,13 @@ jobs:
           EXPO_NO_TELEMETRY: 1
           CI: 1
 
+      - name: Increase Gradle heap
+        run: |
+          if [ -f android/gradle.properties ]; then
+            sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g/' android/gradle.properties
+            grep '^org.gradle.jvmargs' android/gradle.properties
+          fi
+
       - name: Build release APK
         run: ./gradlew assembleRelease --no-daemon -x lint
         working-directory: client/android
