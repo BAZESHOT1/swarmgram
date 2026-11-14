@@ -72,6 +72,9 @@ import { motion } from '../../src/theme/motion';
 import { useHaptics } from '../../src/components/useHaptics';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
+import { onKmeshFeed, onKmeshHistory, onKmeshSearch } from '../../src/kmesh/v1/events';
+import { requestKmeshFeed, requestKmeshHistory, requestKmeshSearch } from '../../src/kmesh/v1/runtime';
+import { crc16 } from '../../src/kmesh/v1/protocol';
 import { setChatSearchActive } from '../../src/state/chatSearchState';
 import { hasNetworkAccess } from '../../src/data/access';
 import { onReadAllRequest } from '../../src/state/chatEvents';
@@ -577,6 +580,7 @@ export default function ChatsScreen() {
     marginLeft: interpolate(searchProgress.value, [0, 1], [8, 0]),
   }));
   const [filter, setFilter] = useState<SearchFilter>('all');
+  const [meshHits, setMeshHits] = useState<Array<{ entityId: number; type: number; name: string }>>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -616,6 +620,7 @@ export default function ChatsScreen() {
   const [deleting, setDeleting] = useState(false);
 
   const mutedChats = useStore((s) => s.mutedChats);
+  const transportOnline = useStore((s) => s.transportOnline);
   const toggleMuted = useStore((s) => s.toggleMuted);
   // Поле появится в store от параллельного агента — читаем безопасно.
   const storeHistory = useStore((s) => (s as unknown as { searchHistory?: SearchHistoryEntry[] }).searchHistory);
@@ -985,12 +990,52 @@ export default function ChatsScreen() {
       rows.push({ kind: 'section', title: 'Каналы', count: channelHits.length });
       channelHits.forEach((group) => rows.push({ kind: 'group', group }));
     }
+    if (allow('people') && meshHits.some((hit) => hit.type === 1)) {
+      const meshPeople = meshHits
+        .filter((hit) => hit.type === 1)
+        .map((hit) => ({
+          id: `mesh-u-${hit.entityId}`,
+          username: hit.name.toLowerCase().replace(/[^a-z0-9_]+/g, '_'),
+          displayName: hit.name,
+          nodeOnline: true,
+        }))
+        .filter((user) => !people.some((p) => p.displayName === user.displayName));
+      if (meshPeople.length) {
+        rows.push({ kind: 'section', title: 'Из модуля', count: meshPeople.length });
+        meshPeople.forEach((user) => rows.push({ kind: 'user', user, mutual: 0 }));
+      }
+    }
+    if (
+      (allow('groups') || allow('channels')) &&
+      meshHits.some((hit) => hit.type === 2 || hit.type === 3)
+    ) {
+      const meshGroups = meshHits
+        .filter((hit) => (allow('groups') && hit.type === 2) || (allow('channels') && hit.type === 3))
+        .map((hit) => ({
+          id: `mesh-g-${hit.entityId}`,
+          title: hit.name,
+          type: (hit.type === 3 ? 'channel' : 'group') as 'group' | 'channel',
+          visibility: 'public' as const,
+          description: '',
+          membersCount: 0,
+          joined: false,
+        }))
+        .filter(
+          (group) =>
+            !groupHits.some((g) => g.title === group.title) &&
+            !channelHits.some((g) => g.title === group.title),
+        );
+      if (meshGroups.length) {
+        rows.push({ kind: 'section', title: 'Из модуля', count: meshGroups.length });
+        meshGroups.forEach((group) => rows.push({ kind: 'group', group }));
+      }
+    }
     if (allow('messages') && messageHits.length) {
       rows.push({ kind: 'section', title: 'Сообщения', count: messageHits.length });
       messageHits.forEach((hit) => rows.push({ kind: 'message', hit }));
     }
     return rows;
-  }, [filter, localChatHits, people, groupHits, channelHits, messageHits, searchableChats]);
+  }, [filter, localChatHits, people, groupHits, channelHits, messageHits, searchableChats, meshHits]);
 
   const selectableRows = useMemo(() => searchRows.filter((r) => r.kind !== 'section'), [searchRows]);
 
@@ -1013,8 +1058,11 @@ export default function ChatsScreen() {
   }, [haptics]);
 
   const openChat = useCallback((c: Chat) => {
+    if (!transportOnline) {
+      void requestKmeshHistory(crc16(new TextEncoder().encode(c.id)), 8);
+    }
     router.push(`/chat/${c.id}` as never);
-  }, []);
+  }, [transportOnline]);
 
   /** Сохранить историю и продублировать в store (серверная синхронизация). */
   const persistHistory = useCallback((next: SearchHistoryEntry[]) => {
@@ -1452,6 +1500,70 @@ export default function ChatsScreen() {
     () => [...allChats].sort((a, b) => activityOf(b) - activityOf(a)).filter((c) => isPinned(c.id)),
     [allChats, isPinned],
   );
+
+  // События KMesh_v1: поиск/лента/история приходят по BLE downlink.
+  useEffect(() => {
+    if (!activeQuery || transportOnline) {
+      setMeshHits([]);
+      return undefined;
+    }
+    const un = onKmeshSearch((event) => setMeshHits(event.results));
+    void requestKmeshSearch(activeQuery, 0);
+    return un;
+  }, [activeQuery, transportOnline]);
+
+  useEffect(() => {
+    if (transportOnline) return undefined;
+    const un = onKmeshFeed((event) => {
+      for (const entry of event.entries) {
+        const chat = allChats.find((c) => crc16(new TextEncoder().encode(c.id)) === entry.chatRef);
+        if (!chat) continue;
+        useStore.getState().setChatPreview(chat.id, {
+          id: entry.lastMsgUuid,
+          text: entry.preview,
+          kind: 'text',
+          mine: false,
+          at: new Date((entry.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+        });
+      }
+    });
+    const sync = () => void requestKmeshFeed(Math.floor(Date.now() / 1000) - 86_400);
+    sync();
+    const timer = setInterval(sync, 60_000);
+    return () => {
+      un();
+      clearInterval(timer);
+    };
+  }, [allChats, transportOnline]);
+
+  useEffect(() => {
+    if (transportOnline) return undefined;
+    return onKmeshHistory((event) => {
+      const chat = allChats.find((c) => crc16(new TextEncoder().encode(c.id)) === event.chatRef);
+      if (!chat) return;
+      const incoming = event.messages.map((message) => ({
+        id: `mesh-${message.msgUuid}`,
+        chatId: chat.id,
+        seq: 0,
+        kind: 'text',
+        text: message.text,
+        createdAt: new Date((message.timestamp || 0) * 1000).toISOString(),
+        mine: false,
+        senderNodeId: message.senderId,
+      }));
+      qc.setQueryData<unknown[]>(['messages', chat.id], (prev) => {
+        const rows = Array.isArray(prev) ? prev : [];
+        const seen = new Set(rows.map((row) => (row as { id?: string })?.id));
+        const merged = [...rows, ...incoming.filter((row) => !seen.has(row.id))];
+        return merged.sort(
+          (a, b) =>
+            new Date((a as { createdAt?: string })?.createdAt ?? 0).getTime() -
+            new Date((b as { createdAt?: string })?.createdAt ?? 0).getTime(),
+        );
+      });
+    });
+  }, [allChats, qc, transportOnline]);
+
 
   const noChats = allChats.length === 0 && archivedChats.length === 0;
   const queryTooShort = Boolean(search.trim()) && search.trim().replace(/^@+/, '').length < 2;

@@ -23,6 +23,7 @@ import { emitMeshEnvelope, setMeshCapabilities, setMeshSender, setMeshV1Sender }
 import { KMeshV1Client } from '../kmesh/v1/client';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
+import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
 import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
@@ -154,6 +155,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     v1UnsubRef.current?.();
     v1UnsubRef.current = null;
     v1ClientRef.current = null;
+    setActiveKMeshV1(null);
     setMeshV1Sender(null);
     unsubEnvelopeRef.current = null;
     unsubInfoRef.current = null;
@@ -363,6 +365,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           },
         });
         v1ClientRef.current = v1;
+        setActiveKMeshV1(v1);
         v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
         setMeshV1Sender(async (chatId, text) => {
           try {

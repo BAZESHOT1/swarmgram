@@ -293,6 +293,11 @@ bool KlintoNode::begin() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(false, false);
     delay(30);
+    /* C3: BLE + ESP-NOW одновременно дают пиковый ток. Снижаем мощность
+     * Wi-Fi и включаем modem sleep, чтобы не было brownout при подключении
+     * телефона по BLE. */
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   }
 
   if (cfg_.espnow_enabled) {

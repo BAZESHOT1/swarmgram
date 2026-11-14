@@ -104,11 +104,19 @@ async function openPort(path, baud = 115200) {
   session.error = null;
   sessions.set(path, session);
 
-  const port = new SerialPort({ path, baudRate: baud, autoOpen: false });
+  const port = new SerialPort({ path, baudRate: baud, autoOpen: false, dtr: false, rts: false });
   session.port = port;
   await new Promise((resolve, reject) => {
     port.open((err) => (err ? reject(err) : resolve()));
   });
+  // C3/S3: RTS не должен удерживать boot-strap. Иначе модуль после каждого
+  // сброса уходит в ROM-download («waiting for download») и выглядит как
+  // перезагружающийся при подключении телефона.
+  try {
+    port.set({ dtr: false, rts: false });
+  } catch {
+    /* платформа без управления линиями */
+  }
   // Не дёргаем DTR/RTS при открытии: на C3/S3 это перезагружает модуль
   // (и рвёт BLE), из-за чего монитор «сам отключал» носимый модуль.
   // Явный сброс — только через POST /api/reset.
