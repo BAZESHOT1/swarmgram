@@ -113,10 +113,20 @@
 | --- | --- |
 | Host-тесты ядра (`run_tests.ps1`) | 635 проверок, 0 ошибок |
 | Сборка ведомого и шлюза (esp32c3) | успешно, fw_build 141 |
+| Сборка шлюза под ESP32 (классический) | успешно, fw_build 141 |
+| Прошивка COM4 (ESP32, gateway) | записано и проверено, `role=2` |
+| Прошивка COM5 (ESP32-C3, wearable) | записано и проверено |
 | Клиентский кодек KMesh_v1 | OK |
 | Hub relay → archive → ACK → downlink | OK |
 | Hub `/v1/kmesh/v1/relay` | HTTP 200 |
 | Миграция `040_kmesh_v1_downlink.sql` | применена |
+
+### Исправление после первой прошивки
+
+На ESP32-C3 (одноядерный) задача `kl_client` пиновалась на `core 1`,
+из-за чего прошивка падала в `assert failed: xTaskCreatePinnedToCore`.
+Теперь ядро задачи выбирается по `CONFIG_FREERTOS_UNICORE`: на C3 — `0`,
+на двухъядерном ESP32 — `1`.
 
 ## OTA
 
