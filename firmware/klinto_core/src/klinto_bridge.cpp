@@ -126,6 +126,15 @@ void KlintoClientBridge::handle_legacy_frame(uint8_t type, const uint8_t *payloa
   (void)payload;
   (void)len;
   if (type != 1 && type != 6) return; /* HELLO или PING */
+  /* Ответ нельзя отправлять из GATT-колбэка: NimBLE может зависнуть.
+   * Запоминаем тип и отдаём INFO/PONG из clientTask. */
+  legacy_reply_type_ = type;
+}
+
+void KlintoClientBridge::flush_legacy_reply() {
+  if (!legacy_reply_type_) return;
+  const uint8_t type = legacy_reply_type_;
+  legacy_reply_type_ = 0;
   const char *role = cfg_.role == KL_ROLE_GATEWAY
                          ? "gateway"
                          : (cfg_.role == KL_ROLE_ROUTER ? "repeater" : "wearable");
@@ -275,6 +284,9 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
     case KL_CF_SET_OWNER:
       handle_set_owner(payload, len);
       break;
+    case KL_CF_SET_OWNER_LOCAL:
+      handle_local_owner(payload, len);
+      break;
     case KL_CF_PING: {
       uint8_t pong[8];
       kl_write_le32(pong, kl_uptime_ms());
@@ -332,6 +344,27 @@ void KlintoClientBridge::handle_set_owner(const uint8_t *payload, size_t len) {
     sink_.owner_changed(sink_.ctx, claim.prefix, claim.net_id, claim.epoch);
   }
   log_line("[klinto] owner changed: %s net=%lu", claim.prefix, (unsigned long)claim.net_id);
+}
+
+void KlintoClientBridge::handle_local_owner(const uint8_t *payload, size_t len) {
+  /* Первичная локальная привязка по BLE, без интернета и без подписи.
+   * Разрешена только для ещё не привязанного модуля (prefix 00000000). */
+  if (!payload || len < 16) return;
+  if (strncmp(cfg_.owner_ble_prefix, "00000000", 8) != 0) {
+    log_line("[klinto] local owner ignored: already bound");
+    return;
+  }
+  char prefix[KL_OWNER_PREFIX_LEN + 1];
+  memset(prefix, 0, sizeof(prefix));
+  for (int i = 0; i < KL_OWNER_PREFIX_LEN; ++i) prefix[i] = (char)payload[i];
+  char normalized[KL_OWNER_PREFIX_LEN + 1];
+  if (!kl_owner_prefix_normalize(prefix, normalized)) return;
+  const uint32_t net_id = kl_read_le32(payload + 8);
+  const uint32_t epoch = kl_read_le32(payload + 12);
+  if (sink_.owner_changed) {
+    sink_.owner_changed(sink_.ctx, normalized, net_id, epoch ? epoch : 1);
+  }
+  log_line("[klinto] local owner set: %s net=%lu", normalized, (unsigned long)net_id);
 }
 
 bool KlintoClientBridge::proxy_uplink(const kl_packet_t *pkt) {
@@ -583,6 +616,9 @@ void KlintoClientBridge::flush_outbox() {
 
 void KlintoClientBridge::loop(uint32_t now_ms) {
   if (link_) link_->poll(now_ms);
+  if (link_ && link_->connected()) {
+    flush_legacy_reply();
+  }
   if (link_ && link_->connected() && now_ms - last_flush_ms_ > 250) {
     last_flush_ms_ = now_ms;
     flush_statuses();

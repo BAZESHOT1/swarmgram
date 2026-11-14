@@ -344,8 +344,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     });
     await query(
       `INSERT INTO kmesh_v1_downlink
-         (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64)
-       VALUES ($1,$2,'packet',$3,$4,$5)`,
+         (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64, expires_at)
+       VALUES ($1,$2,'packet',$3,$4,$5, now() + interval '24 hours')`,
       [input.gatewayId, input.dstNodeId, packetId, msgUuidHex(input.msgUuid),
        wire.toString('base64')],
     );
@@ -665,6 +665,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
            version = COALESCE(NULLIF(EXCLUDED.version, ''), kmesh_v1_gateways.version)`,
         [gatewayId, String(body.version ?? '')],
       );
+      // Узел вернулся: отдаём ему не доставленные ранее пакеты.
+      await query(
+        `UPDATE kmesh_v1_downlink
+            SET delivered_at = NULL, expires_at = now() + interval '24 hours'
+          WHERE dst_node_id = $1 AND kind = 'packet'
+            AND delivered_at IS NOT NULL AND delivered_at < now() - interval '1 minute'`,
+        [nodeId],
+      );
       return reply.send({ ok: true, status: 200, kind: 'presence', node_id: nodeId });
     }
 
@@ -673,8 +681,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const packetId = num(body.packet_id);
     if (src > 1 && packetId > 0) {
       await query(
-        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid)
-         VALUES ($1,$2,'ack',$3,$4)`,
+        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, expires_at)
+         VALUES ($1,$2,'ack',$3,$4, now() + interval '24 hours')`,
         [gatewayId, src, packetId, String(body.msg_uuid ?? '')],
       );
     }

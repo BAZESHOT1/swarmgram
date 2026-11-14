@@ -311,7 +311,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 );
               }
               // Оптимистичное сообщение в ленте: снимаем «часики» по ACK/доставке.
-              const delivered = event.status >= 2 && event.status !== 5;
+              const delivered = event.status === 2 || event.status === 4;
+              const failed = event.status === 5;
               qc.setQueryData<unknown[]>(['messages', item.chatId], (prev) => {
                 const rows = Array.isArray(prev) ? [...prev] : [];
                 const index = rows.findIndex(
@@ -322,9 +323,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 if (index < 0) return prev;
                 rows[index] = {
                   ...(rows[index] as object),
-                  pending: event.status === 5 ? true : !delivered,
+                  pending: !delivered && !failed,
                   delivered,
-                  failed: event.status === 5,
+                  failed,
+                  storedOnGateway: event.status === 3,
                 };
                 return rows;
               });
@@ -380,9 +382,28 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             return result.state !== 'FAILED';
           } catch {
             return false;
+          } finally {
+            // Гарантия сохранения: сразу пробуем выгрузить подписанную копию.
+            setTimeout(() => void v1.syncOutbox().catch(() => undefined), 700);
           }
         });
         void v1.hello();
+        void v1.syncOutbox().catch(() => undefined);
+        // Первичная привязка на уровне прошивки: если модуль ещё свободен,
+        // сразу пишем в него prefix/net из оффлайн-кэша пользователя.
+        if ((nextInfo.ownerPrefix ?? '00000000').toLowerCase() === '00000000') {
+          const cachedIdentity = await loadCachedIdentity();
+          if (cachedIdentity) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            await v1
+              .assignOwnerLocal({
+                prefix: cachedIdentity.blePrefix,
+                netId: cachedIdentity.netId,
+                epoch: 1,
+              })
+              .catch(() => undefined);
+          }
+        }
         const cachedChats =
           qc.getQueryData<Array<{ id?: unknown }>>(['chats', session?.username]) ?? [];
         for (const chat of cachedChats.slice(0, 50)) {
@@ -866,6 +887,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     let activeTimer: ReturnType<typeof setTimeout> | null = null;
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
+      void v1ClientRef.current?.syncOutbox().catch(() => undefined);
       if (activeTimer) clearTimeout(activeTimer);
       activeTimer = setTimeout(() => void restore(), 1200);
     });

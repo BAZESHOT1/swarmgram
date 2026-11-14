@@ -195,6 +195,18 @@ export class KMeshV1Client {
     return this.link.send(encodeClientFrame(ClientFrameType.CONFIG, payload, this.seq++));
   }
 
+  /** Первичная локальная привязка (без подписи), только для модуля без владельца. */
+  async assignOwnerLocal(claim: { prefix: string; netId: number; epoch?: number }): Promise<boolean> {
+    if (!/^[0-9a-f]{8}$/i.test(claim.prefix)) return false;
+    const payload = new Uint8Array(16);
+    const prefix = claim.prefix.toLowerCase();
+    for (let i = 0; i < 8; i += 1) payload[i] = prefix.charCodeAt(i) & 0xff;
+    const view = new DataView(payload.buffer);
+    view.setUint32(8, claim.netId >>> 0, true);
+    view.setUint32(12, (claim.epoch ?? 1) >>> 0, true);
+    return this.link.send(encodeClientFrame(ClientFrameType.SET_OWNER_LOCAL, payload, this.seq++));
+  }
+
   /** SET_OWNER в бинарном KMesh_v1: prefix(8) net(4) epoch(4) sig_len(1) DER. */
   async setOwner(claim: { prefix: string; netId: number; epoch: number; signature: string }): Promise<boolean> {
     const sig: number[] = [];

@@ -34,7 +34,8 @@ enum kl_client_frame_t : uint8_t {
   KL_CF_PROXY_UP = 11,
   KL_CF_PROXY_DOWN = 12,
   KL_CF_INET_STATUS = 13,
-  KL_CF_SET_OWNER = 14
+  KL_CF_SET_OWNER = 14,
+  KL_CF_SET_OWNER_LOCAL = 15
 };
 
 enum kl_client_flags_t : uint8_t {
@@ -103,10 +104,13 @@ class KlintoClientBridge {
   void handle_proxy_down(const uint8_t *payload, size_t len);
   void handle_inet_status(const uint8_t *payload, size_t len);
   void handle_set_owner(const uint8_t *payload, size_t len);
+  void handle_local_owner(const uint8_t *payload, size_t len);
   bool send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags = 0);
   /** Совместимость с текущим приложением: старый кадр A5 5A / JSON INFO. */
   bool send_legacy_frame(uint8_t type, const char *json, size_t len);
   void handle_legacy_frame(uint8_t type, const uint8_t *payload, size_t len);
+  void flush_legacy_reply();
+  uint8_t legacy_reply_type_ = 0;
   void flush_outbox();
   void log_line(const char *fmt, ...);
 

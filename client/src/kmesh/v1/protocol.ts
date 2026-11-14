@@ -95,6 +95,7 @@ export const ClientFrameType = {
   PROXY_DOWN: 12,
   INET_STATUS: 13,
   SET_OWNER: 14,
+  SET_OWNER_LOCAL: 15,
 } as const;
 
 export const CLIENT_MAGIC = [0x53, 0x47] as const;
