@@ -122,6 +122,7 @@ bool KlintoGateway::publish_presence_locked(const kl_packet_t *pkt, int16_t rssi
   uint8_t battery = 0, role = 0;
   uint16_t fw_build = 0;
   uint8_t chip_arch = 0, node_role = 0, radio_caps = 0, ota_state = 0, battery_pct = 0;
+  uint32_t owner_net_id = 0;
   if (pkt->payload_len >= 8) {
     battery = pkt->payload[4];
     role = pkt->payload[6];
@@ -134,6 +135,10 @@ bool KlintoGateway::publish_presence_locked(const kl_packet_t *pkt, int16_t rssi
     ota_state = pkt->payload[13];
     battery_pct = pkt->payload[14];
   }
+  if (pkt->payload_len >= 19) {
+    owner_net_id = (uint32_t)pkt->payload[15] | ((uint32_t)pkt->payload[16] << 8) |
+                   ((uint32_t)pkt->payload[17] << 16) | ((uint32_t)pkt->payload[18] << 24);
+  }
   (void)rflags;
   (void)chat;
   if (!ensure_connected(now_ms)) return false;
@@ -143,11 +148,12 @@ bool KlintoGateway::publish_presence_locked(const kl_packet_t *pkt, int16_t rssi
       "{\"v\":3,\"kind\":\"presence\",\"gateway_id\":%lu,\"node_id\":%lu,"
       "\"rssi\":%d,\"hops\":%u,\"iface\":%u,\"battery\":%u,\"role\":%u,\"ts\":%llu,"
       "\"routing_op\":%u,\"fw_build\":%u,\"chip_arch\":%u,\"node_role\":%u,"
-      "\"radio_caps\":%u,\"ota_state\":%u,\"battery_pct\":%u}",
+      "\"radio_caps\":%u,\"ota_state\":%u,\"battery_pct\":%u,\"owner_net_id\":%lu}",
       (unsigned long)cfg_.gateway_id, (unsigned long)pkt->src_id, (int)rssi,
       (unsigned)pkt->hop_count, (unsigned)iface, (unsigned)battery, (unsigned)role,
       (unsigned long long)kl_epoch_ms(), (unsigned)op, (unsigned)fw_build, (unsigned)chip_arch,
-      (unsigned)node_role, (unsigned)radio_caps, (unsigned)ota_state, (unsigned)battery_pct);
+      (unsigned)node_role, (unsigned)radio_caps, (unsigned)ota_state, (unsigned)battery_pct,
+      (unsigned long)owner_net_id);
   if (n <= 0 || (size_t)n >= sizeof(json)) return false;
   return publish_json("presence", json, (size_t)n);
 }

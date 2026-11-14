@@ -23,6 +23,7 @@ KlintoRouter::KlintoRouter()
       chip_arch_((uint8_t)KL_CHIP_ARCH),
       radio_caps_(0),
       ota_state_(KL_OTA_IDLE),
+      owner_net_id_(0),
       last_presence_ms_(0),
       last_presence_gw_hop_(0xFF),
       last_beacon_ms_(0),
@@ -65,6 +66,7 @@ void KlintoRouter::init(const kl_config_t *cfg, const kl_router_sink_t *sink) {
   fw_build_ = KL_FIRMWARE_BUILD;
   chip_arch_ = (uint8_t)KL_CHIP_ARCH;
   ota_state_ = KL_OTA_IDLE;
+  owner_net_id_ = 0;
   last_presence_ms_ = 0;
   last_presence_gw_hop_ = 0xFF;
   last_beacon_ms_ = 0;
@@ -846,6 +848,7 @@ void KlintoRouter::maybe_presence(uint32_t now_ms) {
   telemetry.ota_state = ota_state_;
   /* 255 = внешнее питание, иначе реальный процент АКБ. */
   telemetry.battery_pct = charging_ ? 255 : battery_;
+  telemetry.owner_net_id = owner_net_id_;
 
   uint8_t payload[24];
   const size_t plen = kl_codec_encode_presence_ex(payload, sizeof(payload), battery_, last_rssi_,

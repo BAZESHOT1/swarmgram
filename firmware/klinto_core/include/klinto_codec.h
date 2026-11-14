@@ -110,6 +110,7 @@ struct kl_presence_telemetry_t {
   uint8_t radio_caps;
   uint8_t ota_state;
   uint8_t battery_pct; /* 255 = внешнее питание */
+  uint32_t owner_net_id; /* постоянный users.id -> uint32 */
 };
 
 /** Расширенный NODE_PRESENCE: старые 8 байт + 7 байт телеметрии. */

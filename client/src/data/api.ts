@@ -1642,6 +1642,107 @@ export const api = {
       body: JSON.stringify({ messageUuids }),
     }),
 
+  kmeshV1MeIdentity: () =>
+    req<{ ok: true; userId: string; netId: number; blePrefix: string }>(
+      '/v1/kmesh/v1/me/identity',
+    ),
+
+  kmeshV1Modules: () =>
+    req<{
+      ok: true;
+      identity: { userId: string; netId: number; blePrefix: string };
+      modules: Array<{
+        moduleMac: string;
+        mod6: string;
+        customName: string;
+        claimedAt: string;
+        bleName: string;
+      }>;
+      incoming: Array<{
+        id: string;
+        moduleMac: string;
+        mod6: string;
+        toUserId: string;
+        toUsername: string;
+        createdAt: string;
+      }>;
+      outgoing: Array<{
+        id: string;
+        moduleMac: string;
+        mod6: string;
+        fromUserId: string;
+        fromUsername: string;
+        createdAt: string;
+      }>;
+      claims: Array<{
+        id: string;
+        moduleMac: string;
+        mod6: string;
+        claimToken: string;
+        oldBleName: string;
+        resolvedAt: string;
+      }>;
+    }>('/v1/kmesh/v1/modules'),
+
+  kmeshV1ClaimModule: (moduleMac: string, customName = '') =>
+    req<{
+      ok: boolean;
+      moduleMac?: string;
+      mod6?: string;
+      ownerNetId?: number;
+      blePrefix?: string;
+      epoch?: number;
+      claimToken?: string;
+      bleName?: string;
+      needsTransfer?: boolean;
+      error?: string;
+    }>('/v1/kmesh/v1/modules/claim', {
+      method: 'POST',
+      body: JSON.stringify({ module_mac: moduleMac, custom_name: customName }),
+    }),
+
+  kmeshV1RenameModule: (moduleMac: string, customName: string) =>
+    req<{ ok: true; moduleMac: string; customName: string }>(
+      `/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}`,
+      { method: 'PATCH', body: JSON.stringify({ custom_name: customName }) },
+    ),
+
+  kmeshV1RequestModuleTransfer: (moduleMac: string) =>
+    req<{ ok: true; id: string; status: string; deduped?: boolean }>(
+      '/v1/kmesh/v1/modules/transfer/request',
+      { method: 'POST', body: JSON.stringify({ module_mac: moduleMac }) },
+    ),
+
+  kmeshV1AcceptModuleTransfer: (id: string) =>
+    req<{
+      ok: true;
+      id: string;
+      status: string;
+      moduleMac: string;
+      mod6: string;
+      ownerNetId: number;
+      blePrefix: string;
+      epoch: number;
+      claimToken: string;
+      bleName: string;
+    }>(`/v1/kmesh/v1/modules/transfer/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+
+  kmeshV1ConsumeModuleClaim: (id: string) =>
+    req<{ ok: true }>(`/v1/kmesh/v1/modules/transfer/${encodeURIComponent(id)}/claim-consumed`, {
+      method: 'POST',
+    }),
+
+  kmeshV1RejectModuleTransfer: (id: string) =>    req<{ ok: true; id: string; status: string }>(
+      `/v1/kmesh/v1/modules/transfer/${encodeURIComponent(id)}/reject`,
+      { method: 'POST' },
+    ),
+
+  kmeshV1CancelModuleTransfer: (id: string) =>
+    req<{ ok: true; id: string; status: string }>(
+      `/v1/kmesh/v1/modules/transfer/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST' },
+    ),
+
   kmeshV1MobileArchive: (body: { gateway_id: number; msg_uuid: string; packet_b64: string }) =>
     req<{ ok: true; msg_uuid: string; status: string }>('/v1/kmesh/v1/mobile/archive', {
       method: 'POST',

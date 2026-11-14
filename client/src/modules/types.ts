@@ -32,6 +32,12 @@ export interface ModuleInfo {
   border?: boolean;
   /** Состояние handover (0 — нет перехода). */
   handover?: number;
+  /** Постоянный owner_net_id (users.id -> uint32). */
+  ownerNetId?: number;
+  /** 8 hex префикса владельца. */
+  ownerPrefix?: string;
+  /** Последние 6 hex MAC. */
+  bleMod6?: string;
 }
 
 /** Входящий конверт из mesh-сети. */
@@ -46,6 +52,13 @@ export interface ModuleWifiConfig {
   wifiPassword: string;
 }
 
+export interface ModuleOwnerClaim {
+  prefix: string;
+  netId: number;
+  epoch: number;
+  signature: string;
+}
+
 /** Универсальное подключение к модулю. */
 export interface ModuleConnection {
   readonly kind: ConnectionKind;
@@ -57,6 +70,8 @@ export interface ModuleConnection {
   open(): Promise<ModuleInfo>;
   /** Подключиться к уже известному устройству без запроса (автовосстановление). */
   openKnown?(hardwareId?: string, timeoutMs?: number): Promise<ModuleInfo | null>;
+  /** Подключиться к конкретному BLE device id (после скана/claim). */
+  openDevice?(deviceId: string, timeoutMs?: number): Promise<ModuleInfo>;
   /** Необязательный скан nearby-устройств (native BLE) для уведомлений. */
   scan?(durationMs?: number): Promise<{ id: string; name: string; rssi: number }[]>;
   sendEnvelope(chatId: string, envelope: unknown): Promise<void>;
@@ -65,6 +80,8 @@ export interface ModuleConnection {
    * Необязателен: заглушки и старые прошивки могут его не поддерживать.
    */
   sendConfig?(config: ModuleWifiConfig): Promise<void>;
+  /** Подтверждённая Hub смена владельца (BRIDGE_CMD_SET_OWNER). */
+  setOwner?(claim: ModuleOwnerClaim): Promise<void>;
   /** Подписка на входящие конверты; возвращает функцию отписки. */
   onEnvelope(callback: (message: ModuleEnvelope) => void): () => void;
   /**
@@ -105,6 +122,9 @@ export function normalizeInfo(raw: {
   cluster_id?: string | number;
   border?: boolean | number | string;
   handover?: number;
+  ownerNetId?: number;
+  ownerPrefix?: string;
+  bleMod6?: string;
 }): ModuleInfo {
   const role = raw.role === 'wearable' || raw.role === 'repeater' || raw.role === 'gateway' ? raw.role : 'gateway';
   // Прошивка отдаёт gateway/border как 0/1, старые версии — как boolean.
@@ -125,6 +145,9 @@ export function normalizeInfo(raw: {
     clusterId: raw.cluster_id != null ? String(raw.cluster_id) : undefined,
     border: truthy(raw.border),
     handover: Number(raw.handover ?? 0),
+    ownerNetId: raw.ownerNetId != null ? Number(raw.ownerNetId) >>> 0 : undefined,
+    ownerPrefix: raw.ownerPrefix != null ? String(raw.ownerPrefix).toLowerCase() : undefined,
+    bleMod6: raw.bleMod6 != null ? String(raw.bleMod6).toLowerCase() : undefined,
   };
 }
 

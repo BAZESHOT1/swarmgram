@@ -152,6 +152,8 @@ class KlintoRouter {
     radio_caps_ = radio_caps;
   }
   void set_ota_state(uint8_t state) { ota_state_ = state; }
+  void set_owner_net_id(uint32_t id) { owner_net_id_ = id; }
+  uint32_t owner_net_id() const { return owner_net_id_; }
   uint16_t fw_build() const { return fw_build_; }
   uint8_t chip_arch() const { return chip_arch_; }
 
@@ -247,6 +249,7 @@ class KlintoRouter {
   uint8_t chip_arch_;
   uint8_t radio_caps_;
   uint8_t ota_state_;
+  uint32_t owner_net_id_;
   uint32_t last_presence_ms_;
   uint32_t last_presence_gw_hop_;
   uint32_t last_beacon_ms_;

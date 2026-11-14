@@ -597,7 +597,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
 
   async open(): Promise<ModuleInfo> {
     const device = await scanWebBluetooth();
-    return this.openDevice(device);
+    return this.openDeviceInternal(device);
   }
 
   /** Автовосстановление: Chrome умеет отдавать ранее разрешённые устройства. */
@@ -613,7 +613,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
         : devices;
       for (const device of sorted.slice(0, 4)) {
         try {
-          const info = await this.openDevice(device, timeoutMs);
+          const info = await this.openDeviceInternal(device, timeoutMs);
           if (!expected || info.hardwareId.toLowerCase() === expected) return info;
           await this.close();
         } catch {
@@ -626,7 +626,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
     }
   }
 
-  private async openDevice(device: WebBluetoothDeviceLike, timeoutMs = BLE_INFO_TIMEOUT_MS): Promise<ModuleInfo> {
+  private async openDeviceInternal(device: WebBluetoothDeviceLike, timeoutMs = BLE_INFO_TIMEOUT_MS): Promise<ModuleInfo> {
     if (this.openState) await this.close();
     this.closing = false;
     this.disconnected = false;

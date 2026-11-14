@@ -167,6 +167,13 @@ struct kl_config_t {
   char hub_url[128];
   char module_token[80];
   char hardware_id[24];
+
+  /* Владелец модуля: постоянный user_net_id и 8 hex BLE-префикса UUID. */
+  uint32_t owner_net_id;
+  uint32_t owner_epoch;
+  char owner_ble_prefix[9];
+  /* Последние 6 hex MAC — для имени KL-<USER8>-<MOD6>. */
+  char ble_mod6[7];
 };
 
 void kl_config_defaults(kl_config_t *cfg);

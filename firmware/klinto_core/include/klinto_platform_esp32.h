@@ -11,6 +11,8 @@ bool kl_config_load_nvs(kl_config_t *cfg);
 bool kl_config_save_nvs(const kl_config_t *cfg);
 bool kl_nvs_get_str(const char *ns, const char *key, char *out, size_t cap);
 bool kl_nvs_set_str(const char *ns, const char *key, const char *value);
+uint32_t kl_nvs_get_uint(const char *ns, const char *key, uint32_t fallback);
+bool kl_nvs_set_uint(const char *ns, const char *key, uint32_t value);
 
 /** Derive a stable non-sentinel node id from the Wi-Fi MAC. */
 uint32_t kl_node_id_from_mac();

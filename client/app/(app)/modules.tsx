@@ -349,6 +349,26 @@ export default function ModulesScreen() {
   const [gatewayTarget, setGatewayTarget] = useState<ModuleRow | null>(null);
   const [otaTarget, setOtaTarget] = useState<ModuleRow | null>(null);
   const [releases, setReleases] = useState<Record<string, string>>({});
+  const [meshModules, setMeshModules] = useState<{
+    modules: Array<{ moduleMac: string; mod6: string; customName: string; bleName: string }>;
+    incoming: Array<{ id: string; moduleMac: string; mod6: string; toUsername: string }>;
+    outgoing: Array<{ id: string; moduleMac: string; mod6: string; fromUsername: string }>;
+    identity: { blePrefix: string; netId: number };
+  } | null>(null);
+
+  const reloadMeshModules = useCallback(async () => {
+    try {
+      const res = await api.kmeshV1Modules();
+      setMeshModules({
+        modules: res.modules,
+        incoming: res.incoming,
+        outgoing: res.outgoing,
+        identity: res.identity,
+      });
+    } catch {
+      /* оффлайн: показываем локальные данные */
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -359,10 +379,11 @@ export default function ModulesScreen() {
         setReleases(Object.fromEntries(list.map((r) => [r.board, r.version])));
       })
       .catch(() => undefined);
+    void reloadMeshModules();
     return () => {
       alive = false;
     };
-  }, []);
+  }, [reloadMeshModules]);
   /** События WebSocket, которые кладёт общий RealtimeBridge (второй сокет не нужен). */
   const pushEvent = useStore((s) => s.pushEvent);
 
@@ -660,6 +681,95 @@ export default function ModulesScreen() {
         </View>
       }
     >
+      {/* 0. ПОСТОЯННАЯ ИДЕНТИЧНОСТЬ И КОНТРАКТЫ ПЕРЕДАЧИ. */}
+      <SettingsSection
+        title="Мои модули"
+        delay={0}
+        right={
+          meshModules ? (
+            <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
+              KL-{meshModules.identity.blePrefix}
+            </Text>
+          ) : undefined
+        }
+      >
+        <GlassCard>
+          {meshModules && meshModules.modules.length ? (
+            meshModules.modules.map((m) => (
+              <View
+                key={m.moduleMac}
+                style={{ paddingHorizontal: 12, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: theme.line }}
+              >
+                <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+                  {m.customName || `Модуль ${m.mod6}`}
+                </Text>
+                <Text style={{ color: theme.textDisabled, fontSize: 11, marginTop: 2 }}>
+                  {m.bleName} · MAC {m.moduleMac}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text style={{ color: theme.textSecondary, fontSize: 12, padding: 12 }}>
+              Модулей пока нет. Подключите свободный модуль KL-00000000-…
+            </Text>
+          )}
+        </GlassCard>
+        {meshModules?.incoming.map((c) => (
+          <GlassCard key={c.id}>
+            <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+              @{c.toUsername} хочет привязать модуль {c.mod6}
+            </Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 4 }}>
+              Ожидание подтверждения от прежнего владельца
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+              <Btn
+                title="Передать"
+                size="s"
+                onPress={() => {
+                  void api
+                    .kmeshV1AcceptModuleTransfer(c.id)
+                    .then(() => reloadMeshModules())
+                    .catch(() => undefined);
+                }}
+              />
+              <Btn
+                title="Отменить передачу"
+                size="s"
+                variant="ghost"
+                onPress={() => {
+                  void api
+                    .kmeshV1RejectModuleTransfer(c.id)
+                    .then(() => reloadMeshModules())
+                    .catch(() => undefined);
+                }}
+              />
+            </View>
+          </GlassCard>
+        ))}
+        {meshModules?.outgoing.map((c) => (
+          <GlassCard key={c.id}>
+            <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+              Ожидают передачи · модуль {c.mod6}
+            </Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 4 }}>
+              Ожидание подтверждения от @{c.fromUsername}
+            </Text>
+            <Btn
+              title="Отменить запрос"
+              size="s"
+              variant="ghost"
+              onPress={() => {
+                void api
+                  .kmeshV1CancelModuleTransfer(c.id)
+                  .then(() => reloadMeshModules())
+                  .catch(() => undefined);
+              }}
+            />
+          </GlassCard>
+        ))}
+      </SettingsSection>
+
       {/* 1. КАРТА СЕТИ — от носимого модуля, подключённого к клиенту. */}
       <SettingsSection
         title="Карта сети"

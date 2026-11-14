@@ -1,6 +1,7 @@
 #include "klinto_bridge.h"
 #include "klinto_codec.h"
 #include "klinto_crypto.h"
+#include "klinto_owner.h"
 #include "klinto_util.h"
 
 #include <stdarg.h>
@@ -217,6 +218,9 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
     case KL_CF_INET_STATUS:
       handle_inet_status(payload, len);
       break;
+    case KL_CF_SET_OWNER:
+      handle_set_owner(payload, len);
+      break;
     case KL_CF_PING: {
       uint8_t pong[8];
       kl_write_le32(pong, kl_uptime_ms());
@@ -250,6 +254,30 @@ void KlintoClientBridge::handle_inet_status(const uint8_t *payload, size_t len) 
   const uint16_t rtt = (uint16_t)(payload[1] | ((uint16_t)payload[2] << 8));
   const bool allow_relay = payload[3] != 0;
   if (sink_.inet_status) sink_.inet_status(sink_.ctx, has_internet, rtt, allow_relay);
+}
+
+void KlintoClientBridge::handle_set_owner(const uint8_t *payload, size_t len) {
+  kl_owner_claim_t claim;
+  if (!kl_owner_claim_parse(payload, len, &claim)) {
+    log_line("[klinto] set_owner: bad payload");
+    return;
+  }
+  if (claim.epoch <= cfg_.owner_epoch) {
+    log_line("[klinto] set_owner: stale epoch");
+    return;
+  }
+  if (!sink_.verify_owner_claim ||
+      !kl_owner_claim_verify(cfg_.ble_mod6, &claim, sink_.verify_owner_claim, sink_.ctx)) {
+    log_line("[klinto] set_owner: signature rejected");
+    return;
+  }
+  cfg_.owner_net_id = claim.net_id;
+  cfg_.owner_epoch = claim.epoch;
+  memcpy(cfg_.owner_ble_prefix, claim.prefix, sizeof(cfg_.owner_ble_prefix));
+  if (sink_.owner_changed) {
+    sink_.owner_changed(sink_.ctx, claim.prefix, claim.net_id, claim.epoch);
+  }
+  log_line("[klinto] owner changed: %s net=%lu", claim.prefix, (unsigned long)claim.net_id);
 }
 
 bool KlintoClientBridge::proxy_uplink(const kl_packet_t *pkt) {
@@ -465,12 +493,14 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[160];
+  char info[224];
   const int n = snprintf(
       info, sizeof(info),
-      "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u}",
+      "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u,"
+      "\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
       (unsigned long)cfg_.node_id, (unsigned)cfg_.role,
-      (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0));
+      (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0),
+      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
   if (n <= 0) return false;
   return send_frame(KL_CF_INFO, (const uint8_t *)info, (size_t)n);
 }

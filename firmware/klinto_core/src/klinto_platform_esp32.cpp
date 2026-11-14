@@ -53,6 +53,22 @@ bool kl_nvs_set_str(const char *ns, const char *key, const char *value) {
   return ok;
 }
 
+uint32_t kl_nvs_get_uint(const char *ns, const char *key, uint32_t fallback) {
+  Preferences prefs;
+  if (!prefs.begin(ns, true)) return fallback;
+  const uint32_t value = prefs.getUInt(key, fallback);
+  prefs.end();
+  return value;
+}
+
+bool kl_nvs_set_uint(const char *ns, const char *key, uint32_t value) {
+  Preferences prefs;
+  if (!prefs.begin(ns, false)) return false;
+  const bool ok = prefs.putUInt(key, value) > 0;
+  prefs.end();
+  return ok;
+}
+
 bool kl_config_load_nvs(kl_config_t *cfg) {
   if (!cfg) return false;
   char json[1024];

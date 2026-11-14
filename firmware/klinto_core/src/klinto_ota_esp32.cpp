@@ -143,6 +143,10 @@ void mark_valid(void *) { esp_ota_mark_app_valid_cancel_rollback(); }
 
 }  // namespace
 
+bool kl_ota_esp32_verify_pubkey(const uint8_t digest[32], const uint8_t *sig, size_t sig_len) {
+  return verify_signature(nullptr, digest, sig, sig_len);
+}
+
 bool kl_ota_esp32_begin() {
   if (!LittleFS.begin(true)) return false;
   if (!LittleFS.exists("/ota")) LittleFS.mkdir("/ota");

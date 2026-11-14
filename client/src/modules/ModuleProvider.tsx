@@ -21,6 +21,13 @@ import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { emitMeshEnvelope, setMeshCapabilities, setMeshSender } from './meshLink';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
+import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
+import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
+import {
+  addPendingBleClaim,
+  listPendingBleClaims,
+  removePendingBleClaim,
+} from '../data/db';
 import {
   readLastModule,
   writeLastModule,
@@ -292,6 +299,43 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
+      // Свободный модуль: после ручного подключения сразу привязываем
+      // к текущему пользователю и переименовываем BLE через SET_OWNER.
+      if ((nextInfo.ownerPrefix ?? '').toLowerCase() === '00000000' && transport.setOwner) {
+        try {
+          const claim = await api.kmeshV1ClaimModule(nextInfo.hardwareId);
+          const decoded = claim.claimToken ? decodeOwnerClaimToken(claim.claimToken) : null;
+          if (decoded) {
+            await transport.setOwner(decoded);
+            useStore.getState().pushToast({
+              kind: 'success',
+              message: `Модуль привязан: KL-${decoded.prefix}-${claim.mod6 ?? ''}`,
+            });
+            void refreshCachedIdentity();
+          }
+        } catch {
+          /* привязка повторится при следующем подключении */
+        }
+      }
+
+      // Чужой модуль: ручное подключение создаёт контракт передачи.
+      if (nextInfo.ownerPrefix && nextInfo.ownerPrefix !== '00000000') {
+        const my = await loadCachedIdentity();
+        if (my && nextInfo.ownerPrefix !== my.blePrefix) {
+          try {
+            const req = await api.kmeshV1RequestModuleTransfer(nextInfo.hardwareId);
+            useStore.getState().pushToast({
+              kind: 'info',
+              message: req.deduped
+                ? 'Запрос на передачу уже отправлен прежнему владельцу.'
+                : 'Запрос на передачу модуля отправлен прежнему владельцу.',
+            });
+          } catch {
+            /* оффлайн: заявка уйдёт после восстановления сети */
+          }
+        }
+      }
+
       const record: LastModuleRecord = {
         hardwareId: nextInfo.hardwareId,
         publicId,
@@ -481,12 +525,66 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const scanTransport = getModuleTransport('ble');
         const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
         setNearbyModules(nearby);
+        const identity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
+        const myPrefix = identity?.blePrefix ?? null;
         const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
-        const mineVariants = macVariants(String(last?.hardwareId ?? last?.publicId ?? ''));
-        const mine = available.find((device) => {
-          const haystack = `${device.name.toLowerCase()} ${device.id.toLowerCase()}`;
-          return mineVariants.some((variant) => variant && haystack.includes(variant));
-        }) ?? null;
+        let incomingClaims: Array<{ id: string; oldBleName: string; claimToken: string; moduleMac: string; mod6: string }> = [];
+        try {
+          const remote = await api.kmeshV1Modules();
+          incomingClaims = remote.claims;
+          for (const claim of remote.claims) {
+            await addPendingBleClaim({
+              bleName: claim.oldBleName,
+              moduleMac: claim.moduleMac,
+              mod6: claim.mod6,
+              claimToken: claim.claimToken,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        } catch {
+          /* оффлайн: используем локальную очередь */
+        }
+        const pendingClaims = await listPendingBleClaims();
+
+        // После подтверждения передачи Hub: подключаемся к старому имени
+        // KL-<OLD>-<MOD6> и отправляем подписанный claim.
+        for (const pending of pendingClaims) {
+          const device = available.find((d) => d.name.toLowerCase() === pending.bleName.toLowerCase());
+          if (!device) continue;
+          const claim = decodeOwnerClaimToken(pending.claimToken);
+          const transport = getModuleTransport('ble');
+          if (!claim || !transport.setOwner) continue;
+          try {
+            setAutoModule({ key: device.id, name: device.name, isMine: true, phase: 'connecting' });
+            if (transport.openDevice) await transport.openDevice(device.id);
+            else await transport.openKnown?.(undefined, 5000);
+            await transport.setOwner(claim);
+            await transport.close().catch(() => undefined);
+            await removePendingBleClaim(pending.bleName);
+            const consumed = incomingClaims.find((c) => c.oldBleName === pending.bleName);
+            if (consumed) await api.kmeshV1ConsumeModuleClaim(consumed.id).catch(() => undefined);
+            useStore.getState().pushToast({
+              kind: 'success',
+              message: `Модуль ${pending.mod6} передан вам. Имя обновится на KL-${claim.prefix}-${pending.mod6}.`,
+            });
+            await refreshCachedIdentity();
+            refreshLists();
+            setAutoModule(null);
+            return;
+          } catch {
+            await transport.close().catch(() => undefined);
+          }
+        }
+
+        // Жёсткие правила: свой — автоподключение; свободный и чужой — только вручную.
+        const ownDevices = available.filter(
+          (device) => classifyModuleName(device.name, myPrefix) === 'own',
+        );
+        const lastMod6 = parseModuleBleName(String(last?.hardwareId ?? ''))?.mod6
+          ?? String(last?.hardwareId ?? '').replace(/[^0-9a-f]/gi, '').slice(-6).toLowerCase();
+        const mine = (lastMod6
+          ? ownDevices.find((device) => parseModuleBleName(device.name)?.mod6 === lastMod6)
+          : undefined) ?? ownDevices[0] ?? null;
         const candidate = available[0] ?? null;
 
         if (!last?.hardwareId) {

@@ -120,14 +120,15 @@ size_t kl_codec_encode_presence_ex(uint8_t *out, size_t cap, uint8_t battery, in
   out[head + 2] = role;
   out[head + 3] = capabilities;
   if (!telemetry) return head + 4;
-  if (cap < head + 11) return 0;
+  if (cap < head + 15) return 0;
   kl_write_le16(out + head + 4, telemetry->fw_build);
   out[head + 6] = telemetry->chip_arch;
   out[head + 7] = telemetry->node_role;
   out[head + 8] = telemetry->radio_caps;
   out[head + 9] = telemetry->ota_state;
   out[head + 10] = telemetry->battery_pct;
-  return head + 11;
+  kl_write_le32(out + head + 11, telemetry->owner_net_id);
+  return head + 15;
 }
 
 bool kl_codec_decode_presence_telemetry(const uint8_t *payload, size_t len,
@@ -140,6 +141,11 @@ bool kl_codec_decode_presence_telemetry(const uint8_t *payload, size_t len,
   out->radio_caps = payload[12];
   out->ota_state = payload[13];
   out->battery_pct = payload[14];
+  if (len >= KL_RPC_HEADER_SIZE + 15) {
+    out->owner_net_id = kl_read_le32(payload + 15);
+  } else {
+    out->owner_net_id = 0;
+  }
   return true;
 }
 

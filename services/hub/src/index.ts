@@ -114,7 +114,7 @@ async function main(): Promise<void> {  mkdirSync(config.tmpDir, { recursive: tr
 
   app.get('/health', async (_req, reply) => {
     const dbOk = await query('SELECT 1 AS ok').then(() => true).catch(() => false);
-    void reply.send({ ok: dbOk, service: 'klinto-hub', version: '1.3.0', time: new Date().toISOString() });
+    void reply.send({ ok: dbOk, service: 'klinto-hub', version: '1.4.0', time: new Date().toISOString() });
   });
 
   await app.register(authRoutes, { prefix: '/v1/auth' });

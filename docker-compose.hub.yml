@@ -30,7 +30,7 @@ services:
     build:
       context: ./services/hub
       dockerfile: Dockerfile
-    image: klinto/hub:1.3.0
+    image: klinto/hub:1.4.0
     container_name: klinto-hub
     restart: unless-stopped
     depends_on:

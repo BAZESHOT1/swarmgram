@@ -19,6 +19,8 @@ void kl_ota_esp32_mark_valid();
 /** Шлюз: скачать манифест и дельта-патч с Hub в /ota/patch.bin. */
 bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t chip_arch,
                        uint16_t current_build, kl_ota_manifest_t *out);
+/** Проверка подписи публичным ключом разработчика (ECDSA P-256). */
+bool kl_ota_esp32_verify_pubkey(const uint8_t digest[32], const uint8_t *sig, size_t sig_len);
 #endif
 
 #endif  // KLINTO_OTA_ESP32_H

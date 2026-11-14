@@ -768,3 +768,40 @@ cd services/hub && npm run typecheck
 (всего/актуальные/устаревшие/скачивают OTA/распределение по чипам и ролям)
 и детальный список узлов.
 
+
+---
+
+## 14. Постоянная идентичность users.id и передача модулей
+
+### 14.1 user_net_id и ble_prefix
+
+Сервер не меняет `users`: рядом создаётся `user_net_identities`
+(`user_id uuid PK`, `net_id bigint UNIQUE`, `ble_prefix char(8)`).
+`net_id` — первые 4 байта SHA-256 от UUID, `ble_prefix` — те же 4 байта
+в hex. Значения `0`, `1` и `0xFFFFFFFF` зарезервированы.
+
+`NODE_PRESENCE` теперь несёт `owner_net_id u32` после телеметрии
+(+4 байта). Шлюз публикует его в JSON `owner_net_id`, Hub сохраняет
+в `kmesh_nodes_telemetry.owner_net_id`.
+
+### 14.2 BLE-имя и владение
+
+Имя `KL-<USER8>-<MOD6>` (18 символов + NUL) однозначно определяет
+владельца и конкретный модуль. `MOD6` берётся из последних 3 байт MAC.
+Несколько модулей одного пользователя различаются суффиксом `MOD6`.
+
+Владелец хранится в NVS: `owner_ble_prefix`, `owner_net`, `owner_epoch`.
+Смена владельца выполняется кадром `SET_OWNER` (14):
+`prefix(8) net_id(4) epoch(4) sig_len(1) DER-подпись`. Подпись проверяется
+вшитым публичным ключом разработчика; `epoch` защищает от повторного
+использования старого токена.
+
+### 14.3 Контракт передачи
+
+`module_transfer_contracts`: `pending -> accepted | rejected | cancelled`.
+Старый владелец подтверждает или отклоняет заявку; новый может отменить
+до решения. При `accepted` в транзакции меняется `user_modules.owner_user_id`,
+`modules.owner_id`, увеличивается `token_version`, генерируется
+`claim_token`, а обе стороны получают системные и Push-уведомления.
+Клиент хранит старые BLE-имена в `pending_ble_claims` и переименовывает
+модуль при первом обнаружении.

@@ -20,10 +20,13 @@ import { requireAuth } from '../auth.js';
 import { requireModule } from './modules.js';
 import { config } from '../config.js';
 import { verifyEcdsaP256 } from '../crypto.js';
-import { one, query } from '../db.js';
+import { one, query, tx } from '../db.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { requireAdmin } from '../auth.js';
-import { buildDeltaPatch, signManifest, otaSigningAvailable, type OtaManifest } from '../ota.js';
+import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, type OtaManifest } from '../ota.js';
+import { moduleMod6, normalizeModuleMac, userNetIdentityFromUuid } from '../meshId.js';
+import { publish as publishRealtime } from '../realtime.js';
+import { sendSystemNotification } from '../push.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID64_RE = /^[0-9a-f]{16}$/i;
@@ -160,6 +163,7 @@ async function upsertTelemetry(params: {
   batteryPct: number;
   hops: number;
   rssi: number;
+  ownerNetId?: number;
   version?: string;
 }): Promise<void> {
   const chip = CHIP_BY_ARCH[params.chipArch] ?? '';
@@ -170,8 +174,8 @@ async function upsertTelemetry(params: {
   await query(
     `INSERT INTO kmesh_nodes_telemetry
        (node_id, chip_arch, node_role, radio_caps, fw_build, fw_version_str, ota_state,
-        battery_pct, last_gateway_id, hops_to_gw, last_rssi, first_seen_at, last_seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now())
+        battery_pct, last_gateway_id, hops_to_gw, last_rssi, owner_net_id, first_seen_at, last_seen_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), now())
      ON CONFLICT (node_id) DO UPDATE SET
        chip_arch = EXCLUDED.chip_arch,
        node_role = EXCLUDED.node_role,
@@ -184,11 +188,50 @@ async function upsertTelemetry(params: {
        last_gateway_id = EXCLUDED.last_gateway_id,
        hops_to_gw = EXCLUDED.hops_to_gw,
        last_rssi = EXCLUDED.last_rssi,
+       owner_net_id = CASE WHEN EXCLUDED.owner_net_id > 0 THEN EXCLUDED.owner_net_id
+                           ELSE kmesh_nodes_telemetry.owner_net_id END,
        last_seen_at = now()`,
     [
       params.nodeId, params.chipArch, params.nodeRole, params.radioCaps, params.fwBuild,
       version, params.otaState, params.batteryPct, params.gatewayId, params.hops, params.rssi,
+      params.ownerNetId ?? 0,
     ],
+  );
+}
+
+/** Гарантировать постоянный net_id/ble_prefix пользователя. */
+async function ensureUserIdentity(userId: string): Promise<{ userId: string; netId: number; blePrefix: string }> {
+  const existing = await one<{ net_id: string; ble_prefix: string }>(
+    `SELECT net_id::text, ble_prefix FROM user_net_identities WHERE user_id = $1`,
+    [userId],
+  );
+  if (existing) {
+    return { userId, netId: Number(existing.net_id), blePrefix: existing.ble_prefix };
+  }
+  const derived = userNetIdentityFromUuid(userId);
+  await query(
+    `INSERT INTO user_net_identities (user_id, net_id, ble_prefix)
+     VALUES ($1,$2,$3)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId, derived.netId, derived.blePrefix],
+  );
+  const row = await one<{ net_id: string; ble_prefix: string }>(
+    `SELECT net_id::text, ble_prefix FROM user_net_identities WHERE user_id = $1`,
+    [userId],
+  );
+  return {
+    userId,
+    netId: Number(row?.net_id ?? derived.netId),
+    blePrefix: row?.ble_prefix ?? derived.blePrefix,
+  };
+}
+
+async function ownedModule(mac: string): Promise<{
+  module_mac: string; mod6: string; owner_user_id: string; custom_name: string;
+} | null> {
+  return one(
+    `SELECT module_mac, mod6, owner_user_id::text, custom_name FROM user_modules WHERE module_mac = $1`,
+    [mac],
   );
 }
 
@@ -231,6 +274,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         batteryPct: num(body.battery_pct),
         hops: num(body.hops),
         rssi: num(body.rssi),
+        ownerNetId: num(body.owner_net_id),
         version: typeof body.fw_version === 'string' ? body.fw_version : undefined,
       });
     }
@@ -340,6 +384,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         batteryPct: num(body.battery_pct),
         hops: num(body.hops),
         rssi: num(body.rssi),
+        ownerNetId: num(body.owner_net_id),
         version: typeof body.fw_version === 'string' ? body.fw_version : undefined,
       });
     }
@@ -503,8 +548,393 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  /* --------------------------------------------- OTA для шлюзов ---------- */
-  app.get('/kmesh/v1/ota/latest', { onRequest: [requireModule()] }, async (req, reply) => {
+  /* --------------------------- идентичность users.id и модули ----------- */
+
+  function macFromBody(value: unknown): string | null {
+    const text = String(value ?? '').trim();
+    const match = /esp32-([0-9a-f]{12})/i.exec(text);
+    return normalizeModuleMac(match ? match[1] : text);
+  }
+
+  app.get('/kmesh/v1/me/identity', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const identity = await ensureUserIdentity(auth.userId);
+    return reply.send({
+      ok: true,
+      userId: identity.userId,
+      netId: identity.netId,
+      blePrefix: identity.blePrefix,
+    });
+  });
+
+  app.get('/kmesh/v1/modules', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const identity = await ensureUserIdentity(auth.userId);
+    // Совместимость: переносим ранее привязанные modules в user_modules.
+    const legacy = await query<{ hardware_id: string; ble_mac: string; name: string }>(
+      `SELECT lower(hardware_id) AS hardware_id, lower(coalesce(ble_mac, '')) AS ble_mac,
+              coalesce(name, '') AS name
+         FROM modules WHERE owner_id = $1`,
+      [auth.userId],
+    );
+    for (const row of legacy) {
+      const source = row.hardware_id || row.ble_mac;
+      const match = /esp32-([0-9a-f]{12})/.exec(source) || /([0-9a-f]{12})$/.exec(source);
+      const mac = match ? normalizeModuleMac(match[1]) : null;
+      if (!mac) continue;
+      await query(
+        `INSERT INTO user_modules (module_mac, mod6, owner_user_id, custom_name)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (module_mac) DO NOTHING`,
+        [mac, moduleMod6(mac), auth.userId, row.name],
+      );
+    }
+    const modules = await query<{
+      module_mac: string; mod6: string; custom_name: string; claimed_at: string;
+    }>(
+      `SELECT module_mac, mod6, custom_name, claimed_at
+         FROM user_modules WHERE owner_user_id = $1 ORDER BY claimed_at DESC`,
+      [auth.userId],
+    );
+    const incoming = await query<{
+      id: string; module_mac: string; mod6: string; to_user_id: string; to_username: string;
+      created_at: string;
+    }>(
+      `SELECT c.id::text, c.module_mac, m.mod6, c.to_user_id::text, u.username, c.created_at
+         FROM module_transfer_contracts c
+         JOIN user_modules m ON m.module_mac = c.module_mac
+         JOIN users u ON u.id = c.to_user_id
+        WHERE c.from_user_id = $1 AND c.status = 'pending'
+        ORDER BY c.created_at DESC`,
+      [auth.userId],
+    );
+    const outgoing = await query<{
+      id: string; module_mac: string; mod6: string; from_user_id: string; from_username: string;
+      created_at: string;
+    }>(
+      `SELECT c.id::text, c.module_mac, m.mod6, c.from_user_id::text, u.username, c.created_at
+         FROM module_transfer_contracts c
+         JOIN user_modules m ON m.module_mac = c.module_mac
+         JOIN users u ON u.id = c.from_user_id
+        WHERE c.to_user_id = $1 AND c.status = 'pending'
+        ORDER BY c.created_at DESC`,
+      [auth.userId],
+    );
+    const claims = await query<{
+      id: string; module_mac: string; mod6: string; claim_token: string;
+      old_prefix: string; resolved_at: string;
+    }>(
+      `SELECT c.id::text, c.module_mac, m.mod6, c.claim_token,
+              coalesce(i.ble_prefix, '00000000') AS old_prefix, c.resolved_at
+         FROM module_transfer_contracts c
+         JOIN user_modules m ON m.module_mac = c.module_mac
+         LEFT JOIN user_net_identities i ON i.user_id = c.from_user_id
+        WHERE c.to_user_id = $1 AND c.status = 'accepted'
+          AND c.claim_token IS NOT NULL
+          AND c.resolved_at > now() - interval '7 days'
+        ORDER BY c.resolved_at DESC`,
+      [auth.userId],
+    );
+    return reply.send({
+      ok: true,
+      identity,
+      modules: modules.map((m) => ({
+        moduleMac: m.module_mac,
+        mod6: m.mod6.trim(),
+        customName: m.custom_name,
+        claimedAt: m.claimed_at,
+        bleName: `KL-${identity.blePrefix}-${m.mod6.trim()}`,
+      })),
+      incoming: incoming.map((c) => ({
+        id: c.id,
+        moduleMac: c.module_mac,
+        mod6: c.mod6.trim(),
+        toUserId: c.to_user_id,
+        toUsername: c.to_username,
+        createdAt: c.created_at,
+      })),
+      outgoing: outgoing.map((c) => ({
+        id: c.id,
+        moduleMac: c.module_mac,
+        mod6: c.mod6.trim(),
+        fromUserId: c.from_user_id,
+        fromUsername: c.from_username,
+        createdAt: c.created_at,
+      })),
+      claims: claims.map((c) => ({
+        id: c.id,
+        moduleMac: c.module_mac,
+        mod6: c.mod6.trim(),
+        claimToken: c.claim_token,
+        oldBleName: `KL-${c.old_prefix}-${c.mod6.trim()}`,
+        resolvedAt: c.resolved_at,
+      })),
+    });
+  });
+
+  /** Ручная привязка свободного модуля (KL-00000000-<MOD6>). */
+  app.post('/kmesh/v1/modules/claim', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const mac = macFromBody(body.module_mac ?? body.hardware_id);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const mod6 = moduleMod6(mac);
+    const existing = await ownedModule(mac);
+    if (existing && existing.owner_user_id !== auth.userId) {
+      return reply.code(409).send({
+        ok: false,
+        error: 'module_owned_by_other',
+        moduleMac: mac,
+        mod6,
+        needsTransfer: true,
+      });
+    }
+    if (!existing) {
+      await query(
+        `INSERT INTO user_modules (module_mac, mod6, owner_user_id, custom_name)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (module_mac) DO UPDATE SET owner_user_id = EXCLUDED.owner_user_id`,
+        [mac, mod6, auth.userId, String(body.custom_name ?? '').slice(0, 64)],
+      );
+    }
+    const identity = await ensureUserIdentity(auth.userId);
+    const epoch = Math.floor(Date.now() / 1000);
+    const claimToken = issueOwnerClaim(mod6, identity.blePrefix, identity.netId, epoch);
+    return reply.send({
+      ok: true,
+      moduleMac: mac,
+      mod6,
+      ownerNetId: identity.netId,
+      blePrefix: identity.blePrefix,
+      epoch,
+      claimToken,
+      bleName: `KL-${identity.blePrefix}-${mod6}`,
+    });
+  });
+
+  app.post('/kmesh/v1/modules/register', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const mac = macFromBody(body.module_mac ?? body.hardware_id);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const mod6 = moduleMod6(mac);
+    const existing = await ownedModule(mac);
+    if (existing && existing.owner_user_id !== req.auth!.userId) {
+      return reply.code(409).send({ ok: false, error: 'module_owned_by_other', mod6 });
+    }
+    await query(
+      `INSERT INTO user_modules (module_mac, mod6, owner_user_id, custom_name)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (module_mac) DO UPDATE SET
+         owner_user_id = EXCLUDED.owner_user_id,
+         custom_name = CASE WHEN EXCLUDED.custom_name <> '' THEN EXCLUDED.custom_name
+                            ELSE user_modules.custom_name END`,
+      [mac, mod6, req.auth!.userId, String(body.custom_name ?? '').slice(0, 64)],
+    );
+    return reply.send({ ok: true, moduleMac: mac, mod6 });
+  });
+
+  app.patch('/kmesh/v1/modules/:mac', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const mac = macFromBody((req.params as { mac?: string }).mac);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const existing = await ownedModule(mac);
+    if (!existing) throw notFound('module');
+    if (existing.owner_user_id !== auth.userId) throw forbidden('not_module_owner');
+    const name = String((req.body as Record<string, unknown>)?.custom_name ?? '').trim().slice(0, 64);
+    await query(`UPDATE user_modules SET custom_name = $2 WHERE module_mac = $1`, [mac, name]);
+    return reply.send({ ok: true, moduleMac: mac, customName: name });
+  });
+
+  /* ------------------------------- контракт передачи модуля ------------- */
+
+  app.post('/kmesh/v1/modules/transfer/request', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const mac = macFromBody(body.module_mac ?? body.hardware_id);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const row = await ownedModule(mac);
+    if (!row) throw notFound('module');
+    if (row.owner_user_id === auth.userId) throw badRequest('already_owner');
+    const requester = await one<{ username: string }>(`SELECT username FROM users WHERE id = $1`, [auth.userId]);
+    if (!requester) throw notFound('user');
+    const mod6 = row.mod6.trim();
+
+    const existing = await one<{ id: string; status: string }>(
+      `SELECT id::text, status FROM module_transfer_contracts
+        WHERE module_mac = $1 AND status = 'pending' LIMIT 1`,
+      [mac],
+    );
+    if (existing) {
+      return reply.send({ ok: true, id: existing.id, status: existing.status, deduped: true });
+    }
+    const contract = await one<{ id: string }>(
+      `INSERT INTO module_transfer_contracts (module_mac, from_user_id, to_user_id)
+       VALUES ($1,$2,$3) RETURNING id::text`,
+      [mac, row.owner_user_id, auth.userId],
+    );
+    const contractId = contract!.id;
+    const title = 'Запрос на передачу модуля';
+    const text = `Пользователь @${requester.username} хочет привязать ваш модуль ${mod6} к своему аккаунту`;
+    await sendSystemNotification(row.owner_user_id, title, text, {
+      type: 'module_transfer_request',
+      contractId,
+      moduleMac: mac,
+      mod6,
+      fromUserId: auth.userId,
+      fromUsername: requester.username,
+    });
+    publishRealtime(row.owner_user_id, {
+      type: 'module_transfer_request',
+      contractId,
+      moduleMac: mac,
+      mod6,
+      fromUserId: auth.userId,
+      fromUsername: requester.username,
+    });
+    return reply.code(201).send({ ok: true, id: contractId, status: 'pending' });
+  });
+
+  app.post('/kmesh/v1/modules/transfer/:id/accept', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const contractId = String((req.params as { id?: string }).id ?? '');
+    if (!UUID_RE.test(contractId)) throw badRequest('invalid_contract_id');
+    const contract = await one<{
+      module_mac: string; from_user_id: string; to_user_id: string; status: string;
+    }>(
+      `SELECT module_mac, from_user_id::text, to_user_id::text, status
+         FROM module_transfer_contracts WHERE id = $1`,
+      [contractId],
+    );
+    if (!contract) throw notFound('contract');
+    if (contract.status !== 'pending') throw badRequest('contract_not_pending');
+    if (contract.from_user_id !== auth.userId) throw forbidden('not_module_owner');
+
+    const identity = await ensureUserIdentity(contract.to_user_id);
+    const mod6 = moduleMod6(contract.module_mac);
+    const epoch = Math.floor(Date.now() / 1000);
+    const claimToken = issueOwnerClaim(mod6, identity.blePrefix, identity.netId, epoch);
+    if (!claimToken) throw badRequest('ota_signing_unavailable');
+
+    await tx(async (q) => {
+      await q.query(
+        `UPDATE user_modules SET owner_user_id = $2, claimed_at = now() WHERE module_mac = $1`,
+        [contract.module_mac, contract.to_user_id],
+      );
+      await q.query(
+        `UPDATE modules SET owner_id = $2, token_version = token_version + 1, updated_at = now()
+          WHERE lower(hardware_id) = $1`,
+        [`esp32-${contract.module_mac.replace(/:/g, '')}`, contract.to_user_id],
+      );
+      await q.query(
+        `UPDATE module_transfer_contracts
+            SET status = 'accepted', claim_token = $2, resolved_at = now()
+          WHERE id = $1`,
+        [contractId, claimToken],
+      );
+    });
+
+    const toUser = await one<{ username: string }>(`SELECT username FROM users WHERE id = $1`, [contract.to_user_id]);
+    await sendSystemNotification(contract.to_user_id, 'Передача модуля подтверждена',
+      `Модуль ${mod6} теперь привязан к вашему аккаунту`, {
+        type: 'module_transfer_accepted',
+        contractId,
+        moduleMac: contract.module_mac,
+        mod6,
+        blePrefix: identity.blePrefix,
+        ownerNetId: identity.netId,
+        epoch,
+        claimToken,
+        oldBleName: `KL-${(await ensureUserIdentity(contract.from_user_id)).blePrefix}-${mod6}`,
+      });
+    publishRealtime(contract.to_user_id, {
+      type: 'module_transfer_accepted',
+      contractId,
+      moduleMac: contract.module_mac,
+      mod6,
+      claimToken,
+      epoch,
+      blePrefix: identity.blePrefix,
+    });
+    return reply.send({
+      ok: true,
+      id: contractId,
+      status: 'accepted',
+      moduleMac: contract.module_mac,
+      mod6,
+      ownerNetId: identity.netId,
+      blePrefix: identity.blePrefix,
+      epoch,
+      claimToken,
+      bleName: `KL-${identity.blePrefix}-${mod6}`,
+    });
+  });
+
+  app.post('/kmesh/v1/modules/transfer/:id/claim-consumed', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const contractId = String((req.params as { id?: string }).id ?? '');
+    if (!UUID_RE.test(contractId)) throw badRequest('invalid_contract_id');
+    await query(
+      `UPDATE module_transfer_contracts SET claim_token = NULL
+        WHERE id = $1 AND to_user_id = $2 AND status = 'accepted'`,
+      [contractId, auth.userId],
+    );
+    return reply.send({ ok: true });
+  });
+
+  app.post('/kmesh/v1/modules/transfer/:id/reject', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const contractId = String((req.params as { id?: string }).id ?? '');
+    if (!UUID_RE.test(contractId)) throw badRequest('invalid_contract_id');
+    const contract = await one<{ module_mac: string; from_user_id: string; to_user_id: string; status: string }>(
+      `SELECT module_mac, from_user_id::text, to_user_id::text, status
+         FROM module_transfer_contracts WHERE id = $1`,
+      [contractId],
+    );
+    if (!contract) throw notFound('contract');
+    if (contract.status !== 'pending') throw badRequest('contract_not_pending');
+    if (contract.from_user_id !== auth.userId) throw forbidden('not_module_owner');
+    await query(
+      `UPDATE module_transfer_contracts SET status = 'rejected', resolved_at = now() WHERE id = $1`,
+      [contractId],
+    );
+    const mod6 = moduleMod6(contract.module_mac);
+    await sendSystemNotification(contract.to_user_id, 'Передача модуля отклонена',
+      `Прежний владелец не подтвердил привязку модуля ${mod6}`, {
+        type: 'module_transfer_rejected',
+        contractId,
+        moduleMac: contract.module_mac,
+        mod6,
+      });
+    publishRealtime(contract.to_user_id, {
+      type: 'module_transfer_rejected',
+      contractId,
+      moduleMac: contract.module_mac,
+      mod6,
+    });
+    return reply.send({ ok: true, id: contractId, status: 'rejected' });
+  });
+
+  app.post('/kmesh/v1/modules/transfer/:id/cancel', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const contractId = String((req.params as { id?: string }).id ?? '');
+    if (!UUID_RE.test(contractId)) throw badRequest('invalid_contract_id');
+    const contract = await one<{ from_user_id: string; to_user_id: string; status: string }>(
+      `SELECT from_user_id::text, to_user_id::text, status
+         FROM module_transfer_contracts WHERE id = $1`,
+      [contractId],
+    );
+    if (!contract) throw notFound('contract');
+    if (contract.status !== 'pending') throw badRequest('contract_not_pending');
+    if (contract.to_user_id !== auth.userId) throw forbidden('not_requester');
+    await query(
+      `UPDATE module_transfer_contracts SET status = 'cancelled', resolved_at = now() WHERE id = $1`,
+      [contractId],
+    );
+    publishRealtime(contract.from_user_id, { type: 'module_transfer_cancelled', contractId });
+    return reply.send({ ok: true, id: contractId, status: 'cancelled' });
+  });
+
+  /* --------------------------------------------- OTA для шлюзов ---------- */  app.get('/kmesh/v1/ota/latest', { onRequest: [requireModule()] }, async (req, reply) => {
     const q = req.query as { chip?: string; base_build?: string; current_build?: string };
     const chip = String(q.chip ?? '').toLowerCase();
     if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');

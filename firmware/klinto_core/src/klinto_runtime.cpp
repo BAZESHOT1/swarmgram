@@ -3,6 +3,7 @@
 #if defined(ESP32)
 
 #include <Arduino.h>
+#include <esp_mac.h>
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -13,6 +14,7 @@
 #include "klinto_codec.h"
 #include "klinto_platform_esp32.h"
 #include "klinto_ota_esp32.h"
+#include "klinto_owner.h"
 #include "klinto_util.h"
 
 #if __has_include("config.h")
@@ -243,6 +245,18 @@ bool KlintoNode::loadConfig() {
 #endif
   /* NVS wins over compile-time defaults (hardware is user-assembled). */
   kl_config_load_nvs(&cfg_);
+  {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    kl_ble_mod6(mac, cfg_.ble_mod6);
+    char prefix[KL_OWNER_PREFIX_LEN + 1];
+    if (kl_nvs_get_str("klinto3", "owner_prefix", prefix, sizeof(prefix)) &&
+        kl_owner_prefix_normalize(prefix, cfg_.owner_ble_prefix)) {
+      /* загружено из NVS */
+    }
+    cfg_.owner_net_id = kl_nvs_get_uint("klinto3", "owner_net", cfg_.owner_net_id);
+    cfg_.owner_epoch = kl_nvs_get_uint("klinto3", "owner_epoch", cfg_.owner_epoch);
+  }
   if (cfg_.role == KL_ROLE_GATEWAY) cfg_.gateway_id = cfg_.node_id;
   kl_config_validate(&cfg_);
   return true;
@@ -317,6 +331,7 @@ bool KlintoNode::begin() {
 #endif
     if (cfg_.espnow_enabled) radio_caps |= KL_RADIO_WIFI_MESH;
     router_.set_telemetry((uint16_t)KL_FIRMWARE_BUILD, (uint8_t)KL_CHIP_ARCH, radio_caps);
+    router_.set_owner_net_id(cfg_.owner_net_id);
   }
   boot_valid_ms_ = millis();
 
@@ -342,8 +357,16 @@ bool KlintoNode::begin() {
     /* already copied */
   }
 #if KL_HAS_BLE
-  ble_.begin("Klinto-Node");
-  ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
+  {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char ble_name[KL_OWNER_NAME_LEN];
+    if (!kl_ble_name_build(cfg_.owner_ble_prefix, mac, ble_name, sizeof(ble_name))) {
+      snprintf(ble_name, sizeof(ble_name), "KL-00000000-%s", cfg_.ble_mod6);
+    }
+    ble_.begin(ble_name);
+    ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
+  }
 #endif
   serial_.begin(115200);
   serial_.setReceiveCallback(&KlintoNode::onClientLink, this);
@@ -358,7 +381,8 @@ bool KlintoNode::begin() {
   }
 
   kl_bridge_sink_t bridge_sink = {this, &KlintoNode::onConfig, &KlintoNode::onLog,
-                                  &KlintoNode::onInetStatus};
+                                  &KlintoNode::onInetStatus, &KlintoNode::onVerifyOwnerClaim,
+                                  &KlintoNode::onOwnerChanged};
   bridge_.init(&router_, &cfg_, client_link_, &down_queue_, &bridge_sink);
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
@@ -601,6 +625,34 @@ void KlintoNode::otaState(void *ctx, uint8_t state) {
   self->router_.set_ota_state(state);
   Serial.printf("[klinto] ota_state=%u build=%u\n", (unsigned)state,
                 (unsigned)self->ota_.current_build());
+}
+
+bool KlintoNode::onVerifyOwnerClaim(void *ctx, const uint8_t digest[32], const uint8_t *sig,
+                                    size_t sig_len) {
+  (void)ctx;
+  return kl_ota_esp32_verify_pubkey(digest, sig, sig_len);
+}
+
+void KlintoNode::onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, uint32_t epoch) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  char norm[KL_OWNER_PREFIX_LEN + 1];
+  if (!kl_owner_prefix_normalize(prefix, norm)) return;
+  memcpy(self->cfg_.owner_ble_prefix, norm, sizeof(self->cfg_.owner_ble_prefix));
+  self->cfg_.owner_net_id = net_id;
+  self->cfg_.owner_epoch = epoch;
+  kl_nvs_set_str("klinto3", "owner_prefix", norm);
+  kl_nvs_set_uint("klinto3", "owner_net", net_id);
+  kl_nvs_set_uint("klinto3", "owner_epoch", epoch);
+  self->router_.set_owner_net_id(net_id);
+  self->router_.request_presence();
+#if KL_HAS_BLE
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char name[KL_OWNER_NAME_LEN];
+  if (kl_ble_name_build(norm, mac, name, sizeof(name))) self->ble_.rename(name);
+#endif
+  Serial.printf("[klinto] owner saved: %s net=%lu epoch=%lu\n", norm, (unsigned long)net_id,
+                (unsigned long)epoch);
 }
 
 void KlintoNode::onConfigJson(const char *json, size_t len) {

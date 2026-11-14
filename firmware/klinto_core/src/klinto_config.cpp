@@ -59,6 +59,10 @@ void kl_config_defaults(kl_config_t *cfg) {
   cfg->hub_url[0] = '\0';
   cfg->module_token[0] = '\0';
   cfg->hardware_id[0] = '\0';
+  cfg->owner_net_id = 0;
+  cfg->owner_epoch = 0;
+  strcpy(cfg->owner_ble_prefix, "00000000");
+  cfg->ble_mod6[0] = '\0';
 }
 
 bool kl_config_validate(kl_config_t *cfg) {
@@ -233,6 +237,25 @@ bool kl_config_from_json(kl_config_t *cfg, const char *json) {
   if (kl_json_get_uint(json, "gw_max_hops", &u)) cfg->gw_max_hops = (uint8_t)u;
   if (kl_json_get_uint(json, "presence_interval_ms", &u)) cfg->presence_interval_ms = u;
   if (kl_json_get_uint(json, "station_presence_ms", &u)) cfg->station_presence_ms = u;
+  if (kl_json_get_uint(json, "owner_net_id", &u)) cfg->owner_net_id = u;
+  if (kl_json_get_uint(json, "owner_epoch", &u)) cfg->owner_epoch = u;
+  {
+    char prefix[16];
+    if (kl_json_get_string(json, "owner_ble_prefix", prefix, sizeof(prefix))) {
+      size_t n = strlen(prefix);
+      if (n == 8) {
+        for (size_t i = 0; i < 8; ++i) {
+          char c = prefix[i];
+          if (c >= 'A' && c <= 'F') c = (char)(c - 'A' + 'a');
+          if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) n = 0;
+          prefix[i] = c;
+        }
+        if (n == 8) {
+          memcpy(cfg->owner_ble_prefix, prefix, 9);
+        }
+      }
+    }
+  }
   if (kl_json_get_uint(json, "gw_beacon_interval_ms", &u)) cfg->gw_beacon_interval_ms = u;
   if (kl_json_get_uint(json, "route_expiry_ms", &u)) cfg->route_expiry_ms = u;
   if (kl_json_get_uint(json, "ack_timeout_ms", &u)) cfg->ack_timeout_ms = u;
@@ -304,6 +327,7 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
       "\"gw_beacon_interval_ms\":%lu,\"route_expiry_ms\":%lu,"
       "\"ack_timeout_ms\":%lu,\"ack_retries\":%u,\"lora_low_watermark\":%u,"
       "\"temp_mesh_key\":\"%s\",\"hub_url\":\"%s\",\"module_token\":\"%s\","
+      "\"owner_net_id\":%lu,\"owner_epoch\":%lu,\"owner_ble_prefix\":\"%s\","
       "\"lora\":{\"present\":%s,\"chip\":\"%s\",\"sck\":%d,\"miso\":%d,\"mosi\":%d,"
       "\"cs\":%d,\"rst\":%d,\"dio0\":%d,\"dio1\":%d,\"busy\":%d,\"freq\":%.3f,"
       "\"sf\":%u,\"bw\":%.1f,\"cr\":%u,\"power\":%d}}",
@@ -319,6 +343,7 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
       (unsigned long)cfg->gw_beacon_interval_ms, (unsigned long)cfg->route_expiry_ms,
       (unsigned long)cfg->ack_timeout_ms, (unsigned)cfg->ack_retries,
       (unsigned)cfg->lora_low_watermark, keyhex, cfg->hub_url, cfg->module_token,
+      (unsigned long)cfg->owner_net_id, (unsigned long)cfg->owner_epoch, cfg->owner_ble_prefix,
       cfg->lora.present ? "true" : "false", chip, cfg->lora.sck, cfg->lora.miso, cfg->lora.mosi,
       cfg->lora.cs, cfg->lora.rst, cfg->lora.dio0, cfg->lora.dio1, cfg->lora.busy,
       (double)cfg->lora.freq_mhz, (unsigned)cfg->lora.sf, (double)cfg->lora.bw_khz,

@@ -33,7 +33,8 @@ enum kl_client_frame_t : uint8_t {
   KL_CF_SYNC_ACK = 10,
   KL_CF_PROXY_UP = 11,
   KL_CF_PROXY_DOWN = 12,
-  KL_CF_INET_STATUS = 13
+  KL_CF_INET_STATUS = 13,
+  KL_CF_SET_OWNER = 14
 };
 
 enum kl_client_flags_t : uint8_t {
@@ -65,6 +66,11 @@ struct kl_bridge_sink_t {
   void (*log)(void *ctx, const char *text);
   /** Приложение сообщило статус интернета: мобильный шлюз вкл/выкл. */
   void (*inet_status)(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
+  /** Проверка подписи Hub для смены владельца (ECDSA P-256). */
+  bool (*verify_owner_claim)(void *ctx, const uint8_t digest[32], const uint8_t *sig,
+                             size_t sig_len);
+  /** Владелец подтверждён и сохранён: обновить BLE-имя и NODE_PRESENCE. */
+  void (*owner_changed)(void *ctx, const char *prefix, uint32_t net_id, uint32_t epoch);
 };
 
 class KlintoClientBridge {
@@ -96,6 +102,7 @@ class KlintoClientBridge {
   void handle_config(const uint8_t *payload, size_t len);
   void handle_proxy_down(const uint8_t *payload, size_t len);
   void handle_inet_status(const uint8_t *payload, size_t len);
+  void handle_set_owner(const uint8_t *payload, size_t len);
   bool send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags = 0);
   void flush_outbox();
   void log_line(const char *fmt, ...);

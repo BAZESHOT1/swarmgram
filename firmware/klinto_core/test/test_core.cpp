@@ -20,6 +20,7 @@
 #include "klinto_cell.h"
 #include "klinto_ota.h"
 #include "klinto_ota_patcher.h"
+#include "klinto_owner.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -668,7 +669,7 @@ static void test_bridge_e2e(void) {
   rb.init(&cfg2, &sb);
 
   KlintoClientBridge ba, bb;
-  kl_bridge_sink_t sink = {nullptr, nullptr, nullptr, nullptr};
+  kl_bridge_sink_t sink = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
   ba.init(&ra, &cfg, &la, &qa, &sink);
   bb.init(&rb, &cfg2, &lb, &qb, &sink);
   bwa.bridge_ctx.bridge = &ba;
@@ -1381,9 +1382,10 @@ static void test_presence_telemetry(void) {
   t.radio_caps = KL_RADIO_LORA | KL_RADIO_SX1262 | KL_RADIO_BLE;
   t.ota_state = KL_OTA_DOWNLOADING;
   t.battery_pct = 77;
+  t.owner_net_id = 0x12345678u;
   uint8_t payload[24];
   const size_t n = kl_codec_encode_presence_ex(payload, sizeof(payload), 76, -70, 0, 3, &t);
-  CHECK(n == 15);
+  CHECK(n == 19);
   kl_presence_telemetry_t out;
   CHECK(kl_codec_decode_presence_telemetry(payload, n, &out));
   CHECK(out.fw_build == 130);
@@ -1392,10 +1394,66 @@ static void test_presence_telemetry(void) {
   CHECK(out.radio_caps == (KL_RADIO_LORA | KL_RADIO_SX1262 | KL_RADIO_BLE));
   CHECK(out.ota_state == KL_OTA_DOWNLOADING);
   CHECK(out.battery_pct == 77);
+  CHECK(out.owner_net_id == 0x12345678u);
   /* Старый 8-байтный формат остаётся читаемым. */
   const size_t old_n = kl_codec_encode_presence(payload, sizeof(payload), 50, -80, 0, 1);
   CHECK(old_n == 8);
   CHECK(!kl_codec_decode_presence_telemetry(payload, old_n, &out));
+}
+
+static bool fake_owner_verify(void *ctx, const uint8_t digest[32], const uint8_t *sig,
+                              size_t sig_len) {
+  const bool *accept = (const bool *)ctx;
+  (void)digest;
+  return *accept && sig && sig_len == 4 && !memcmp(sig, "SIGN", 4);
+}
+
+static void test_owner_identity(void) {
+  const uint8_t mac[6] = {0x24, 0x6f, 0x28, 0xab, 0xcd, 0xef};
+  char name[KL_OWNER_NAME_LEN];
+  const size_t n = kl_ble_name_build("A1B2C3D4", mac, name, sizeof(name));
+  CHECK(n == 18);
+  CHECK(!strcmp(name, "KL-a1b2c3d4-abcdef"));
+  CHECK(strlen(name) == 18);
+  CHECK(sizeof(name) == 19);
+
+  char bad[KL_OWNER_NAME_LEN];
+  CHECK(kl_ble_name_build("zzzzzzzz", mac, bad, sizeof(bad)) == 0);
+  CHECK(kl_owner_prefix_valid("a1b2c3d4"));
+  CHECK(!kl_owner_prefix_valid("A1B2C3D4"));
+  char norm[9];
+  CHECK(kl_owner_prefix_normalize("A1B2C3D4", norm));
+  CHECK(!strcmp(norm, "a1b2c3d4"));
+
+  kl_owner_claim_t claim;
+  memset(&claim, 0, sizeof(claim));
+  strcpy(claim.prefix, "a1b2c3d4");
+  claim.net_id = 0x10203040u;
+  claim.epoch = 1710000000u;
+  claim.sig_len = 4;
+  memcpy(claim.sig, "SIGN", 4);
+  uint8_t digest[32];
+  CHECK(kl_owner_claim_digest("abcdef", &claim, digest));
+  bool accept = true;
+  CHECK(kl_owner_claim_verify("abcdef", &claim, fake_owner_verify, &accept));
+  accept = false;
+  CHECK(!kl_owner_claim_verify("abcdef", &claim, fake_owner_verify, &accept));
+  claim.sig_len = 0;
+  CHECK(!kl_owner_claim_verify("abcdef", &claim, fake_owner_verify, &accept));
+
+  /* Формат BRIDGE_CMD_SET_OWNER: prefix(8) net(4) epoch(4) sig_len(1) sig. */
+  uint8_t wire[64];
+  memcpy(wire, "a1b2c3d4", 8);
+  kl_write_le32(wire + 8, 0x10203040u);
+  kl_write_le32(wire + 12, 1710000000u);
+  wire[16] = 4;
+  memcpy(wire + 17, "SIGN", 4);
+  kl_owner_claim_t parsed;
+  CHECK(kl_owner_claim_parse(wire, 21, &parsed));
+  CHECK(!strcmp(parsed.prefix, "a1b2c3d4"));
+  CHECK(parsed.net_id == 0x10203040u);
+  CHECK(parsed.epoch == 1710000000u);
+  CHECK(!kl_owner_claim_parse(wire, 18, &parsed));
 }
 
 int main(void) {
@@ -1420,6 +1478,7 @@ int main(void) {
   test_delta_patcher();
   test_ota();
   test_presence_telemetry();
+  test_owner_identity();
   printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

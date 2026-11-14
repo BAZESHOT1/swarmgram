@@ -29,6 +29,7 @@ import {
   type ModuleWifiConfig,
 } from './types';
 import { updateClusterFromModule } from '../mesh/ClusterAwarenessService';
+import { parseModuleBleName } from './identity';
 
 let sharedManager: BleManager | null = null;
 
@@ -134,7 +135,7 @@ function hasModuleService(device: Device): boolean {
 /** Резервное сопоставление без фильтра: имя SG-* или сервис a5c0 в рекламе. */
 function looksLikeModule(device: Device): boolean {
   const name = device.localName || device.name || '';
-  return /^SG-/i.test(name) || hasModuleService(device);
+  return /^KL-/i.test(name) || /^SG-/i.test(name) || hasModuleService(device);
 }
 
 /* ------------------------------------------------------------ base64 ----- */
@@ -179,6 +180,8 @@ export interface ScannedModule {
   id: string;
   name: string;
   rssi: number;
+  ownerPrefix?: string;
+  mod6?: string;
 }
 
 /**
@@ -342,8 +345,9 @@ export class NativeBleTransport implements ModuleConnection {
         }
         found.set(device.id, {
           id: device.id,
-          name: device.localName || device.name || 'SG-модуль',
+          name: device.localName || device.name || 'KL-модуль',
           rssi,
+          ...(parseModuleBleName(device.localName || device.name) ?? {}),
         });
       });
     } catch (error) {
@@ -369,7 +373,7 @@ export class NativeBleTransport implements ModuleConnection {
         'timeout',
       );
     }
-    return this.openDevice(devices[0].id);
+    return this.openDeviceInternal(devices[0].id);
   }
 
   /**
@@ -396,7 +400,7 @@ export class NativeBleTransport implements ModuleConnection {
       : '';
     for (const device of ordered.slice(0, expected ? 4 : 1)) {
       try {
-        const info = await this.openDevice(device.id);
+        const info = await this.openDeviceInternal(device.id);
         const got = info.hardwareId.toLowerCase();
         const matches = !expected
           || got === expected
@@ -410,8 +414,11 @@ export class NativeBleTransport implements ModuleConnection {
     return null;
   }
 
-  private async openDevice(deviceId: string): Promise<ModuleInfo> {
-    if (this.isOpen) await this.close();
+  async openDevice(deviceId: string): Promise<ModuleInfo> {
+    return this.openDeviceInternal(deviceId);
+  }
+
+  private async openDeviceInternal(deviceId: string): Promise<ModuleInfo> {    if (this.isOpen) await this.close();
     this.closing = false;
     this.disconnected = false;
     this.decoder = new FrameDecoder();
@@ -629,6 +636,27 @@ export class NativeBleTransport implements ModuleConnection {
       FrameType.SET_CONFIG,
       encodeJson(configPayload(config.wifiSsid, config.wifiPassword)),
     );
+  }
+
+  /** SET_OWNER: prefix(8) net(4) epoch(4) sig_len(1) DER-подпись. */
+  async setOwner(claim: { prefix: string; netId: number; epoch: number; signature: string }): Promise<void> {
+    if (!this.isOpen) throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
+    const sig: number[] = [];
+    for (let i = 0; i + 1 < claim.signature.length; i += 2) {
+      sig.push(parseInt(claim.signature.slice(i, i + 2), 16));
+    }
+    if (!sig.length || sig.length > 72) {
+      throw new ModuleTransportError('Некорректная подпись передачи модуля.', 'io');
+    }
+    const payload = new Uint8Array(17 + sig.length);
+    const prefix = claim.prefix.toLowerCase();
+    for (let i = 0; i < 8; i += 1) payload[i] = prefix.charCodeAt(i) & 0xff;
+    const view = new DataView(payload.buffer);
+    view.setUint32(8, claim.netId >>> 0, true);
+    view.setUint32(12, claim.epoch >>> 0, true);
+    payload[16] = sig.length;
+    payload.set(sig, 17);
+    await this.writeFrame(FrameType.SET_OWNER, payload);
   }
 
   onEnvelope(callback: (message: ModuleEnvelope) => void): () => void {

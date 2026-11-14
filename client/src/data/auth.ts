@@ -17,6 +17,7 @@ import {
   type DeviceKeys,
 } from '../crypto/core';
 import { useStore } from '../state/useStore';
+import { refreshCachedIdentity } from '../kmesh/v1/identity';
 
 export interface AuthResult {
   session: api.Session;
@@ -140,6 +141,7 @@ export async function login(login: string, password: string): Promise<AuthResult
   await api.setSession(session);
   useStore.getState().setSession(session);
   applyMe(res.user);
+  void refreshCachedIdentity();
 
   if (!localKeys) {
     // новое устройство: восстановить ключи чатов и ключ аккаунта из резерва
@@ -197,6 +199,7 @@ export async function register(input: {
   };
   await api.setSession(session);
   applyMe(res.user);
+  void refreshCachedIdentity();
   void ensureAccountKey();
   keyBackupPasswordStash.value = input.password;
   setTimeout(() => void tryUploadBackup(input.password), 2500);

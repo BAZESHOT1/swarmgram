@@ -20,6 +20,8 @@ class BleClientLink : public IClientLink {
   BleClientLink();
   bool begin(const char *deviceName);
   void end();
+  /** Перезапустить advertising с новым именем KL-<USER8>-<MOD6>. */
+  void rename(const char *deviceName);
   bool send(const uint8_t *data, size_t len) override;
   bool connected() const override { return connected_; }
   uint16_t mtu() const override;

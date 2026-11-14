@@ -61,6 +61,20 @@ async function native(): Promise<NonNullable<typeof sqliteDb> | null> {
            attempts INTEGER NOT NULL DEFAULT 0,
            server_seq INTEGER,
            permanent_signature TEXT NOT NULL DEFAULT ''
+         );
+         CREATE TABLE IF NOT EXISTS pending_ble_claims (
+           ble_name TEXT PRIMARY KEY,
+           module_mac TEXT NOT NULL DEFAULT '',
+           mod6 TEXT NOT NULL DEFAULT '',
+           claim_token TEXT NOT NULL,
+           created_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS my_modules (
+           module_mac TEXT PRIMARY KEY,
+           mod6 TEXT NOT NULL,
+           custom_name TEXT NOT NULL DEFAULT '',
+           ble_name TEXT NOT NULL DEFAULT '',
+           updated_at TEXT NOT NULL
          );`,
       );
       sqliteDb = db as unknown as NonNullable<typeof sqliteDb>;
@@ -275,4 +289,133 @@ export async function kmeshV1Remove(msgUuid: string): Promise<void> {
   const db = await native();
   if (!db) return;
   await db.runAsync('DELETE FROM kmesh_v1_outbox WHERE msg_uuid = ?', msgUuid);
+}
+
+export interface PendingBleClaim {
+  bleName: string;
+  moduleMac: string;
+  mod6: string;
+  claimToken: string;
+  createdAt: string;
+}
+
+const PENDING_BLE_KEY = 'sg:pending_ble_claims';
+
+async function readPendingWeb(): Promise<PendingBleClaim[]> {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_BLE_KEY) ?? '[]') as PendingBleClaim[];
+  } catch {
+    return [];
+  }
+}
+
+export async function addPendingBleClaim(claim: PendingBleClaim): Promise<void> {
+  if (Platform.OS === 'web') {
+    const list = (await readPendingWeb()).filter((c) => c.bleName !== claim.bleName);
+    list.unshift(claim);
+    localStorage.setItem(PENDING_BLE_KEY, JSON.stringify(list));
+    return;
+  }
+  const db = await native();
+  if (!db) return;
+  await db.runAsync(
+    `INSERT INTO pending_ble_claims (ble_name, module_mac, mod6, claim_token, created_at)
+     VALUES (?,?,?,?,?)
+     ON CONFLICT (ble_name) DO UPDATE SET
+       module_mac = excluded.module_mac,
+       mod6 = excluded.mod6,
+       claim_token = excluded.claim_token,
+       created_at = excluded.created_at`,
+    claim.bleName,
+    claim.moduleMac,
+    claim.mod6,
+    claim.claimToken,
+    claim.createdAt,
+  );
+}
+
+export async function listPendingBleClaims(): Promise<PendingBleClaim[]> {
+  if (Platform.OS === 'web') return readPendingWeb();
+  const db = await native();
+  if (!db) return [];
+  const rows = await db.getAllAsync<{
+    ble_name: string; module_mac: string; mod6: string; claim_token: string; created_at: string;
+  }>('SELECT ble_name, module_mac, mod6, claim_token, created_at FROM pending_ble_claims ORDER BY created_at DESC');
+  return rows.map((r) => ({
+    bleName: r.ble_name,
+    moduleMac: r.module_mac,
+    mod6: r.mod6,
+    claimToken: r.claim_token,
+    createdAt: r.created_at,
+  }));
+}
+
+export async function removePendingBleClaim(bleName: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    localStorage.setItem(
+      PENDING_BLE_KEY,
+      JSON.stringify((await readPendingWeb()).filter((c) => c.bleName !== bleName)),
+    );
+    return;
+  }
+  const db = await native();
+  if (!db) return;
+  await db.runAsync('DELETE FROM pending_ble_claims WHERE ble_name = ?', bleName);
+}
+
+export interface MyModuleRecord {
+  moduleMac: string;
+  mod6: string;
+  customName: string;
+  bleName: string;
+  updatedAt: string;
+}
+
+const MY_MODULES_KEY = 'sg:my_modules';
+
+export async function saveMyModules(modules: MyModuleRecord[]): Promise<void> {
+  if (Platform.OS === 'web') {
+    localStorage.setItem(MY_MODULES_KEY, JSON.stringify(modules));
+    return;
+  }
+  const db = await native();
+  if (!db) return;
+  for (const m of modules) {
+    await db.runAsync(
+      `INSERT INTO my_modules (module_mac, mod6, custom_name, ble_name, updated_at)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT (module_mac) DO UPDATE SET
+         mod6 = excluded.mod6,
+         custom_name = excluded.custom_name,
+         ble_name = excluded.ble_name,
+         updated_at = excluded.updated_at`,
+      m.moduleMac,
+      m.mod6,
+      m.customName,
+      m.bleName,
+      m.updatedAt,
+    );
+  }
+}
+
+export async function listMyModules(): Promise<MyModuleRecord[]> {
+  if (Platform.OS === 'web') {
+    try {
+      return JSON.parse(localStorage.getItem(MY_MODULES_KEY) ?? '[]') as MyModuleRecord[];
+    } catch {
+      return [];
+    }
+  }
+  const db = await native();
+  if (!db) return [];
+  const rows = await db.getAllAsync<{
+    module_mac: string; mod6: string; custom_name: string; ble_name: string; updated_at: string;
+  }>('SELECT module_mac, mod6, custom_name, ble_name, updated_at FROM my_modules ORDER BY updated_at DESC');
+  return rows.map((r) => ({
+    moduleMac: r.module_mac,
+    mod6: r.mod6,
+    customName: r.custom_name,
+    bleName: r.ble_name,
+    updatedAt: r.updated_at,
+  }));
 }

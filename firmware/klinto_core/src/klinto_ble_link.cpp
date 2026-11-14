@@ -96,6 +96,16 @@ void BleClientLink::end() {
   BLEDevice::stopAdvertising();
 }
 
+void BleClientLink::rename(const char *deviceName) {
+  end();
+  BLEDevice::deinit(true);
+  server_ = nullptr;
+  tx_ = nullptr;
+  rx_ = nullptr;
+  status_ = nullptr;
+  begin(deviceName);
+}
+
 bool BleClientLink::send(const uint8_t *data, size_t len) {
   if (!connected_ || !tx_ || !data || !len) return false;
   size_t chunk = (mtu_ > 3 ? mtu_ - 3 : 20);
@@ -177,6 +187,7 @@ BleClientLink::BleClientLink()
       hook_ctx_(nullptr), server_(nullptr), tx_(nullptr), rx_(nullptr), status_(nullptr) {}
 bool BleClientLink::begin(const char *) { return false; }
 void BleClientLink::end() {}
+void BleClientLink::rename(const char *) {}
 bool BleClientLink::send(const uint8_t *, size_t) { return false; }
 uint16_t BleClientLink::mtu() const { return 23; }
 void BleClientLink::poll(uint32_t) {}
@@ -210,6 +221,7 @@ BleClientLink::BleClientLink()
       hook_ctx_(nullptr) {}
 bool BleClientLink::begin(const char *) { return false; }
 void BleClientLink::end() {}
+void BleClientLink::rename(const char *) {}
 bool BleClientLink::send(const uint8_t *, size_t) { return false; }
 uint16_t BleClientLink::mtu() const { return 23; }
 void BleClientLink::poll(uint32_t) {}

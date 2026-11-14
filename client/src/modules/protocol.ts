@@ -38,6 +38,7 @@ export const FrameType = {
   STATUS: 8,
   PAIR: 9,
   SET_CONFIG: 10,
+  SET_OWNER: 14,
 } as const;
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];
@@ -316,6 +317,9 @@ export interface ModuleInfoPayload {
   cluster_id?: string | number;
   border?: boolean | number;
   handover?: number;
+  ownerNetId?: number;
+  ownerPrefix?: string;
+  bleMod6?: string;
 }
 
 export interface EnvelopePayload {
@@ -395,6 +399,13 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     cluster_id: source.cluster_id != null ? String(source.cluster_id) : undefined,
     border: source.border === true || Number(source.border) === 1,
     handover: num(source.handover, 0),
+    ownerNetId: num(source.ownerNetId ?? source.owner_net_id, 0) >>> 0,
+    ownerPrefix: source.ownerPrefix != null
+      ? String(source.ownerPrefix).toLowerCase()
+      : source.owner_prefix != null ? String(source.owner_prefix).toLowerCase() : undefined,
+    bleMod6: source.bleMod6 != null
+      ? String(source.bleMod6).toLowerCase()
+      : source.ble_mod6 != null ? String(source.ble_mod6).toLowerCase() : undefined,
   };
 }
 

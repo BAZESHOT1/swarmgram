@@ -50,3 +50,6 @@ jobs:
       - name: Hub OTA delta test
         working-directory: services/hub
         run: npm run test:ota
+      - name: Hub identity and transfer contract test
+        working-directory: services/hub
+        run: npm run test:identity

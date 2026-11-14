@@ -66,6 +66,9 @@ class KlintoNode {
   static void onConfig(void *ctx, const char *json, size_t len);
   static void onLog(void *ctx, const char *text);
   static void onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
+  static bool onVerifyOwnerClaim(void *ctx, const uint8_t digest[32], const uint8_t *sig,
+                                 size_t sig_len);
+  static void onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, uint32_t epoch);
   static bool otaSend(void *ctx, uint8_t type, const uint8_t *payload, size_t len, bool broadcast);
   static void otaState(void *ctx, uint8_t state);
   static bool cellApplyChannel(void *ctx, uint8_t wifi_channel);
