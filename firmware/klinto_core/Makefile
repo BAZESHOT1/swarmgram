@@ -16,7 +16,9 @@ CORE_SRC = \
 	src/klinto_channel_plan.cpp \
 	src/klinto_cell.cpp \
 	src/klinto_gateway.cpp \
-	src/klinto_bridge.cpp
+	src/klinto_bridge.cpp \
+	src/klinto_ota.cpp \
+	src/klinto_ota_patcher.cpp
 
 OBJS = $(CORE_SRC:.cpp=.o) unishox2.o
 
