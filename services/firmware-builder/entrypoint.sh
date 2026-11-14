@@ -74,6 +74,7 @@ build_trimmed_index() {
       esp32c3: ["riscv32-esp-elf-gcc", "esp-rv32", "esp32c3-libs"],
       esp32: ["xtensa-esp32-elf-gcc", "esp-x32", "esp32-libs"],
       esp32s3: ["xtensa-esp32s3-elf-gcc", "esp-x32", "esp32s3-libs"],
+      esp32c6: ["riscv32-esp-elf-gcc", "esp-rv32", "esp32c6-libs"],
     };
     const keep = new Set(["esptool_py", "mklittlefs", "mkspiffs", "dfu-util"]);
     for (const b of boards) if (gcc[b]) for (const name of gcc[b]) keep.add(name);
