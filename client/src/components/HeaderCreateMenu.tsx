@@ -38,15 +38,18 @@ export function HeaderCreateMenu() {
         accessibilityLabel={open ? 'Закрыть меню создания' : 'Создать чат, группу или канал'}
         style={({ pressed }) => [
           styles.fab,
-          theme.shadow,
-          { backgroundColor: theme.accent, opacity: pressed ? 0.85 : 1 },
+          {
+            backgroundColor: '#161618',
+            borderColor: 'rgba(255,255,255,0.08)',
+            opacity: pressed ? 0.85 : 1,
+          },
         ]}
       >
         <MotiView
           animate={{ rotate: open ? '135deg' : '0deg' }}
           transition={reduced ? { type: 'timing', duration: 0 } : motion.spring}
         >
-          <Ionicons name="add" size={24} color={theme.onAccent} />
+          <Ionicons name="add" size={22} color="#FFFFFF" />
         </MotiView>
       </PressableScale>
 
@@ -112,9 +115,10 @@ export function HeaderCreateMenu() {
 
 const styles = StyleSheet.create({
   fab: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

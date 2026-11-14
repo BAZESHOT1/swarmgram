@@ -23,6 +23,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
@@ -59,11 +60,18 @@ import { ChatContextMenu } from '../../src/components/chat/ChatContextMenu';
 import { SelectionToolbar } from '../../src/components/chat/SelectionToolbar';
 import { ConfirmDialog } from '../../src/components/chat/ConfirmDialog';
 import { FlashList } from '@shopify/flash-list';
+import Reanimated, {
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { prefetchTopChats } from '../../src/storage/messages';
 import { motion } from '../../src/theme/motion';
 import { useHaptics } from '../../src/components/useHaptics';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
+import { setChatSearchActive } from '../../src/state/chatSearchState';
 import { hasNetworkAccess } from '../../src/data/access';
 import { onReadAllRequest } from '../../src/state/chatEvents';
 import { dbGet, dbSet } from '../../src/data/db';
@@ -73,7 +81,11 @@ import { hasRight, visibilityLabel, normalizeVisibility } from '../../src/compon
 /* ------------------------------------------------------------------ утилиты */
 
 const HISTORY_KEY = 'sg:search-history';
-const HISTORY_LIMIT = 8;
+
+/** Кэш/ответ API может быть повреждён — приводим к массиву без падения. */
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}const HISTORY_LIMIT = 8;
 
 /** Скрытие панели поиска при скролле списка: порог и шаг, чтобы не дёргалось. */
 const SEARCH_HIDE_AFTER = 100;
@@ -542,6 +554,27 @@ export default function ChatsScreen() {
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  useEffect(() => {
+    setChatSearchActive(Boolean(search.trim()));
+    return () => setChatSearchActive(false);
+  }, [search]);
+  const searchExpanded = searchFocused || Boolean(search.trim());
+  const searchProgress = useSharedValue(0);
+  useEffect(() => {
+    searchProgress.value = withTiming(searchExpanded ? 1 : 0, { duration: 200 });
+  }, [searchExpanded, searchProgress]);
+  const headerTitleStyle = useAnimatedStyle(() => ({
+    opacity: 1 - searchProgress.value,
+    transform: [{ scale: 1 - searchProgress.value * 0.15 }],
+    width: interpolate(searchProgress.value, [0, 1], [92, 0]),
+    marginRight: interpolate(searchProgress.value, [0, 1], [8, 0]),
+  }));
+  const headerCreateStyle = useAnimatedStyle(() => ({
+    opacity: 1 - searchProgress.value,
+    transform: [{ scale: 1 - searchProgress.value * 0.15 }],
+    width: interpolate(searchProgress.value, [0, 1], [92, 0]),
+    marginLeft: interpolate(searchProgress.value, [0, 1], [8, 0]),
+  }));
   const [filter, setFilter] = useState<SearchFilter>('all');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
@@ -722,13 +755,16 @@ export default function ChatsScreen() {
 
   /* --------------------------------------------------------------- данные */
 
-  const activeChats = useMemo(() => (chats.data ?? []).filter((c) => !c.archived), [chats.data]);
+  const activeChats = useMemo(
+    () => (Array.isArray(chats.data) ? chats.data : []).filter((c) => !c.archived),
+    [chats.data],
+  );
 
   /** Единый список: активные чаты + подписки-каналы, которых нет в listChats. */
   const allChats = useMemo(() => {
     const map = new Map<string, Chat>();
     activeChats.forEach((c) => map.set(c.id, c));
-    (subs.data ?? []).forEach((c) => {
+    (asArray<Chat>(subs.data)).forEach((c) => {
       if (!c.archived && !map.has(c.id)) map.set(c.id, c);
     });
     // Пустой direct-чат, созданный собеседником, не показываем: он появится,
@@ -793,7 +829,7 @@ export default function ChatsScreen() {
   const activeIds = useMemo(() => new Set(allChats.map((c) => c.id)), [allChats]);
 
   const archivedChats = useMemo(() => {
-    const list = (archivedQ.data ?? []).filter((c) => !activeIds.has(c.id));
+    const list = asArray<Chat>(archivedQ.data).filter((c) => !activeIds.has(c.id));
     return [...list].sort((a, b) => activityOf(b) - activityOf(a));
   }, [archivedQ.data, activeIds]);
 
@@ -839,7 +875,7 @@ export default function ChatsScreen() {
   }, [activeQuery, needle, searchableChats, myUsername]);
 
   const users = useMemo(
-    () => (usersQ.data ?? []).filter((u) => u.username !== myUsername),
+    () => asArray<SearchUser>(usersQ.data).filter((u) => u.username !== myUsername),
     [usersQ.data, myUsername],
   );
 
@@ -875,7 +911,7 @@ export default function ChatsScreen() {
     groupsSafe.groups
       .filter((g) => g.type === 'channel' && g.title.toLowerCase().includes(q) && !localIds.has(g.id))
       .forEach((g) => map.set(g.id, g));
-    (channelsQ.data ?? [])
+    (asArray<Chat>(channelsQ.data))
       .filter((c) => c.title.toLowerCase().includes(q) && !localIds.has(c.id) && !map.has(c.id))
       .forEach((c) =>
         map.set(c.id, {
@@ -1280,6 +1316,15 @@ export default function ChatsScreen() {
     }
   }, []);
 
+  const collapseSearch = useCallback(() => {
+    setSearch('');
+    setDebounced('');
+    setSelectedKey(null);
+    setFilter('all');
+    setSearchFocused(false);
+    Keyboard.dismiss();
+  }, []);
+
   /* -------------------------------------------------------------- клавиатура */
 
   useEffect(() => {
@@ -1514,40 +1559,71 @@ export default function ChatsScreen() {
     [],
   );
   return (
-    <View style={{ flex: 1 }} onTouchStart={onScreenTouch}>
+    <View style={{ flex: 1, backgroundColor: '#000000' }} onTouchStart={onScreenTouch}>
       <View style={styles.header}>
-        <MotiView
-          from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -8 }}
-          animate={{ opacity: 1, translateY: 0 }}
-          transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
-          style={{ flex: 1 }}
+        <Reanimated.View style={[styles.headerTitle, headerTitleStyle]}>
+          <Text style={styles.headerTitleText}>Чаты</Text>
+        </Reanimated.View>
+        <View
+          ref={searchHostRef}
+          nativeID="sg-chats-search"
+          style={styles.searchHost}
+          onLayout={(e) => {
+            const h = e.nativeEvent?.layout?.height ?? 0;
+            if (h > 0 && Math.abs(h - searchHeight) > 0.5) setSearchHeight(h);
+            measureSearch();
+          }}
         >
-          <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: theme.fontXl }}>Чаты</Text>
-        </MotiView>
-        <MotiView
-          key={connectionPhase ?? 'module-status'}
-          from={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ type: 'timing', duration: 200 }}
-        >
-          {connectionPhase === 'mesh' ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <ConnectionPill phase="mesh" />
-              <ModuleStatusPill />
+          <SearchField
+            ref={searchRef}
+            value={search}
+            expanded={searchExpanded}
+            onChange={(t) => {
+              setSearch(t);
+              setFilter('all');
+            }}
+            onClear={clearSearch}
+            onClose={collapseSearch}
+            onFocus={() => {
+              if (blurTimer.current) clearTimeout(blurTimer.current);
+              setSearchFocused(true);
+              setSearchHiddenAnimated(false);
+            }}
+            onBlur={() => {
+              if (blurTimer.current) clearTimeout(blurTimer.current);
+              blurTimer.current = setTimeout(() => setSearchFocused(false), 160);
+            }}
+            onSubmit={() => {
+              if (selectedKey) {
+                const row = selectableRows.find((r) => rowKey(r) === selectedKey);
+                if (row) openSearchRow(row);
+              } else {
+                rememberQuery(search);
+              }
+            }}
+            placeholder="Поиск"
+          />
+          {historyOpen ? (
+            <View style={styles.headerHistory}>
+              <SearchHistoryPanel
+                theme={theme}
+                wide={wide}
+                history={history}
+                onOpen={(entry) => {
+                  setSearchFocused(false);
+                  openHistoryEntry(entry);
+                }}
+                onRemove={(entry) => {
+                  persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
+                }}
+                onClear={() => persistHistory([])}
+              />
             </View>
-          ) : connectionPhase ? (
-            <ConnectionPill phase={connectionPhase} />
-          ) : (
-            <ModuleStatusPill />
-          )}
-        </MotiView>
-        <MotiView
-          from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -6, scale: 0.96 }}
-          animate={{ opacity: 1, translateY: 0, scale: 1 }}
-          transition={reduced ? { type: 'timing', duration: 0 } : { ...motion.spring, delay: motion.staggerStepMs }}
-        >
+          ) : null}
+        </View>
+        <Reanimated.View style={[styles.headerCreate, headerCreateStyle]}>
           <HeaderCreateMenu />
-        </MotiView>
+        </Reanimated.View>
       </View>
 
       {selecting ? (
@@ -1591,77 +1667,19 @@ export default function ChatsScreen() {
             }}
           />
         </View>
-      ) : (
-        <Animated.View
-          pointerEvents={searchHidden ? 'none' : 'auto'}
-          style={{
-            height: searchAnim.interpolate({ inputRange: [0, 1], outputRange: [searchHeight, 0] }),
-            opacity: searchAnim.interpolate({ inputRange: [0, 0.7, 1], outputRange: [1, 0.2, 0] }),
-            transform: [{ translateY: searchAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) }],
-          }}
-        >
-          <View
-            ref={searchHostRef}
-            nativeID="sg-chats-search"
-            style={{ position: 'relative', zIndex: 40, paddingBottom: 12 }}
-            onLayout={(e) => {
-              const h = e.nativeEvent.layout.height;
-              if (h > 0 && Math.abs(h - searchHeight) > 0.5) setSearchHeight(h);
-              measureSearch();
-            }}
-          >
-            <SearchField
-              ref={searchRef}
-              value={search}
-              onChange={(t) => {
-                setSearch(t);
-                setFilter('all');
-              }}
-              onClear={clearSearch}
-              onFocus={() => {
-                if (blurTimer.current) clearTimeout(blurTimer.current);
-                setSearchFocused(true);
-                setSearchHiddenAnimated(false);
-              }}
-              onBlur={() => {
-                // Небольшая задержка: тап по записи истории успевает сработать.
-                if (blurTimer.current) clearTimeout(blurTimer.current);
-                blurTimer.current = setTimeout(() => setSearchFocused(false), 160);
-              }}
-              onSubmit={() => {
-                if (selectedKey) {
-                  const row = selectableRows.find((r) => rowKey(r) === selectedKey);
-                  if (row) openSearchRow(row);
-                } else {
-                  rememberQuery(search);
-                }
-              }}
-              placeholder="Поиск людей, чатов, групп, каналов, сообщений"
-            />
-            {historyOpen ? (
-              <SearchHistoryPanel
-                theme={theme}
-                wide={wide}
-                history={history}
-                onOpen={(entry) => {
-                  setSearchFocused(false);
-                  openHistoryEntry(entry);
-                }}
-                onRemove={(entry) => {
-                  persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
-                }}
-                onClear={() => persistHistory([])}
-              />
-            ) : null}
-          </View>
-        </Animated.View>
-      )}
+      ) : null}
 
       {error || queryError ? (
         <Text style={{ color: theme.danger, marginTop: 8, fontSize: 13 }}>{error || queryError}</Text>
       ) : null}
 
       {search.trim() ? (
+        <MotiView
+          from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -10, scale: 0.99 }}
+          animate={{ opacity: 1, translateY: 0, scale: 1 }}
+          transition={reduced ? { type: 'timing', duration: 0 } : motion.quick}
+          style={styles.searchOverlay}
+        >
         <SearchResults
           theme={theme}
           reduced={reduced}
@@ -1700,6 +1718,7 @@ export default function ChatsScreen() {
           onTogglePin={togglePin}
           onToggleMute={toggleMuted}
         />
+        </MotiView>
       ) : chats.isLoading ? (
         <SkeletonChatList rows={8} />
       ) : noChats ? (
@@ -1803,6 +1822,12 @@ export default function ChatsScreen() {
           })();
         }}
       />
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.72)', '#000000']}
+        locations={[0, 0.55, 1]}
+        style={styles.bottomFade}
+      />
     </View>
   );
 }
@@ -1819,12 +1844,22 @@ const SearchField = React.forwardRef<
     onBlur: () => void;
     onSubmit: () => void;
     placeholder: string;
+    expanded?: boolean;
+    onClose?: () => void;
   }
->(function SearchField({ value, onChange, onClear, onFocus, onBlur, onSubmit, placeholder }, ref) {
+>(function SearchField({ value, onChange, onClear, onFocus, onBlur, onSubmit, placeholder, expanded, onClose }, ref) {
   const theme = useTheme();
   return (
-    <View style={[styles.searchWrap, { borderColor: theme.line, backgroundColor: 'transparent' }]}>
-      <Ionicons name="search" size={18} color={theme.textDisabled} />
+    <View
+      style={[
+        styles.searchWrap,
+        {
+          borderColor: 'rgba(255,255,255,0.08)',
+          backgroundColor: theme.dark ? '#161618' : theme.surface,
+        },
+      ]}
+    >
+      <Ionicons name="search" size={18} color="#636366" style={{ opacity: expanded ? 1 : 0 }} />
       <TextInput
         ref={ref}
         value={value}
@@ -1833,14 +1868,24 @@ const SearchField = React.forwardRef<
         onBlur={onBlur}
         onSubmitEditing={onSubmit}
         placeholder={placeholder}
-        placeholderTextColor={theme.textDisabled}
+        placeholderTextColor="#636366"
         accessibilityLabel="Поиск людей, чатов, групп, каналов и сообщений"
         returnKeyType="search"
         autoCapitalize="none"
         autoCorrect={false}
-        style={[styles.searchInput, { color: theme.textPrimary }]}
+        style={[styles.searchInput, { color: theme.textPrimary, textAlign: expanded ? 'left' : 'center' }]}
       />
-      {value ? (
+      {expanded && onClose ? (
+        <Pressable
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Закрыть поиск"
+          hitSlop={8}
+          style={{ width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: '#2C2C2E' }}
+        >
+          <Ionicons name="close" size={13} color="#FFFFFF" />
+        </Pressable>
+      ) : value ? (
         <Pressable onPress={onClear} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.searchClear}>
           <Ionicons name="close-circle" size={18} color={theme.textDisabled} />
         </Pressable>
@@ -2371,10 +2416,8 @@ function ChatRow({
       style={({ pressed }) => [
         styles.row,
         {
-          // Фон всегда непрозрачный: иначе при нажатии/закреплении сквозь него
-          // просвечивают кнопки свайпа (эффект «мигающего» свайпа).
-          backgroundColor: pressed ? theme.surfacePressed : selected || pinned ? theme.surfaceElevated : theme.surface,
-          borderColor: selected ? theme.accent : pinned ? theme.accentSoft : pressed ? theme.surfacePressed : theme.line,
+          backgroundColor: selected ? '#1C1C1E' : pressed ? '#161618' : 'transparent',
+          borderWidth: 0,
         },
       ]}
       {...(webMenu as {})}
@@ -2393,10 +2436,11 @@ function ChatRow({
         </View>
       ) : null}
 
-      <View style={{ width: 48, height: 48 }}>
+      <View style={{ width: 54, height: 54 }}>
         <Avatar
           name={title}
-          size={48}
+          size={54}
+          radius={14}
           hasModule={false}
           hasNode={false}
           nodeOnline={peer?.nodeOnline}
@@ -2404,74 +2448,80 @@ function ChatRow({
           avatar={peer?.avatar ?? chat.avatar ?? null}
         />
         {chat.type !== 'direct' ? (
-          <View style={[styles.typeBadge, { backgroundColor: theme.accent, borderColor: theme.background }]}>
-            <Ionicons name={chat.type === 'channel' ? 'megaphone' : 'people'} size={12} color={theme.onAccent} />
+          <View style={[styles.typeBadge, { backgroundColor: '#2C2C2E', borderColor: '#000000' }]}>
+            <Ionicons name={chat.type === 'channel' ? 'megaphone' : 'people'} size={12} color="#FFFFFF" />
           </View>
         ) : online ? (
-          <View style={[styles.onlineDot, { backgroundColor: theme.success, borderColor: theme.background }]} />
+          <View style={[styles.onlineDot, { backgroundColor: '#30D158', borderColor: '#000000' }]} />
         ) : null}
       </View>
 
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1 }}>
-            {pinned ? <Ionicons name="pin" size={12} color={theme.accent} /> : null}
-            {chat.encryption === 'e2e' ? <Ionicons name="lock-closed" size={12} color={theme.accent} /> : null}
-            <Text style={{ color: theme.textPrimary, fontWeight: '600', fontSize: 15, flexShrink: 1 }} numberOfLines={1}>
+            {chat.encryption === 'e2e' ? <Ionicons name="lock-closed" size={12} color="#8E8E93" /> : null}
+            <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 17, flexShrink: 1 }} numberOfLines={1}>
               {title}
             </Text>
-            {muted ? <Ionicons name="notifications-off" size={12} color={theme.textDisabled} /> : null}
+            {muted ? <Ionicons name="notifications-off" size={12} color="#636366" /> : null}
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
             {showChecks ? (
               <Ionicons
                 name={last?.read ? 'checkmark-done' : 'checkmark'}
                 size={13}
-                color={last?.read ? theme.accent : theme.textDisabled}
+                color={last?.read ? '#30D158' : '#636366'}
               />
             ) : null}
-            <Text style={{ color: theme.textDisabled, fontSize: 11, fontVariant: ['tabular-nums'] as never }}>{timeStr}</Text>
+            <Text style={{ color: '#8E8E93', fontSize: 13, fontVariant: ['tabular-nums'] as never }}>{timeStr}</Text>
           </View>
         </View>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'flex-end' }}>
           <Text
-            style={{ color: theme.textSecondary, fontSize: 13, marginTop: 2, flexShrink: 1 }}
-            numberOfLines={1}
+            style={{ color: '#8E8E93', fontSize: 14, marginTop: 2, flexShrink: 1, lineHeight: 19 }}
+            numberOfLines={2}
           >
             {preview}
           </Text>
-          {showRequests ? (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 3,
-                backgroundColor: theme.warningSoft,
-                borderRadius: 999,
-                paddingHorizontal: 7,
-                paddingVertical: 1,
-              }}
-            >
-              <Ionicons name="mail-unread" size={10} color={theme.warning} />
-              <Text style={{ color: theme.warning, fontSize: 10.5, fontWeight: '700' }}>{pendingRequests} заявок</Text>
-            </View>
-          ) : null}
-          {unread > 0 ? (
-            <View
-              style={{
-                backgroundColor: muted ? theme.surfacePressed : theme.accent,
-                borderRadius: 999,
-                paddingHorizontal: 7,
-                paddingVertical: 1,
-                minWidth: 20,
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: muted ? theme.textSecondary : theme.onAccent, fontSize: 11, fontWeight: '700' }}>{unread}</Text>
-            </View>
-          ) : null}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {showRequests ? (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 3,
+                  backgroundColor: '#2C2C2E',
+                  borderRadius: 11,
+                  paddingHorizontal: 7,
+                  height: 22,
+                }}
+              >
+                <Ionicons name="mail-unread" size={10} color="#FFD60A" />
+                <Text style={{ color: '#FFD60A', fontSize: 10.5, fontWeight: '700' }}>{pendingRequests}</Text>
+              </View>
+            ) : null}
+            {unread > 0 ? (
+              <View
+                style={{
+                  backgroundColor: '#2C2C2E',
+                  borderRadius: 11,
+                  minWidth: 22,
+                  height: 22,
+                  paddingHorizontal: 6,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '600' }}>
+                  {unread > 99 ? '99+' : unread}
+                </Text>
+              </View>
+            ) : null}
+            {pinned ? <Ionicons name="bookmark" size={14} color="#8E8E93" /> : null}
+          </View>
         </View>
       </View>
+      <View pointerEvents="none" style={styles.rowDivider} />
     </PressableScale>
   );
 }
@@ -2760,7 +2810,31 @@ function OnboardingCard() {
 /* --------------------------------------------------------------- стили */
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44 },
+  headerTitle: { height: 44, justifyContent: 'center', overflow: 'hidden' },
+  headerTitleText: { color: '#FFFFFF', fontSize: 28, fontWeight: '700', letterSpacing: -0.6 },
+  headerCreate: { height: 44, justifyContent: 'center', overflow: 'hidden', alignItems: 'flex-end' },
+  searchHost: { flex: 1, position: 'relative', zIndex: 40 },
+  headerHistory: { position: 'absolute', top: 46, left: 0, right: 0, zIndex: 50 },
+  searchOverlay: {
+    position: 'absolute',
+    left: -16,
+    right: -16,
+    top: 56,
+    bottom: -160,
+    zIndex: 60,
+    backgroundColor: '#000000',
+    paddingHorizontal: 16,
+    paddingTop: 2,
+  },
+  bottomFade: {
+    position: 'absolute',
+    left: -16,
+    right: -16,
+    bottom: -160,
+    height: 230,
+    zIndex: 40,
+  },
   sectionTitle: {
     fontSize: 11,
     marginTop: 14,
@@ -2774,14 +2848,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 16,
-    borderWidth: 1,
-    minHeight: 68,
+    paddingVertical: 10,
+    paddingHorizontal: 0,
+    borderRadius: 0,
+    borderWidth: 0,
+    minHeight: 74,
+    position: 'relative',
   },
-  staticRow: { marginBottom: 6 },
-  swipeWrap: { marginBottom: 6, borderRadius: 16, overflow: 'hidden', position: 'relative' },
+  rowDivider: {
+    position: 'absolute',
+    left: 66,
+    right: 0,
+    bottom: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  staticRow: { marginBottom: 0 },
+  swipeWrap: { marginBottom: 0, borderRadius: 0, overflow: 'hidden', position: 'relative' },
   swipeActions: {
     width: ACTIONS_WIDTH,
     flexDirection: 'row',
@@ -2817,12 +2900,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 20,
     paddingHorizontal: 12,
-    minHeight: 44,
-    gap: 8,
+    height: 42,
+    gap: 7,
   },
-  searchInput: { flex: 1, paddingVertical: 10, fontSize: 15 },
+  searchInput: { flex: 1, paddingVertical: 0, fontSize: 15 },
   searchClear: { padding: 4 },
   historyChip: {
     flexDirection: 'row',

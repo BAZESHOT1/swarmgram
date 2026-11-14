@@ -1,0 +1,10 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+const path = 'app/(app)/chats.tsx';
+let text = readFileSync(path, 'utf8');
+const start = text.indexOf('      ) : (\n        <Animated.View');
+const endMarker = '        </Animated.View>\n      )}';
+const end = text.indexOf(endMarker, start);
+if (start < 0 || end < 0) throw new Error('search block markers not found');
+text = text.slice(0, start) + '      ) : null}' + text.slice(end + endMarker.length);
+writeFileSync(path, text, 'utf8');
+console.log('old search block removed');

@@ -46,7 +46,8 @@ export function AppNavbar() {
   const transportGateway = useStore((s) => s.transportGateway);
   const unread = React.useMemo(() => {
     const muted = new Set(mutedChats);
-    return (chatsQuery.data ?? []).reduce(
+    const list = Array.isArray(chatsQuery.data) ? chatsQuery.data : [];
+    return list.reduce(
       (sum, c) => sum + (muted.has(c.id) ? 0 : Math.max(0, c.unread ?? 0)),
       0,
     );
