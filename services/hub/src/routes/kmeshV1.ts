@@ -981,6 +981,20 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       [chip, base],
     );
     if (!full) return reply.send({ ok: true, up_to_date: true, chip, base_build: base });
+    const totalChunks = Math.ceil(full.full_size / 180);
+    const fullManifest: OtaManifest = {
+      chip,
+      baseBuild: base,
+      targetBuild: full.build_number,
+      version: full.version,
+      totalChunks,
+      patchSize: full.full_size,
+      patchSha256: full.full_sha256,
+      targetSha256: full.full_sha256,
+      signature: '',
+      sigAlg: 'ecdsa-p256',
+    };
+    fullManifest.signature = signManifest(fullManifest);
     return reply.send({
       ok: true,
       full: true,
@@ -989,7 +1003,11 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       target_build: full.build_number,
       version: full.version,
       full_size: full.full_size,
+      total_chunks: totalChunks,
+      patch_sha256: full.full_sha256,
       target_sha256: full.full_sha256,
+      sig_alg: fullManifest.sigAlg,
+      signature: fullManifest.signature,
       full_url: `/v1/kmesh/v1/ota/full/${chip}/${full.build_number}`,
     });
   });

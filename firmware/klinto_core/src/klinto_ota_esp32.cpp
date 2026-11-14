@@ -345,6 +345,89 @@ bool downloadPatch(const HttpUrl &base, const char *token, const char *path, uin
   return offset == expected;
 }
 
+bool downloadFull(const HttpUrl &base, const char *token, const char *path, uint32_t expected,
+                  const kl_ota_manifest_t &manifest) {
+  HttpUrl url = base;
+  strncpy(url.path, path, sizeof(url.path) - 1);
+  WiFiClient plain;
+  WiFiClientSecure secure;
+  Client *client = &plain;
+  if (url.tls) {
+    secure.setInsecure();
+    secure.setTimeout(20000);
+    client = &secure;
+  } else {
+    plain.setTimeout(20000);
+  }
+  if (!client->connect(url.host, url.port)) return false;
+  char request[384];
+  const int n = snprintf(request, sizeof(request),
+                         "GET %s HTTP/1.0\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
+                         "Connection: close\r\n\r\n",
+                         url.path, url.host, token ? token : "");
+  if (n <= 0 || (size_t)n >= sizeof(request)) {
+    client->stop();
+    return false;
+  }
+  client->print(request);
+  uint32_t start = millis();
+  while (!client->available() && millis() - start < 20000) delay(10);
+  char line[192];
+  int status = 0;
+  bool headers_done = false;
+  while (client->available() && !headers_done && millis() - start < 30000) {
+    const int len = client->readBytesUntil('\n', line, sizeof(line) - 1);
+    if (len <= 0) break;
+    line[len] = '\0';
+    if (!status) {
+      const char *sp = strchr(line, ' ');
+      if (sp) status = atoi(sp + 1);
+    }
+    if (len <= 2) headers_done = true;
+  }
+  if (status != 200) {
+    client->stop();
+    return false;
+  }
+  if (!begin_target(nullptr, expected)) {
+    client->stop();
+    return false;
+  }
+  KlintoSha256 sha;
+  kl_sha256_init(&sha);
+  uint8_t buf[512];
+  uint32_t offset = 0;
+  while (offset < expected && millis() - start < 240000) {
+    const int got = client->read(buf, sizeof(buf));
+    if (got <= 0) {
+      if (!client->connected()) break;
+      delay(10);
+      continue;
+    }
+    const size_t take = (offset + (uint32_t)got > expected) ? (expected - offset) : (size_t)got;
+    if (!write_target(nullptr, buf, take)) {
+      abort_target(nullptr);
+      client->stop();
+      return false;
+    }
+    kl_sha256_update(&sha, buf, take);
+    offset += (uint32_t)take;
+  }
+  client->stop();
+  if (offset != expected) {
+    abort_target(nullptr);
+    return false;
+  }
+  uint8_t digest[32];
+  kl_sha256_final(&sha, digest);
+  if (!commit_target(nullptr, digest, &manifest)) {
+    abort_target(nullptr);
+    return false;
+  }
+  reboot(nullptr);
+  return true;
+}
+
 }  // namespace
 
 bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t chip_arch,
@@ -362,25 +445,54 @@ bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t ch
   strncpy(url.path, path, sizeof(url.path) - 1);
   char body[1024];
   if (httpGet(url, module_token, body, sizeof(body)) <= 0) return false;
-  uint32_t full = 0;
   bool is_full = false;
-  if (kl_json_get_bool(body, "full", &is_full) && is_full) return false;
-  if (kl_json_get_uint(body, "full", &full) && full != 0) return false;
-  uint32_t patch_id = 0, base_build = 0, target_build = 0, total_chunks = 0, patch_size = 0;
-  if (!kl_json_get_uint(body, "patch_id", &patch_id) ||
-      !kl_json_get_uint(body, "base_build", &base_build) ||
+  (void)kl_json_get_bool(body, "full", &is_full);
+  uint32_t base_build = 0, target_build = 0, total_chunks = 0, patch_size = 0, patch_id = 0;
+  if (!kl_json_get_uint(body, "base_build", &base_build) ||
       !kl_json_get_uint(body, "target_build", &target_build) ||
-      !kl_json_get_uint(body, "total_chunks", &total_chunks) ||
+      !kl_json_get_uint(body, "total_chunks", &total_chunks)) {
+    return false;
+  }
+  char target_sha[65] = {0};
+  char signature[160] = {0};
+  if (!kl_json_get_string(body, "target_sha256", target_sha, sizeof(target_sha)) ||
+      !kl_json_get_string(body, "signature", signature, sizeof(signature))) {
+    return false;
+  }
+
+  if (is_full) {
+    uint32_t full_size = 0;
+    char full_url[128] = {0};
+    char full_sha[65] = {0};
+    if (!kl_json_get_uint(body, "full_size", &full_size) ||
+        !kl_json_get_string(body, "patch_sha256", full_sha, sizeof(full_sha)) ||
+        !kl_json_get_string(body, "full_url", full_url, sizeof(full_url))) {
+      return false;
+    }
+    kl_ota_manifest_t manifest;
+    memset(&manifest, 0, sizeof(manifest));
+    manifest.chip = chip_arch;
+    manifest.base_build = (uint16_t)base_build;
+    manifest.target_build = (uint16_t)target_build;
+    manifest.total_chunks = (uint16_t)total_chunks;
+    manifest.patch_size = full_size;
+    if (kl_hex_decode(full_sha, strlen(full_sha), manifest.patch_sha256, 32) != 32) return false;
+    if (kl_hex_decode(target_sha, strlen(target_sha), manifest.target_sha256, 32) != 32) return false;
+    const size_t bytes = kl_hex_decode(signature, strlen(signature), manifest.sig,
+                                       KL_OTA_MAX_SIG);
+    manifest.sig_len = (uint8_t)bytes;
+    if (!manifest.sig_len) return false;
+    /* Полный образ по Wi-Fi: пишем прямо в неактивный слот и проверяем подпись. */
+    return downloadFull(url, module_token, full_url, full_size, manifest);
+  }
+
+  if (!kl_json_get_uint(body, "patch_id", &patch_id) ||
       !kl_json_get_uint(body, "patch_size", &patch_size)) {
     return false;
   }
   char patch_sha[65] = {0};
-  char target_sha[65] = {0};
-  char signature[160] = {0};
   char patch_url[128] = {0};
   if (!kl_json_get_string(body, "patch_sha256", patch_sha, sizeof(patch_sha)) ||
-      !kl_json_get_string(body, "target_sha256", target_sha, sizeof(target_sha)) ||
-      !kl_json_get_string(body, "signature", signature, sizeof(signature)) ||
       !kl_json_get_string(body, "patch_url", patch_url, sizeof(patch_url))) {
     return false;
   }
