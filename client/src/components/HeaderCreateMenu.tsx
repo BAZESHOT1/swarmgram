@@ -13,6 +13,7 @@ import { useHaptics } from './useHaptics';
 import { useReducedMotion } from './useReducedMotion';
 import { PressableScale } from './chat/PressableScale';
 import { motion } from '../theme/motion';
+import { Glass, GLASS_FILL_BUTTON } from './Glass';
 
 const ACTIONS = [
   { key: 'direct', label: 'Личный чат', hint: 'Написать человеку', icon: 'chatbubbles-outline' as const, href: '/compose?mode=direct' },
@@ -39,12 +40,17 @@ export function HeaderCreateMenu() {
         style={({ pressed }) => [
           styles.fab,
           {
-            backgroundColor: '#161618',
-            borderColor: 'rgba(255,255,255,0.08)',
+            backgroundColor: 'transparent',
             opacity: pressed ? 0.85 : 1,
           },
         ]}
       >
+        <Glass
+          radius={19}
+          fill={GLASS_FILL_BUTTON}
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+        />
         <MotiView
           animate={{ rotate: open ? '135deg' : '0deg' }}
           transition={reduced ? { type: 'timing', duration: 0 } : motion.spring}
@@ -118,7 +124,6 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -49,6 +49,7 @@ import {
 import { loadChatMessages, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
 import { saveMessages } from '../../src/data/cache';
 import { Avatar } from '../../src/components/Avatar';
+import { Glass, GLASS_FILL_BUTTON, PINNED_SURFACE } from '../../src/components/Glass';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonChatList } from '../../src/components/skeletons/Skeleton';
 import { HeaderCreateMenu } from '../../src/components/HeaderCreateMenu';
@@ -566,13 +567,13 @@ export default function ChatsScreen() {
   const headerTitleStyle = useAnimatedStyle(() => ({
     opacity: 1 - searchProgress.value,
     transform: [{ scale: 1 - searchProgress.value * 0.15 }],
-    width: interpolate(searchProgress.value, [0, 1], [92, 0]),
+    width: interpolate(searchProgress.value, [0, 1], [88, 0]),
     marginRight: interpolate(searchProgress.value, [0, 1], [8, 0]),
   }));
   const headerCreateStyle = useAnimatedStyle(() => ({
     opacity: 1 - searchProgress.value,
     transform: [{ scale: 1 - searchProgress.value * 0.15 }],
-    width: interpolate(searchProgress.value, [0, 1], [92, 0]),
+    width: interpolate(searchProgress.value, [0, 1], [88, 0]),
     marginLeft: interpolate(searchProgress.value, [0, 1], [8, 0]),
   }));
   const [filter, setFilter] = useState<SearchFilter>('all');
@@ -583,6 +584,7 @@ export default function ChatsScreen() {
   const [busyUser, setBusyUser] = useState('');
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
   const [chatPage, setChatPage] = useState(30);
+  const pinnedHeaderOpacity = useRef(new Animated.Value(1)).current;
   const [openRowId, setOpenRowId] = useState<string | null>(null);
   const swipingRef = useRef(false);
   const swipeCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1407,6 +1409,8 @@ export default function ChatsScreen() {
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (openRowId) setOpenRowId(null);
       const y = Math.max(0, e.nativeEvent.contentOffset.y);
+      // Серый фон шапки плавно растворяется по мере ухода закреплённых чатов.
+      pinnedHeaderOpacity.setValue(Math.max(0, Math.min(1, 1 - y / 72)));
       const now = Date.now();
       if (now - lastScrollTickRef.current < SEARCH_SCROLL_THROTTLE_MS) return;
       lastScrollTickRef.current = now;
@@ -1423,7 +1427,7 @@ export default function ChatsScreen() {
         setSearchHiddenAnimated(false);
       }
     },
-    [openRowId, searchFocused, search, setSearchHiddenAnimated],
+    [openRowId, searchFocused, search, setSearchHiddenAnimated, pinnedHeaderOpacity],
   );
 
   const chatRows = useMemo<ChatListRow[]>(() => {
@@ -1442,6 +1446,12 @@ export default function ChatsScreen() {
     }
     return rows;
   }, [allChats, isPinned, chatPage]);
+
+  // Список закреплённых чатов: по нему включается серый фон шапки и строк.
+  const pinnedChats = useMemo(
+    () => [...allChats].sort((a, b) => activityOf(b) - activityOf(a)).filter((c) => isPinned(c.id)),
+    [allChats, isPinned],
+  );
 
   const noChats = allChats.length === 0 && archivedChats.length === 0;
   const queryTooShort = Boolean(search.trim()) && search.trim().replace(/^@+/, '').length < 2;
@@ -1495,6 +1505,7 @@ export default function ChatsScreen() {
                         ? { type: 'timing', duration: 0 }
                         : { ...motion.softSpring, delay: Math.min(index, 8) * motion.staggerStepMs }
                     }
+                    style={{ backgroundColor: PINNED_SURFACE }}
                   >
                     <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>{item.title}</Text>
                   </MotiView>
@@ -1549,6 +1560,7 @@ export default function ChatsScreen() {
                       ? { type: 'timing', duration: 0 }
                       : { ...motion.softSpring, delay: Math.min(index, 12) * motion.staggerStepMs }
                   }
+                  style={isPinned(chat.id) ? { backgroundColor: PINNED_SURFACE } : undefined}
                 >
                   {content}
                 </MotiView>
@@ -1561,6 +1573,17 @@ export default function ChatsScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: '#000000' }} onTouchStart={onScreenTouch}>
       <View style={styles.header}>
+        {/* Пока список вверху и есть закреплённые чаты — шапка лежит
+            на той же серой подложке, что и блок «Закреплённые». */}
+        {pinnedChats.length > 0 ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              StyleSheet.absoluteFill,
+              { bottom: -10, backgroundColor: PINNED_SURFACE, opacity: pinnedHeaderOpacity },
+            ]}
+          />
+        ) : null}
         <Reanimated.View style={[styles.headerTitle, headerTitleStyle]}>
           <Text style={styles.headerTitleText}>Чаты</Text>
         </Reanimated.View>
@@ -1850,16 +1873,12 @@ const SearchField = React.forwardRef<
 >(function SearchField({ value, onChange, onClear, onFocus, onBlur, onSubmit, placeholder, expanded, onClose }, ref) {
   const theme = useTheme();
   return (
-    <View
-      style={[
-        styles.searchWrap,
-        {
-          borderColor: 'rgba(255,255,255,0.08)',
-          backgroundColor: theme.dark ? '#161618' : theme.surface,
-        },
-      ]}
+    <Glass
+      radius={20}
+      fill={GLASS_FILL_BUTTON}
+      style={styles.searchWrap}
     >
-      <Ionicons name="search" size={18} color="#636366" style={{ opacity: expanded ? 1 : 0 }} />
+      {expanded ? <Ionicons name="search" size={18} color="#636366" /> : null}
       <TextInput
         ref={ref}
         value={value}
@@ -1890,7 +1909,7 @@ const SearchField = React.forwardRef<
           <Ionicons name="close-circle" size={18} color={theme.textDisabled} />
         </Pressable>
       ) : null}
-    </View>
+    </Glass>
   );
 });
 
@@ -2810,7 +2829,7 @@ function OnboardingCard() {
 /* --------------------------------------------------------------- стили */
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44 },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44, position: 'relative', backgroundColor: 'transparent' },
   headerTitle: { height: 44, justifyContent: 'center', overflow: 'hidden' },
   headerTitleText: { color: '#FFFFFF', fontSize: 28, fontWeight: '700', letterSpacing: -0.6 },
   headerCreate: { height: 44, justifyContent: 'center', overflow: 'hidden', alignItems: 'flex-end' },

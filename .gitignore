@@ -50,3 +50,8 @@ client/.tmp/
 release/*.zip
 # private OTA signing key (public key is committed)
 firmware/klinto_core/ota_signing_key.pem
+
+# release binaries: публикуются в GitHub Releases, не в git
+release/*.apk
+release/*.ipa
+

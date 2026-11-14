@@ -6,8 +6,8 @@
  * только при необходимости и анимируются пружиной.
  */
 import React from 'react';
-import { Animated, Modal, Platform, Pressable, Text, View, StyleSheet, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
-import { BlurView } from 'expo-blur';
+import { Animated, Modal, Pressable, Text, View, StyleSheet, useWindowDimensions, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
+import Reanimated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import { MotiView } from 'moti';
@@ -22,6 +22,7 @@ import { useChatSearchActive } from '../state/chatSearchState';
 import { PressableScale } from './chat/PressableScale';
 import { Avatar } from './Avatar';
 import { motion } from '../theme/motion';
+import { Glass, GLASS_FILL_DOCK } from './Glass';
 
 const DOCK_PADDING = 5;
 const TILE_GAP = 4;
@@ -150,38 +151,27 @@ export function PhoneDock() {
     >
       {/* Левая капсула статуса сети/синхронизации. */}
       {showLeft ? (
-        <MotiView
-          from={reduced ? { opacity: 0 } : { opacity: 0, translateX: -20 }}
-          animate={{ opacity: 1, translateX: 0 }}
-          transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
+        <SideCapsule
+          fromX={-20}
+          reduced={reduced}
           style={[styles.sideCapsule, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)', maxWidth: narrow ? 66 : compact ? 74 : 96 }]}
         >
           <View style={[styles.dot, { backgroundColor: transportOnline ? '#30D158' : '#FF9F0A' }]} />
           <Text numberOfLines={1} style={styles.sideText}>
             {leftText}
           </Text>
-        </MotiView>
+        </SideCapsule>
       ) : (
         <View style={styles.sideSpacer} />
       )}
 
-      <View
+      <Glass
         onLayout={onDockLayout}
-        style={[
-          styles.dock,
-          {
-            width: dockWidthTarget,
-            backgroundColor: '#161618',
-            borderColor: 'rgba(255,255,255,0.10)',
-            ...(Platform.OS === 'web'
-              ? ({ backdropFilter: 'blur(18px) saturate(1.4)', WebkitBackdropFilter: 'blur(18px) saturate(1.4)' } as object)
-              : null),
-          },
-        ]}
+        radius={30}
+        intensity={58}
+        fill={GLASS_FILL_DOCK}
+        style={[styles.dock, { width: dockWidthTarget }]}
       >
-        {Platform.OS === 'ios' ? (
-          <BlurView intensity={55} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
-        ) : null}
         {tileWidth > 0 && activeIndex >= 0 ? (
           <MotiView
             animate={{ translateX: activeIndex * (tileWidth + TILE_GAP) }}
@@ -241,16 +231,11 @@ export function PhoneDock() {
             </PressableScale>
           );
         })}
-      </View>
+      </Glass>
 
       {/* Правая капсула носимого модуля KMesh_v1. */}
       {moduleOn ? (
-        <MotiView
-          from={reduced ? { opacity: 0 } : { opacity: 0, translateX: 20 }}
-          animate={{ opacity: 1, translateX: 0 }}
-          transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
-          style={styles.sideRight}
-        >
+        <SideCapsule fromX={20} reduced={reduced} style={styles.sideRight}>
           <Pressable
             onPress={() => {
               haptics.tap();
@@ -264,7 +249,7 @@ export function PhoneDock() {
             <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{routeCount}</Text>
             <Ionicons name="swap-horizontal" size={15} color="#FFD60A" />
           </Pressable>
-        </MotiView>
+        </SideCapsule>
       ) : (
         <View style={styles.sideSpacer} />
       )}
@@ -306,6 +291,32 @@ export function PhoneDock() {
       </Modal>
     </Animated.View>
   );
+}
+
+/**
+ * Капсула статуса с пружинным появлением.
+ * Монтируется только при необходимости и «выезжает» из стороны.
+ */
+function SideCapsule({
+  fromX,
+  reduced,
+  style,
+  children,
+}: {
+  fromX: number;
+  reduced: boolean;
+  style?: StyleProp<ViewStyle>;
+  children?: React.ReactNode;
+}) {
+  const progress = useSharedValue(0);
+  React.useEffect(() => {
+    progress.value = reduced ? 1 : withSpring(1, motion.softSpring);
+  }, [progress, reduced]);
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    transform: [{ translateX: fromX * (1 - progress.value) }],
+  }));
+  return <Reanimated.View style={[style, animatedStyle]}>{children}</Reanimated.View>;
 }
 
 const styles = StyleSheet.create({
