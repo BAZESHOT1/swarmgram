@@ -703,6 +703,27 @@ export default function ModulesScreen() {
                 <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
                   {m.customName || `Модуль ${m.mod6}`}
                 </Text>
+                <TextInput
+                  defaultValue={m.customName}
+                  placeholder="Название: Брелок, Рюкзак…"
+                  placeholderTextColor={theme.textDisabled}
+                  onEndEditing={(event) => {
+                    const name = event.nativeEvent.text.trim();
+                    if (name === m.customName) return;
+                    void api
+                      .kmeshV1RenameModule(m.moduleMac, name)
+                      .then(() => reloadMeshModules())
+                      .catch(() => undefined);
+                  }}
+                  style={{
+                    color: theme.textSecondary,
+                    fontSize: 11.5,
+                    marginTop: 4,
+                    paddingVertical: 2,
+                    borderBottomWidth: 1,
+                    borderBottomColor: theme.line,
+                  }}
+                />
                 <Text style={{ color: theme.textDisabled, fontSize: 11, marginTop: 2 }}>
                   {m.bleName} · MAC {m.moduleMac}
                 </Text>
