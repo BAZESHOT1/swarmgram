@@ -424,9 +424,27 @@ export class NativeBleTransport implements ModuleConnection {
     this.decoder = new FrameDecoder();
     this.info = null;
 
-    let device: Device;
+    let device: Device | null = null;
+    let lastError: unknown = null;
+    // iOS: перед connectToDevice скан обязательно остановлен + пауза 250 мс.
+    await manager().stopDeviceScan().catch(() => undefined);
+    await delay(250);
+    for (let attempt = 0; attempt < 2 && !device; attempt += 1) {
+      try {
+        device = await manager().connectToDevice(deviceId, { requestMTU: 185, timeout: 15_000 });
+      } catch (error) {
+        lastError = error;
+        await delay(250);
+      }
+    }
+    if (!device) {
+      this.deviceId = null;
+      throw new ModuleTransportError(
+        `Не удалось подключиться к модулю: ${lastError instanceof Error ? lastError.message : String(lastError ?? '')}`,
+        'io',
+      );
+    }
     try {
-      device = await manager().connectToDevice(deviceId, { requestMTU: 185, timeout: 15_000 });
       this.deviceId = device.id;
       await device.discoverAllServicesAndCharacteristics();
       this.mtu = Math.max(23, Number(device.mtu || 185));

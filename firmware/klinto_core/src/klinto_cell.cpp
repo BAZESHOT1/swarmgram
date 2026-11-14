@@ -29,12 +29,12 @@ void KlintoCellManager::init(const kl_config_t *cfg, const kl_cell_host_t *host)
 
   cell_.role = cfg_.role;
   cell_.fallback_channel = KL_FALLBACK_OFFLINE_CHANNEL;
-  cell_.scan_dwell_ms = 450;
-  cell_.rescan_interval_ms = 150000;  /* 2.5 минуты */
-  cell_.offline_rescan_ms = 150000;   /* возврат к поиску шлюза */
+  cell_.scan_dwell_ms = 120;
+  cell_.rescan_interval_ms = 0;      /* здоровую соту не трогаем */
+  cell_.offline_rescan_ms = 15000;   /* быстрый возврат к поиску шлюза */
   cell_.handover_rssi = -85;
-  cell_.beacon_miss_limit = 2;
-  cell_.beacon_timeout_ms = 180000;   /* два пропущенных маяка по 90 с */
+  cell_.beacon_miss_limit = 3;
+  cell_.beacon_timeout_ms = 20000;   /* четыре пропущенных маяка по 5 с */
   cell_.max_scan_cycles = 2;
 
   state_ = cfg_.role == KL_ROLE_GATEWAY ? KL_CELL_LOCKED : KL_CELL_SCANNING;
@@ -94,11 +94,12 @@ void KlintoCellManager::start_scan(uint32_t now_ms, uint8_t reason) {
 }
 
 void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi,
-                                  uint32_t now_ms) {
+                                  uint32_t now_ms, uint8_t advertised_channel) {
+  const bool channel_valid = advertised_channel >= 1 && advertised_channel <= KL_CHANNEL_COUNT;
   if (state_ == KL_CELL_SCANNING) {
     if (!found_ || rssi > best_rssi_ + 3 || (rssi >= best_rssi_ - 3 && hops < best_hops_)) {
       found_ = true;
-      best_channel_ = current_channel_;
+      best_channel_ = channel_valid ? advertised_channel : current_channel_;
       best_gateway_ = gateway_id;
       best_rssi_ = rssi;
       best_hops_ = hops;
@@ -109,6 +110,10 @@ void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rss
   if (state_ == KL_CELL_LOCKED) {
     last_beacon_ms_ = now_ms;
     missed_beacons_ = 0;
+    /* Шлюз сменил канал AP — переезжаем сразу, не дожидаясь таймаута. */
+    if (channel_valid && advertised_channel != current_channel_) {
+      apply(advertised_channel);
+    }
     if (rssi < cell_.handover_rssi) {
       if (weak_beacons_ < 0xFF) weak_beacons_++;
       if (weak_beacons_ >= 2) {
@@ -179,7 +184,7 @@ void KlintoCellManager::tick(uint32_t now_ms) {
       start_scan(now_ms, KL_SCAN_BEACON_LOST);
       return;
     }
-    if (now_ms - last_scan_ms_ > cell_.rescan_interval_ms) {
+    if (cell_.rescan_interval_ms > 0 && now_ms - last_scan_ms_ > cell_.rescan_interval_ms) {
       start_scan(now_ms, KL_SCAN_PERIODIC);
     }
     return;

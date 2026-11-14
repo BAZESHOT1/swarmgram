@@ -46,6 +46,8 @@ services:
       # КРИТИЧНО: этим ключом зашифрованы ключи всех server-чатов.
       # Не менять без ротации и бэкапа, иначе история станет нечитаемой.
       HUB_KEY_SECRET: ${HUB_KEY_SECRET}
+      # Общий ключ KMesh_v1: попадает в прошивку и проверяет /kmesh/v1/relay.
+      TEMP_MESH_KEY: ${TEMP_MESH_KEY}
       HUB_KEY_SECRET_OLD: ${HUB_KEY_SECRET_OLD:-}
       HUB_REPLICAS: ${HUB_REPLICAS:-3}
       HUB_MAX_UPLOAD_MB: ${HUB_MAX_UPLOAD_MB:-25}
@@ -97,6 +99,9 @@ services:
       - MIN_FREE_MB=${MIN_FREE_MB:-2200}
     volumes:
       - firmware_data:/data
+      # Актуальное ядро монтируем с хоста: правки прошивки не требуют
+      # пересборки образа сборщика.
+      - ./firmware/klinto_core:/app/klinto_core:ro
     networks: [klinto]
 
   web:

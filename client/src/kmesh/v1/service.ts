@@ -11,6 +11,7 @@ import { BleKMeshV1Link } from '../../modules/bleKMeshV1';
 import { api } from '../../data/api';
 import { bytesToB64 } from './crypto';
 import { msgUuidHex } from './protocol';
+import { loadCachedIdentity, refreshCachedIdentity } from './identity';
 
 let link: BleKMeshV1Link | null = null;
 let client: KMeshV1Client | null = null;
@@ -36,7 +37,10 @@ export async function connectKMeshV1(
   if (connecting) return connecting;
   connecting = (async () => {
     link = new BleKMeshV1Link();
-    await link.connect();
+    // Префикс своего модуля читаем до сканирования: KL-<USER8>-<MOD6>.
+    const identity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity().catch(() => null));
+    const prefix = identity?.blePrefix ? `KL-${identity.blePrefix}-` : 'KL-';
+    await link.connect(12000, prefix);
     const instance = new KMeshV1Client({
       link: {
         send: (frame) => link!.send(frame),

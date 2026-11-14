@@ -104,6 +104,9 @@ class KlintoClientBridge {
   void handle_inet_status(const uint8_t *payload, size_t len);
   void handle_set_owner(const uint8_t *payload, size_t len);
   bool send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags = 0);
+  /** Совместимость с текущим приложением: старый кадр A5 5A / JSON INFO. */
+  bool send_legacy_frame(uint8_t type, const char *json, size_t len);
+  void handle_legacy_frame(uint8_t type, const uint8_t *payload, size_t len);
   void flush_outbox();
   void log_line(const char *fmt, ...);
 

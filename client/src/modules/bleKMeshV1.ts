@@ -8,7 +8,7 @@ export class BleKMeshV1Link implements KMeshV1Link {
   static supported(): boolean {
     return false;
   }
-  async connect(): Promise<unknown> {
+  async connect(_timeoutMs?: number, _namePrefix?: string): Promise<unknown> {
     throw new Error('ble_v3_unavailable');
   }
   onData(_handler: (chunk: Uint8Array) => void): void {

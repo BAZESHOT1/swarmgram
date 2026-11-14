@@ -18,8 +18,8 @@
 #include "klinto_espnow.h"
 #include "klinto_flash_queue.h"
 #include "klinto_gateway.h"
+#include "klinto_http_gateway.h"
 #include "klinto_lora.h"
-#include "klinto_mqtt.h"
 #include "klinto_ota.h"
 #include "klinto_router.h"
 
@@ -87,7 +87,7 @@ class KlintoNode {
   KlintoClientBridge bridge_;
   KlintoFlashQueue up_queue_;
   KlintoFlashQueue down_queue_;
-  MqttTlsTransport mqtt_;
+  HttpGatewayTransport http_gateway_;
   KlintoGateway gateway_;
   KlintoOta ota_;
   KlintoCellManager cell_;

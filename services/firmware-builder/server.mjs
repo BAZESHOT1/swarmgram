@@ -251,7 +251,7 @@ function generateConfigHeader(config, version) {
   const chip = lora?.chip || defaults.chip;
   const isSx1262 = chip === 'sx1262';
 
-  const useKmeshV1 = cfgBoolean(kmesh.v1, false);
+  const useKmeshV1 = cfgBoolean(kmesh.v1, true);
   const tempMeshKey = String(kmesh.tempKey ?? config.mesh?.tempKey ?? config.tempMeshKey ?? '').replace(/[^0-9a-fA-F]/g, '').slice(0, 64);
   if (useKmeshV1 && tempMeshKey.length !== 64) {
     // All nodes of one mesh share this transport key. Never generate a
@@ -297,9 +297,9 @@ function generateConfigHeader(config, version) {
     `#define KL_WIFI_MAX_HOPS ${num(mesh.wifiHops, 14) | 0}`,
     `#define KL_LORA_MAX_HOPS ${num(mesh.loraHops, 12) | 0}`,
     // Mesh v2 (РєР»Р°СЃС‚РµСЂС‹/border/handover/РіРёР±СЂРёРґРЅС‹Р№ СЂРѕСѓС‚РёРЅРі) РІРєР»СЋС‡С‘РЅ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ.
-    `#define KL_MESH_V2 ${cfgBoolean(mesh.v2, true) ? 1 : 0}`,
+    `#define KL_MESH_V2 ${useKmeshV1 ? 0 : (cfgBoolean(mesh.v2, true) ? 1 : 0)}`,
     // KMesh_v1: РЅРѕРІС‹Р№ dual-band СЃС‚РµРє (klinto_core). РўСЂРµР±СѓРµС‚ С€Р°Р±Р»РѕРЅР° v3.
-    `#define KL_KMESH_V1 ${cfgBoolean(kmesh.v1, false) ? 1 : 0}`,
+    `#define KL_KMESH_V1 ${useKmeshV1 ? 1 : 0}`,
     `#define KL_HUB_URL ${cString(config.hubUrl || 'http://150.251.143.212:8080')}`,
     `#define KL_MODULE_TOKEN ${cString(config.moduleToken ?? '')}`,
     // Temporary mesh key (32 bytes hex). Never the user's permanent E2EE key.
@@ -564,7 +564,7 @@ async function mergeBinary(board, buildDir, workDir) {
 /** РЎРѕР±СЃС‚РІРµРЅРЅРѕ СЃР±РѕСЂРєР°: РіРµРЅРµСЂР°С†РёСЏ СЃРєРµС‚С‡Р° -> arduino-cli -> С‡С‚РµРЅРёРµ .bin. */
 async function compileFirmware(config, version) {
   const board = config.board;
-  const useKmeshV1 = cfgBoolean(config.kmesh?.v1, false);
+  const useKmeshV1 = cfgBoolean(config.kmesh?.v1, true);
   const role = String(config.role || 'wearable');
   const connectivity = String(config.connectivity || 'wifi').toLowerCase();
   const useLora = connectivity.includes('lora') || connectivity === 'both' || Boolean(config.lora);
@@ -767,7 +767,7 @@ function readBody(req) {
 async function handleBuild(config) {
   // v3: РєСЌС€ СѓС‡РёС‚С‹РІР°РµС‚ РІРµСЂСЃРёСЋ С€Р°Р±Р»РѕРЅР°, РёРЅР°С‡Рµ РёР·РјРµРЅРµРЅРёСЏ РїСЂРѕС€РёРІРєРё РЅРµ РїРѕРїР°РґР°СЋС‚
   // РІ СѓР¶Рµ СЃРѕР±СЂР°РЅРЅС‹Рµ РєРѕРЅС„РёРіСѓСЂР°С†РёРё. РЎС‚Р°СЂС‹Рµ app-only Р·Р°РїРёСЃРё РёРіРЅРѕСЂРёСЂСѓСЋС‚СЃСЏ.
-  const useKmeshV1 = cfgBoolean(config.kmesh?.v1, false);
+  const useKmeshV1 = cfgBoolean(config.kmesh?.v1, true);
   const templateHash = sha256(
     (await readFile(join(TEMPLATE_DIR, useKmeshV1 ? 'klinto_module_kmesh_v1.ino' : 'klinto_module_v2.ino'), 'utf8')) +
       (useKmeshV1 ? await coreSourceHash() : ''),

@@ -92,41 +92,61 @@ void EspNowInterface::on_sent(const wifi_tx_info_t *info, esp_now_send_status_t 
   (void)status;
 }
 
-void EspNowInterface::enqueue_tx(const uint8_t *data, size_t len, uint32_t next_hop) {
-  const uint8_t next = (uint8_t)((tx_head_ + 1) % 8);
-  if (next == tx_tail_) return;
+bool EspNowInterface::enqueue_tx(const uint8_t *data, size_t len, uint32_t next_hop) {
+  if (!data || len == 0 || len > KL_MAX_PACKET_SIZE) return false;
+  const uint8_t next = (uint8_t)((tx_head_ + 1) % KL_ESPNOW_TX_QUEUE);
+  if (next == tx_tail_) return false; /* очередь переполнена: кадр теряется */
   TxSlot &slot = tx_[tx_head_];
   slot.len = (uint16_t)len;
   slot.next_hop = next_hop;
+  slot.tries = 0;
   memcpy(slot.data, data, len);
   tx_head_ = next;
+  return true;
+}
+
+bool EspNowInterface::transmit(const uint8_t *data, size_t len) {
+  const esp_err_t err = esp_now_send(kBroadcastMac, data, len); /* nullptr = broadcast peer */
+  if (err == ESP_OK) {
+    last_tx_ms_ = millis();
+    return true;
+  }
+  return false;
 }
 
 bool EspNowInterface::sendPacket(const uint8_t *data, size_t len, uint32_t next_hop_id,
                                  uint8_t priority) {
   (void)priority;
   if (!inited_ || !data || len == 0 || len > KL_MAX_PACKET_SIZE) return false;
-  const esp_err_t err = esp_now_send(kBroadcastMac, data, len); /* nullptr = broadcast peer */
-  if (err == ESP_OK) {
-    last_tx_ms_ = millis();
-    return true;
+
+  /* Жёсткий TX pacing: даже если приложение просит отправить пачку,
+   * кадры уходят не чаще одного раза в 25 мс. */
+  const uint32_t now = millis();
+  const bool queue_empty = tx_head_ == tx_tail_;
+  if (queue_empty && now - last_tx_ms_ >= KL_ESPNOW_MIN_TX_GAP_MS) {
+    if (transmit(data, len)) return true;
   }
-  enqueue_tx(data, len, next_hop_id);
-  return err == ESP_ERR_ESPNOW_NO_MEM;
+  return enqueue_tx(data, len, next_hop_id);
 }
 
-void EspNowInterface::pump_tx() {
-  while (tx_tail_ != tx_head_) {
-    TxSlot &slot = tx_[tx_tail_];
-    if (esp_now_send(kBroadcastMac, slot.data, slot.len) != ESP_OK) return;
-    tx_tail_ = (uint8_t)((tx_tail_ + 1) % 8);
-    last_tx_ms_ = millis();
+void EspNowInterface::pump_tx(uint32_t now_ms) {
+  if (tx_tail_ == tx_head_) return;
+  if (now_ms - last_tx_ms_ < KL_ESPNOW_MIN_TX_GAP_MS) return;
+
+  TxSlot &slot = tx_[tx_tail_];
+  if (transmit(slot.data, slot.len)) {
+    tx_tail_ = (uint8_t)((tx_tail_ + 1) % KL_ESPNOW_TX_QUEUE);
+    return;
+  }
+  slot.tries++;
+  if (slot.tries >= KL_ESPNOW_MAX_RETRIES) {
+    /* Три неудачи подряд — выбрасываем кадр, чтобы не зациклить эфир. */
+    tx_tail_ = (uint8_t)((tx_tail_ + 1) % KL_ESPNOW_TX_QUEUE);
   }
 }
 
 void EspNowInterface::poll(uint32_t now_ms) {
-  (void)now_ms;
-  pump_tx();
+  pump_tx(now_ms);
   kl_rx_frame_t frame;
   int budget = 4;
   while (budget-- > 0 && rx_.pop(&frame)) {

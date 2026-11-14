@@ -15,6 +15,13 @@
 #include <esp_arduino_version.h>
 #endif
 
+/** Минимальный интервал между кадрами ESP-NOW: защита от «эфирного шторма». */
+#define KL_ESPNOW_MIN_TX_GAP_MS 25u
+/** Сколько раз повторяем кадр, прежде чем выбросить его из очереди. */
+#define KL_ESPNOW_MAX_RETRIES 3u
+/** Очередь ожидания: 16 кадров достаточно для двух модулей на столе. */
+#define KL_ESPNOW_TX_QUEUE 16u
+
 class EspNowInterface : public INetInterface {
  public:
   EspNowInterface();
@@ -34,16 +41,18 @@ class EspNowInterface : public INetInterface {
   struct TxSlot {
     uint16_t len;
     uint32_t next_hop;
+    uint8_t tries;
     uint8_t data[KL_MAX_PACKET_SIZE];
   };
 
-  void enqueue_tx(const uint8_t *data, size_t len, uint32_t next_hop);
-  void pump_tx();
+  bool enqueue_tx(const uint8_t *data, size_t len, uint32_t next_hop);
+  bool transmit(const uint8_t *data, size_t len);
+  void pump_tx(uint32_t now_ms);
 
   kl_rx_callback_t cb_;
   void *cb_ctx_;
   KlintoRxRing rx_;
-  TxSlot tx_[8];
+  TxSlot tx_[KL_ESPNOW_TX_QUEUE];
   volatile uint8_t tx_head_;
   volatile uint8_t tx_tail_;
   volatile bool inited_;

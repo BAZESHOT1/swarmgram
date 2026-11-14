@@ -15,7 +15,7 @@
  *   KLINTO-KMESH1-PERM|<msg_uuid hex>|<sender_id>|<receiver_id>|<timestamp_ms>|<cipher hex>
  */
 import { createHash, createPublicKey, verify as verifyRawSignature } from 'node:crypto';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth.js';
 import { requireModule } from './modules.js';
 import { config } from '../config.js';
@@ -236,6 +236,18 @@ async function ownedModule(mac: string): Promise<{
 }
 
 const kmeshV1Routes: FastifyPluginAsync = async (app) => {
+  /**
+   * Шлюз авторизуется либо общим ключом KMesh_v1 (x-kmesh-key),
+   * либо обычным токеном модуля. Ключ позволяет шлюзу работать до pairing.
+   */
+  async function authorizeGateway(req: FastifyRequest): Promise<void> {
+    const key = req.headers['x-kmesh-key'];
+    if (config.tempMeshKey && typeof key === 'string' && key.toLowerCase() === config.tempMeshKey) {
+      return;
+    }
+    await requireModule()(req);
+  }
+
   /* --------------------------------------------------------- gateway ---- */
 
   app.post('/kmesh/v1/presence', { onRequest: [requireModule()] }, async (req, reply) => {
@@ -338,6 +350,100 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       msg_uuid: uuid,
       status: result[0]?.status ?? 'pending',
       note: result[0]?.status === 'permanent' ? 'already_permanent' : 'shadow_stored',
+    });
+  });
+
+  /**
+   * Единый REST-релей шлюза. Работает без MQTT:
+   *   POST /v1/kmesh/v1/relay?kind=archive|presence
+   * На archive сразу ставит ACK в очередь downlink — носимый модуль
+   * получает подтверждение доставки до Hub.
+   */
+  app.post('/kmesh/v1/relay', async (req, reply) => {
+    await authorizeGateway(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const kind = String((req.query as { kind?: string }).kind ?? body.kind ?? 'archive').toLowerCase();
+    const gatewayId = num(body.gateway_id) || num(req.headers['x-gateway-id']);
+    if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+
+    if (kind === 'presence') {
+      const nodeId = num(body.node_id);
+      if (!Number.isInteger(nodeId) || nodeId <= 1) throw badRequest('node_id_required');
+      const ttlSec = Math.min(Math.max(num(body.ttl_sec) || 600, 60), 3600);
+      await query(
+        `INSERT INTO kmesh_v1_presence
+           (node_id, gateway_id, rssi, hops, iface, battery, role, last_seen_at, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7, now(), now() + (($8)::int || ' seconds')::interval)
+         ON CONFLICT (node_id) DO UPDATE SET
+           gateway_id = EXCLUDED.gateway_id,
+           rssi = EXCLUDED.rssi,
+           hops = EXCLUDED.hops,
+           iface = EXCLUDED.iface,
+           battery = EXCLUDED.battery,
+           role = EXCLUDED.role,
+           last_seen_at = now(),
+           expires_at = EXCLUDED.expires_at`,
+        [nodeId, gatewayId, num(body.rssi), num(body.hops), num(body.iface), num(body.battery),
+         num(body.role), ttlSec],
+      );
+      await query(
+        `INSERT INTO kmesh_v1_gateways (gateway_id, last_seen_at, uplink_ok, uplink_fail, version)
+         VALUES ($1, now(), 1, 0, $2)
+         ON CONFLICT (gateway_id) DO UPDATE SET
+           last_seen_at = now(),
+           uplink_ok = kmesh_v1_gateways.uplink_ok + 1,
+           version = COALESCE(NULLIF(EXCLUDED.version, ''), kmesh_v1_gateways.version)`,
+        [gatewayId, String(body.version ?? '')],
+      );
+      return reply.send({ ok: true, status: 200, kind: 'presence', node_id: nodeId });
+    }
+
+    await storeArchive(body, gatewayId);
+    const src = num(body.src_id);
+    const packetId = num(body.packet_id);
+    if (src > 1 && packetId > 0) {
+      await query(
+        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid)
+         VALUES ($1,$2,'ack',$3,$4)`,
+        [gatewayId, src, packetId, String(body.msg_uuid ?? '')],
+      );
+    }
+    return reply.send({ ok: true, status: 200, kind: 'archive' });
+  });
+
+  /** Короткий поллинг ответов шлюзом (MQTT не требуется). */
+  app.get('/kmesh/v1/downlink', async (req, reply) => {
+    await authorizeGateway(req);
+    const q = req.query as { gateway_id?: string; since?: string };
+    const gatewayId = num(q.gateway_id);
+    const since = Math.max(0, num(q.since));
+    if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+    const rows = await query<{
+      id: string; dst_node_id: string; kind: string; packet_id: string | null; packet_b64: string | null;
+    }>(
+      `SELECT id::text, dst_node_id::text, kind, packet_id::text, packet_b64
+         FROM kmesh_v1_downlink
+        WHERE gateway_id = $1 AND id > $2 AND delivered_at IS NULL
+        ORDER BY id ASC LIMIT 20`,
+      [gatewayId, since],
+    );
+    if (rows.length) {
+      const ids = rows.map((r) => r.id);
+      await query(
+        `UPDATE kmesh_v1_downlink SET delivered_at = now() WHERE id = ANY($1::bigint[])`,
+        [ids],
+      );
+    }
+    const cursor = rows.length ? Number(rows[rows.length - 1].id) : since;
+    return reply.send({
+      ok: true,
+      cursor,
+      items: rows.map((r) => ({
+        kind: r.kind,
+        dst_node_id: Number(r.dst_node_id),
+        packet_id: r.packet_id == null ? 0 : Number(r.packet_id),
+        ...(r.packet_b64 ? { packet_b64: r.packet_b64 } : {}),
+      })),
     });
   });
 

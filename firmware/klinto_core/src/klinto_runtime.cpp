@@ -386,33 +386,13 @@ bool KlintoNode::begin() {
   bridge_.init(&router_, &cfg_, client_link_, &down_queue_, &bridge_sink);
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
-#if KL_HAS_MQTT
-    char host[96] = {0};
-    uint16_t port = 1883;
-    bool tls = false;
-    if (parseMqttUrl(cfg_.hub_url, host, sizeof(host), &port, &tls)) {
-      char down_topic[80];
-      snprintf(down_topic, sizeof(down_topic), "klinto/kmesh/v1/gw/%lu/down",
-               (unsigned long)cfg_.gateway_id);
-      char client_id[48];
-      snprintf(client_id, sizeof(client_id), "klinto-gw-%lu", (unsigned long)cfg_.gateway_id);
-      char mqtt_ca[1600] = {0};
-      kl_nvs_get_str("klinto3", "mqtt_ca", mqtt_ca, sizeof(mqtt_ca));
-      char mqtt_user[48] = {0};
-      kl_nvs_get_str("klinto3", "mqtt_user", mqtt_user, sizeof(mqtt_user));
-      char mqtt_pass[48] = {0};
-      kl_nvs_get_str("klinto3", "mqtt_pass", mqtt_pass, sizeof(mqtt_pass));
-      if (tls && !mqtt_ca[0]) {
-        Serial.println("[klinto3] WARNING: MQTT TLS without mqtt_ca -> insecure mode");
-      }
-      mqtt_.begin(host, port, tls, mqtt_user[0] ? mqtt_user : nullptr,
-                  mqtt_pass[0] ? mqtt_pass : cfg_.module_token, mqtt_ca[0] ? mqtt_ca : nullptr,
-                  client_id, down_topic);
-    }
+    /* Hub не требует MQTT: REST-транспорт работает всегда и не зависит
+     * от наличия брокера. Очередь uplink та же. */
+    http_gateway_.init(&cfg_);
     kl_gateway_sink_t gsink = {this, &KlintoNode::sinkInjectDownlink,
                                &KlintoNode::sinkGatewayStatus};
-    gateway_.init(&cfg_, &mqtt_, &up_queue_, &gsink);
-#endif
+    gateway_.init(&cfg_, &http_gateway_, &up_queue_, &gsink);
+    Serial.printf("[klinto] gateway uplink=http hub=%s\n", cfg_.hub_url);
   }
 
   startTasks();
@@ -478,6 +458,10 @@ void KlintoNode::sinkDeliver(void *ctx, const kl_packet_t *pkt, int16_t rssi, ui
   }
   if ((self->cfg_.role == KL_ROLE_GATEWAY || self->router_.mobile_gateway_active()) &&
       ((pkt->flags & KL_FLAG_TO_INTERNET) || pkt->dst_id == KL_ANY_GATEWAY_ID)) {
+    Serial.printf("[TRACE 2/4] ESPNOW->GW: rx packet msg_uuid=%08lx%08lx src=%lu type=%u\n",
+                  (unsigned long)(pkt->msg_uuid >> 32),
+                  (unsigned long)(pkt->msg_uuid & 0xFFFFFFFFu),
+                  (unsigned long)pkt->src_id, (unsigned)pkt->type);
     if (self->router_.mobile_gateway_active()) {
       /* Мобильный шлюз: телефон-курьер отправляет пакет на Hub. */
       self->bridge_.proxy_uplink(pkt);
@@ -523,7 +507,9 @@ void KlintoNode::sinkBeacon(void *ctx, const kl_packet_t *pkt, int16_t rssi, uin
   if (!pkt) return;
   uint32_t gateway_id = pkt->src_id;
   if (pkt->payload_len >= 8) gateway_id = kl_read_le32(pkt->payload + 4);
-  self->cell_.on_beacon(gateway_id, pkt->hop_count, rssi, kl_uptime_ms());
+  const uint8_t advertised_channel = pkt->payload_len >= 11 ? pkt->payload[10] : 0;
+  self->cell_.on_beacon(gateway_id, pkt->hop_count, rssi, kl_uptime_ms(),
+                        advertised_channel);
 }
 
 bool KlintoNode::cellApplyChannel(void *ctx, uint8_t wifi_channel) {

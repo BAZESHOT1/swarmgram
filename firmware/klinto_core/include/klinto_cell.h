@@ -62,8 +62,9 @@ class KlintoCellManager {
   void start_scan(uint32_t now_ms, uint8_t reason);
   /** Периодический вызов из mesh-задачи. */
   void tick(uint32_t now_ms);
-  /** Любой принятый GW_BEACON. */
-  void on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi, uint32_t now_ms);
+  /** Любой принятый GW_BEACON. advertised_channel = 0, если шлюз его не передал. */
+  void on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi, uint32_t now_ms,
+                 uint8_t advertised_channel = 0);
 
   uint8_t channel() const { return current_channel_; }
   uint8_t state() const { return state_; }

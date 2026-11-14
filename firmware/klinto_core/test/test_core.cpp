@@ -946,6 +946,25 @@ static void test_cell_manager(void) {
   CHECK(gw.state() == KL_CELL_LOCKED);
   CHECK(gw.channel() == 9);
   CHECK(gw_host.applied == 9);
+
+  /* Маяк несёт wifi_channel: модуль переезжает на канал шлюза (12),
+   * даже если скан начался с канала 1. */
+  KlintoCellManager adv;
+  CellHostState adv_host;
+  memset(&adv_host, 0, sizeof(adv_host));
+  kl_cell_host_t adv_cb = {&adv_host, cell_apply, cell_locked, cell_offline};
+  adv.init(&cfg, &adv_cb);
+  adv.start_scan(0, KL_SCAN_BOOT);
+  adv.on_beacon(4040u, 1, -48, 10, 12);
+  for (int i = 0; i < KL_CHANNEL_COUNT + 1; ++i) adv.tick((uint32_t)(i + 1) * 120u);
+  CHECK(adv.state() == KL_CELL_LOCKED);
+  CHECK(adv.channel() == 12);
+  CHECK(adv_host.applied == 12);
+
+  /* Здоровая сота не пересканируется каждые 2.5 минуты. */
+  adv.tick(1680u + 10000u);
+  CHECK(adv.state() == KL_CELL_LOCKED);
+  CHECK(adv.channel() == 12);
 }
 
 /* --------------------------------------------------- сервисные RPC ------- */

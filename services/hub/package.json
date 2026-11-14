@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:ota": "npm run build && node scripts/test-ota.mjs",
-    "test:identity": "npm run build && node scripts/test-identity.mjs"
+    "test:identity": "npm run build && node scripts/test-identity.mjs",
+    "test:kmesh-relay": "node scripts/test-kmesh-relay.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",

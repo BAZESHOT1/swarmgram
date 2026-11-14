@@ -59,6 +59,8 @@ interface FirmwareConfig {
   hubUrl?: string;
   moduleToken?: string;
   claimToken?: string;
+  /** KMesh_v1: новый бинарный стек. tempKey задаёт только сервер. */
+  kmesh?: { v1: boolean; tempKey?: string };
   lora?: {
     chip: LoraChip;
     /** Значение задаёт сервер (глобальная сеть), клиентское перезаписывается. */
@@ -142,6 +144,12 @@ function validateConfig(raw: unknown): FirmwareConfig {
   if (b.mesh !== undefined && (typeof b.mesh !== 'object' || b.mesh === null || Array.isArray(b.mesh))) {
     throw badRequest('mesh_invalid');
   }
+  // KMesh_v1 — единственный актуальный стек. Клиент может прислать v1:false,
+  // но сервер всегда собирает актуальную прошивку.
+  if (b.kmesh !== undefined && (typeof b.kmesh !== 'object' || b.kmesh === null || Array.isArray(b.kmesh))) {
+    throw badRequest('kmesh_invalid');
+  }
+  out.kmesh = { v1: true };
 
   const hubUrl = optionalString(b.hubUrl, 'hubUrl', 300);
   if (hubUrl !== undefined) {
@@ -523,6 +531,16 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
       cfg.lora.spreadingFactor = mesh.loraSf;
       cfg.lora.bandwidthKhz = mesh.loraBwKhz as 125 | 250 | 500;
       cfg.lora.syncWord = 0x12;    }
+
+    // Один транспортный ключ KMesh_v1 на весь парк устройств: он попадает
+    // в прошивку и в проверку /v1/kmesh/v1/relay. Клиент его не задаёт.
+    if (!/^[0-9a-f]{64}$/.test(config.tempMeshKey)) {
+      throw serviceUnavailable(
+        'Не задан TEMP_MESH_KEY (64 hex-символа) на Hub. ' +
+          'Без общего ключа прошивки не смогут обмениваться пакетами KMesh_v1.',
+      );
+    }
+    cfg.kmesh = { v1: true, tempKey: config.tempMeshKey };
 
     // Честно сообщаем, что сборщик выключен/не готов, вместо «queued»,
     // который потом молча упадёт в фоне.

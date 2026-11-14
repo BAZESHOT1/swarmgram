@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef KL_FIRMWARE_BUILD
+#define KL_FIRMWARE_BUILD 0
+#endif
+
 KlintoClientBridge::KlintoClientBridge()
     : router_(nullptr),
       link_(nullptr),
@@ -105,8 +109,43 @@ bool KlintoClientBridge::send_frame(uint8_t type, const uint8_t *payload, size_t
   return true;
 }
 
-void KlintoClientBridge::on_link_data(const uint8_t *data, size_t len) {
-  if (!data || !len) return;
+bool KlintoClientBridge::send_legacy_frame(uint8_t type, const char *json, size_t len) {
+  if (!link_ || !link_->connected() || !json || len == 0 || len > 1024) return false;
+  uint8_t frame[1100];
+  frame[0] = 0xA5;
+  frame[1] = 0x5A;
+  frame[2] = 1;
+  frame[3] = type;
+  kl_write_le16(frame + 4, (uint16_t)len);
+  memcpy(frame + 6, json, len);
+  kl_write_le16(frame + 6 + len, crc16(frame + 2, 4u + len));
+  return link_->send(frame, 6u + len + 2u);
+}
+
+void KlintoClientBridge::handle_legacy_frame(uint8_t type, const uint8_t *payload, size_t len) {
+  (void)payload;
+  (void)len;
+  if (type != 1 && type != 6) return; /* HELLO или PING */
+  const char *role = cfg_.role == KL_ROLE_GATEWAY
+                         ? "gateway"
+                         : (cfg_.role == KL_ROLE_ROUTER ? "repeater" : "wearable");
+  char json[320];
+  const int n = snprintf(
+      json, sizeof(json),
+      "{\"v\":1,\"kind\":\"info\",\"hardwareId\":\"%s\",\"bleMac\":\"%s\","
+      "\"publicId\":\"%lu\",\"role\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,"
+      "\"gateway\":%s,\"queue\":%u,\"rssi\":-50,\"attached\":true,\"ownerNetId\":%lu,"
+      "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
+      cfg_.hardware_id, cfg_.ble_mod6, (unsigned long)cfg_.node_id, role,
+      (unsigned)KL_FIRMWARE_BUILD, (unsigned)(router_ ? router_->battery_percent() : 0),
+      cfg_.role == KL_ROLE_GATEWAY ? "true" : "false", (unsigned)pending_outbox(),
+      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
+  if (n > 0 && (size_t)n < sizeof(json)) {
+    send_legacy_frame(type == 6 ? 7 : 2, json, (size_t)n);
+  }
+}
+
+void KlintoClientBridge::on_link_data(const uint8_t *data, size_t len) {  if (!data || !len) return;
   if (rx_len_ + len > sizeof(rx_buf_)) {
     /* Resync: drop up to the next magic pair. */
     rx_len_ = 0;
@@ -118,6 +157,21 @@ void KlintoClientBridge::on_link_data(const uint8_t *data, size_t len) {
   size_t consumed = 0;
   while (rx_len_ - consumed >= KL_CLIENT_HEADER_SIZE + 2) {
     const uint8_t *p = rx_buf_ + consumed;
+    /* Совместимость: текущая мобильная сборка ещё шлёт кадры A5 5A. */
+    if (rx_len_ - consumed >= 8 && p[0] == 0xA5 && p[1] == 0x5A) {
+      const uint16_t legacy_len = (uint16_t)(p[4] | ((uint16_t)p[5] << 8));
+      if (legacy_len <= 1024) {
+        const size_t legacy_total = 6u + legacy_len + 2u;
+        if (rx_len_ - consumed < legacy_total) break;
+        const uint16_t legacy_crc =
+            (uint16_t)(p[6 + legacy_len] | ((uint16_t)p[6 + legacy_len + 1] << 8));
+        if (crc16(p + 2, 4u + legacy_len) == legacy_crc) {
+          handle_legacy_frame(p[3], p + 6, legacy_len);
+          consumed += legacy_total;
+          continue;
+        }
+      }
+    }
     if (p[0] != KL_CLIENT_MAGIC0 || p[1] != KL_CLIENT_MAGIC1 ||
         p[2] != KL_CLIENT_VERSION) {
       consumed++;
@@ -310,6 +364,9 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
     status(uuid, 0, KL_STATUS_FAILED);
     return;
   }
+  log_line("[TRACE 1/4] BLE->NODE: recv RPC cmd=%u len=%u msg_uuid=%08lx%08lx dst=%lu",
+           (unsigned)op, (unsigned)rpc_len, (unsigned long)(uuid >> 32),
+           (unsigned long)(uuid & 0xFFFFFFFFu), (unsigned long)dst);
   if (op == KL_RPC_SEND_TEXT) {
     kl_rpc_text_t text;
     char decoded[KL_MAX_TEXT + 1];
@@ -418,6 +475,9 @@ void KlintoClientBridge::deliver_mesh(const kl_packet_t *pkt) {
   if (!wire_len) return;
 
   if (link_ && link_->connected() && send_frame(KL_CF_RPC_DOWN, wire, wire_len)) {
+    log_line("[TRACE 4/4] HUB->GW->NODE->BLE: delivered msg_uuid=%08lx%08lx src=%lu",
+             (unsigned long)(out.msg_uuid >> 32), (unsigned long)(out.msg_uuid & 0xFFFFFFFFu),
+             (unsigned long)out.src_id);
     return;
   }
   if (outbox_) outbox_->push(&out);

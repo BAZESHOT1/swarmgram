@@ -40,6 +40,8 @@ export const config = {
   databaseUrl: str('DATABASE_URL', 'postgres://klinto:klinto@localhost:5432/klinto'),
   jwtSecret: ensureSecret(),
   adminToken: str('HUB_ADMIN_TOKEN', ''),
+  /** Общий транспортный ключ KMesh_v1 (64 hex). Один для всех модулей. */
+  tempMeshKey: (process.env.TEMP_MESH_KEY || '').trim().toLowerCase(),
 
   /** Жёсткий лимит смены username — 90 дней. */
   usernameChangeCooldownDays: 90,

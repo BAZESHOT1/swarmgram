@@ -765,11 +765,13 @@ void KlintoRouter::tick(uint32_t now_ms) {
     kl_packet_t beacon;
     kl_packet_init(&beacon, KL_TYPE_GW_BEACON, cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
     beacon.ttl = cfg_.gw_max_hops;
-    uint8_t payload[10];
+    uint8_t payload[11];
     kl_write_le32(payload, cfg_.node_id);
     kl_write_le32(payload + 4, cfg_.node_id);
     payload[8] = 0;
     payload[9] = capabilities_;
+    /* 1..13: носимый модуль фиксируется ровно на канале шлюза. */
+    payload[10] = cfg_.wifi_channel;
     kl_packet_set_payload(&beacon, payload, sizeof(payload));
     if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
   }
@@ -803,11 +805,12 @@ void KlintoRouter::emit_gateway_beacon(uint32_t now_ms) {
   kl_packet_t beacon;
   kl_packet_init(&beacon, KL_TYPE_GW_BEACON, cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
   beacon.ttl = cfg_.gw_max_hops;
-  uint8_t payload[10];
+  uint8_t payload[11];
   kl_write_le32(payload, cfg_.node_id);
   kl_write_le32(payload + 4, cfg_.node_id);
   payload[8] = 0;
   payload[9] = capabilities_;
+  payload[10] = cfg_.wifi_channel;
   kl_packet_set_payload(&beacon, payload, sizeof(payload));
   if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
 }
@@ -818,11 +821,12 @@ void KlintoRouter::emit_mobile_beacon(uint32_t now_ms) {
   kl_packet_init(&beacon, KL_TYPE_GW_BEACON, cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
   beacon.ttl = cfg_.gw_max_hops;
   beacon.hop_count = cfg_.mobile_gw_hops;
-  uint8_t payload[10];
+  uint8_t payload[11];
   kl_write_le32(payload, cfg_.node_id);
   kl_write_le32(payload + 4, cfg_.node_id);
   payload[8] = 0;
   payload[9] = (uint8_t)(capabilities_ | KL_CAP_MOBILE_GW | KL_CAP_HYBRID_PORTABLE);
+  payload[10] = cfg_.wifi_channel;
   kl_packet_set_payload(&beacon, payload, sizeof(payload));
   if (transmit_on_all(&beacon, now_ms)) stats_.beacons_sent++;
 }

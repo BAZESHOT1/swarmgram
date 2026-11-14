@@ -522,11 +522,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     try {
       // На смартфоне показываем глобальное окно найденного модуля.
       if (Platform.OS !== 'web') {
+        // Префикс своего модуля читаем ДО сканирования: иначе первый скан
+        // может принять чужой KL-модуль за свой.
+        const identity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
+        const myPrefix = identity?.blePrefix ?? null;
         const scanTransport = getModuleTransport('ble');
         const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
         setNearbyModules(nearby);
-        const identity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
-        const myPrefix = identity?.blePrefix ?? null;
         const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
         let incomingClaims: Array<{ id: string; oldBleName: string; claimToken: string; moduleMac: string; mod6: string }> = [];
         try {
