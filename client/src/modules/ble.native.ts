@@ -476,7 +476,7 @@ export class NativeBleTransport implements ModuleConnection {
     this.rxSub = manager().monitorCharacteristicForDevice(
       device.id,
       BLE_UUIDS.service,
-      BLE_UUIDS.rx,
+      BLE_UUIDS.tx,
       (error, characteristic) => {
         if (error) {
           if (!this.closing) this.emitDisconnect();
@@ -641,7 +641,7 @@ export class NativeBleTransport implements ModuleConnection {
         await manager().writeCharacteristicWithResponseForDevice(
           deviceId,
           BLE_UUIDS.service,
-          BLE_UUIDS.tx,
+          BLE_UUIDS.rx,
           bytesToBase64(chunk),
         );
       }

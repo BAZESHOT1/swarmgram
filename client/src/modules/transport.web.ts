@@ -644,8 +644,8 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
       this.rx = await service.getCharacteristic(BLE_UUIDS.rx);
       this.statusChar = await service.getCharacteristic(BLE_UUIDS.status).catch(() => null);
 
-      await this.rx.startNotifications();
-      this.rx.addEventListener('characteristicvaluechanged', this.onRxValue);
+      await this.tx.startNotifications();
+      this.tx.addEventListener('characteristicvaluechanged', this.onRxValue);
       if (this.statusChar) {
         await this.statusChar.startNotifications().catch(() => undefined);
         this.statusChar.addEventListener('characteristicvaluechanged', this.onStatusValue);
@@ -771,7 +771,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
 
   /** BLE-пакет ограничен MTU; надёжный размер по умолчанию — 20 байт. */
   private async writeFrame(type: number, payload: Uint8Array): Promise<void> {
-    const tx = this.tx;
+    const tx = this.rx;
     if (!tx) throw new ModuleTransportError('Bluetooth-характеристика записи недоступна.', 'closed');
     const frame = encodeFrame(type, payload);
     const chunkSize = 20;
@@ -810,7 +810,7 @@ export class WebBluetoothModuleTransport extends BaseModuleConnection {
     this.info = null;
     this.device?.removeEventListener?.('gattserverdisconnected', this.onGattDisconnected);
     try {
-      this.rx?.removeEventListener?.('characteristicvaluechanged', this.onRxValue as unknown as (event: unknown) => void);
+      this.tx?.removeEventListener?.('characteristicvaluechanged', this.onRxValue as unknown as (event: unknown) => void);
       this.statusChar?.removeEventListener?.('characteristicvaluechanged', this.onStatusValue as unknown as (event: unknown) => void);
     } catch {
       /* ignore */

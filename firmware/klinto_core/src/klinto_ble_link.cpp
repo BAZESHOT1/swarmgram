@@ -71,15 +71,22 @@ bool BleClientLink::begin(const char *deviceName) {
   server_->setCallbacks(new KlintoBleServerCallbacks(this));
 
   BLEService *service = server_->createService(KL_BLE_SERVICE);
-  tx_ = service->createCharacteristic(KL_BLE_TX, BLECharacteristic::PROPERTY_NOTIFY);
+  tx_ = service->createCharacteristic(
+      KL_BLE_TX,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE |
+          BLECharacteristic::PROPERTY_WRITE_NR);
   rx_ = service->createCharacteristic(
-      KL_BLE_RX, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+      KL_BLE_RX,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR |
+          BLECharacteristic::PROPERTY_NOTIFY);
   status_ = service->createCharacteristic(KL_BLE_STATUS, BLECharacteristic::PROPERTY_NOTIFY);
 #if defined(CONFIG_BLUEDROID_ENABLED)
   tx_->addDescriptor(new BLE2902());
+  rx_->addDescriptor(new BLE2902());
   status_->addDescriptor(new BLE2902());
 #endif
   rx_->setCallbacks(new KlintoBleRxCallbacks(this));
+  tx_->setCallbacks(new KlintoBleRxCallbacks(this));
   service->start();
 
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
@@ -115,6 +122,13 @@ bool BleClientLink::send(const uint8_t *data, size_t len) {
     const size_t take = (len - offset) > chunk ? chunk : (len - offset);
     tx_->setValue((uint8_t *)(data + offset), take);
     tx_->notify();
+    /* Совместимость со старыми клиентами: у них роли a5c1/a5c2 были
+     * зеркальными, подписка шла на a5c2. Дублируем notify во вторую
+     * характеристику — клиент подписан только на одну. */
+    if (rx_) {
+      rx_->setValue((uint8_t *)(data + offset), take);
+      rx_->notify();
+    }
     offset += take;
     if (offset < len) delay(4); /* let the controller drain */
   }
