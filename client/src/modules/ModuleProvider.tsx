@@ -332,9 +332,47 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               });
             })();
           },
+          onSecureMessage: (message) => {
+            void (async () => {
+              if (message.srcNodeId === v1.getNodeId()) return;
+              const text = await v1.decryptMessage(
+                message.chatId,
+                message.ciphertext,
+                message.nonce,
+              );
+              if (text == null) return;
+              const createdAt = new Date().toISOString();
+              const entry = {
+                id: `mesh-${message.msgUuid}`,
+                chatId: message.chatId,
+                seq: 0,
+                kind: message.kind,
+                text,
+                createdAt,
+                mine: false,
+                senderNodeId: message.srcNodeId,
+              };
+              qc.setQueryData<unknown[]>(['messages', message.chatId], (prev) => {
+                const list = Array.isArray(prev) ? prev : [];
+                if (list.some((m) => (m as { id?: string })?.id === entry.id)) return list;
+                return [...list, entry].sort(
+                  (a, b) =>
+                    new Date((a as { createdAt?: string })?.createdAt ?? 0).getTime() -
+                    new Date((b as { createdAt?: string })?.createdAt ?? 0).getTime(),
+                );
+              });
+              useStore.getState().setChatPreview(message.chatId, {
+                id: entry.id,
+                text,
+                kind: message.kind,
+                mine: false,
+                at: createdAt,
+              });
+              void qc.invalidateQueries({ queryKey: ['chats'] });
+            })();
+          },
           onMessage: (message) => {
-            if (!message.text || message.srcNodeId === v1.getNodeId()) return;
-            const chatId = resolveChat(message.chatRef);
+            if (!message.text || message.srcNodeId === v1.getNodeId()) return;            const chatId = resolveChat(message.chatRef);
             if (!chatId) return;
             const createdAt = new Date(message.createdAt || Date.now()).toISOString();
             const entry = {

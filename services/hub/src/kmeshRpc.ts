@@ -194,6 +194,7 @@ export const RpcOp = {
   FEED_SYNC_RESP: 0x0b,
   CHAT_HISTORY_REQ: 0x0c,
   CHAT_HISTORY_RESP: 0x0d,
+  SEND_ENVELOPE: 0x0e,
 } as const;
 
 export const RPC_FLAG_MORE = 0x40;
@@ -298,6 +299,34 @@ export function decodeFeedRequest(payload: Buffer): { lastSyncTs: number } | nul
 export function decodeHistoryRequest(payload: Buffer): { beforeUuid: bigint; limit: number } | null {
   if (payload.length < 13) return null;
   return { beforeUuid: payload.readBigUInt64LE(4), limit: payload[12] };
+}
+
+export interface SecureEnvelope {
+  chatRef: number;
+  chatId: string;
+  kind: string;
+  nonce: Buffer;
+  ciphertext: Buffer;
+}
+
+export function decodeEnvelopeRpc(payload: Buffer): SecureEnvelope | null {
+  if (payload.length < 8 + 16 || payload[0] !== RpcOp.SEND_ENVELOPE) return null;
+  const chatRef = payload.readUInt16LE(2);
+  const kind = payload[4] === 2 ? 'media' : 'text';
+  const nonceLen = payload[5];
+  if (nonceLen < 8 || nonceLen > 24) return null;
+  const cipherLen = payload.readUInt16LE(6 + nonceLen);
+  const cipherStart = 8 + nonceLen;
+  const chatStart = cipherStart + cipherLen;
+  if (chatStart + 16 > payload.length) return null;
+  const hex = payload.subarray(chatStart, chatStart + 16).toString('hex');
+  return {
+    chatRef,
+    kind,
+    nonce: payload.subarray(6, 6 + nonceLen),
+    ciphertext: payload.subarray(cipherStart, chatStart),
+    chatId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+  };
 }
 
 export function decodeTextRpc(payload: Buffer): { chatRef: number; text: string } | null {

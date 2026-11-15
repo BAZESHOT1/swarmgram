@@ -32,6 +32,7 @@ import {
   decodeHistoryRequest,
   decodeSearchRequest,
   decodeTextRpc,
+  decodeEnvelopeRpc,
   encodeFeedResponse,
   encodeHistoryResponse,
   encodeSearchResponse,
@@ -498,6 +499,83 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return false;
   }
 
+  async function routeSecureEnvelope(
+    packet: ReturnType<typeof parsePacket> & object,
+    plain: Buffer,
+    gatewayId: number,
+  ): Promise<boolean> {
+    const envelope = decodeEnvelopeRpc(plain);
+    if (!envelope) return false;
+    const senderId = await userForNode(packet.srcId);
+    if (!senderId) return true;
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
+      [envelope.chatId, senderId]);
+    if (!member) return true;
+    const sender = await one<{ username: string }>('SELECT username FROM users WHERE id = $1',
+      [senderId]);
+    const uuid = msgUuidHex(packet.msgUuid);
+    const ciphertextB64 = envelope.ciphertext.toString('base64');
+    const nonceB64 = envelope.nonce.toString('base64');
+    const header = JSON.stringify({
+      kmeshV1: true,
+      transport: 'mesh',
+      archivedVia: 'gateway',
+      ciphertextB64,
+      nonceB64,
+    });
+    const inserted = await one<{ seq: number; id: string; created_at: string }>(
+      `INSERT INTO messages
+         (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid)
+       VALUES ($1,$2,NULL,$3,$4,$5)
+       ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL DO NOTHING
+       RETURNING seq, id, created_at`,
+      [envelope.chatId, senderId, envelope.kind, header, uuid],
+    );
+    const row = inserted ?? await one<{ seq: number; id: string; created_at: string }>(
+      'SELECT seq, id, created_at FROM messages WHERE chat_id = $1 AND msg_uuid = $2',
+      [envelope.chatId, uuid],
+    );
+    if (!row) return true;
+    if (inserted) {
+      await query('UPDATE chats SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1',
+        [envelope.chatId, row.seq]);
+    }
+    const members = await query<{ user_id: string }>(
+      'SELECT user_id::text FROM chat_members WHERE chat_id = $1',
+      [envelope.chatId],
+    );
+    for (const m of members) {
+      publishRealtime(m.user_id, {
+        type: 'message',
+        message: {
+          id: row.id,
+          chatId: envelope.chatId,
+          seq: row.seq,
+          senderUserId: senderId,
+          senderUsername: sender?.username ?? '',
+          kind: envelope.kind,
+          createdAt: row.created_at,
+          nonce: envelope.nonce.toString('base64'),
+          header: { kmeshV1: true, transport: 'mesh' },
+          ciphertext: envelope.ciphertext.toString('base64'),
+        },
+      });
+    }
+    for (const m of members) {
+      if (m.user_id === senderId) continue;
+      const target = await nodeForUser(m.user_id);
+      if (!target || target.nodeId === packet.srcId) continue;
+      await queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: packet.srcId,
+        msgUuid: packet.msgUuid,
+        rpc: plain,
+      });
+    }
+    return true;
+  }
+
   async function routeRelayedPacket(body: Record<string, unknown>, gatewayId: number): Promise<void> {
     if (!config.tempMeshKey) return;
     const packetB64 = String(body.packet_b64 ?? '');
@@ -513,6 +591,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!(packet.flags & 0x08) || packet.payload[0] !== 1) return;
     const plain = openTemp(config.tempMeshKey, packet);
     if (!plain) return;
+    if (await routeSecureEnvelope(packet, plain, gatewayId)) return;
     if (!(await routeServiceRpc(packet, plain, gatewayId))) {
       await routeText(packet, plain, gatewayId);
     }

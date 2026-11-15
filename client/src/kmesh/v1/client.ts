@@ -9,7 +9,7 @@
  *     подписывать постоянным ключом устройства и вызывать /v1/kmesh/v1/sync;
  *   - отдавать статус MSG_SYNCED, чтобы UI не дублировал сообщение.
  */
-import { encryptBytes, storage } from '../../crypto/core';
+import { encryptBytes, decryptBytes, storage } from '../../crypto/core';
 import { kv } from '../../crypto/storage';
 import { loadChatKey } from '../../data/chatkit';
 import { api } from '../../data/api';
@@ -40,6 +40,8 @@ import {
   encodeInetStatus,
   encodeProxyDown,
   encodeRpcText,
+  encodeEnvelopeRpc,
+  decodeEnvelopeRpc,
   encodeRpcUp,
   encodeSearchRequest,
   msgUuidHex,
@@ -50,7 +52,7 @@ import {
   type MeshPacket,
   type SearchResult,
 } from './protocol';
-import { b64ToBytes, signPermanent } from './crypto';
+import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
 
 export interface KMeshV1Link {
   send(frame: Uint8Array): Promise<boolean>;
@@ -78,6 +80,15 @@ export interface KMeshV1ClientOptions {
   getChatKey?: (chatId: string) => Promise<Uint8Array | null>;
   resolveChatByRef?: (chatRef: number) => string | undefined;
   onMessage?: (message: KMeshV1ReceivedMessage) => void;
+  onSecureMessage?: (message: {
+    msgUuid: string;
+    chatId: string;
+    chatRef: number;
+    kind: string;
+    nonce: string;
+    ciphertext: string;
+    srcNodeId: number;
+  }) => void;
   onStatus?: (event: KMeshV1StatusEvent) => void;
   onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number }) => void;
   onSearch?: (reqId: number, results: SearchResult[], more: boolean) => void;
@@ -241,10 +252,22 @@ export class KMeshV1Client {
     if (!keys) throw new Error('device_keys_missing');
     if (!this.nodeId) throw new Error('mesh_node_not_connected');
 
+    const chatKey = await this.chatKeyFor(input.chatId);
+    if (!chatKey) throw new Error('chat_key_missing');
+    const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
+    const ciphertextBytes = b64ToBytes(sealed.ciphertext);
+    const nonceBytes = b64ToBytes(sealed.nonce);
     const msgUuid = nextMsgUuid(this.nodeId);
     const uuidHex = msgUuidHex(msgUuid);
     const isGroup = Boolean(input.group);
-    const rpc = encodeRpcText(input.chatRef, input.text, isGroup ? 0x02 : 0);
+    // В эфир уходит готовый E2EE-конверт; temp-ключ только транспорт.
+    const rpc = encodeEnvelopeRpc({
+      chatRef: input.chatRef,
+      chatId: input.chatId,
+      kind: 'text',
+      nonce: nonceBytes,
+      ciphertext: ciphertextBytes,
+    });
     const flags =
       (input.toInternet || isGroup
         ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE
@@ -253,14 +276,8 @@ export class KMeshV1Client {
     const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
     const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
 
-    let ciphertextB64 = '';
-    let nonce = '';
-    const chatKey = await this.chatKeyFor(input.chatId);
-    if (chatKey) {
-      const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
-      ciphertextB64 = sealed.ciphertext;
-      nonce = sealed.nonce;
-    }
+    const ciphertextB64 = sealed.ciphertext;
+    const nonce = sealed.nonce;
 
     const item: KMeshV1OutboxItem = {
       msgUuid: uuidHex,
@@ -341,6 +358,21 @@ export class KMeshV1Client {
             break;
           }
           const op = packet.payload[0];
+          if (op === RpcOp.SEND_ENVELOPE) {
+            const envelope = decodeEnvelopeRpc(packet.payload);
+            if (envelope) {
+              this.opts.onSecureMessage?.({
+                msgUuid: msgUuidHex(packet.msgUuid),
+                chatId: envelope.chatId,
+                chatRef: envelope.chatRef,
+                kind: envelope.kind,
+                nonce: bytesToB64(envelope.nonce),
+                ciphertext: bytesToB64(envelope.ciphertext),
+                srcNodeId: packet.srcId,
+              });
+            }
+            break;
+          }
           if (op === RpcOp.SEARCH_RESP) {
             const parsed = decodeSearchResponse(packet.payload);
             if (parsed) this.opts.onSearch?.(parsed.reqId, parsed.results, parsed.more);
@@ -386,6 +418,16 @@ export class KMeshV1Client {
       createdAt: Number((packet.msgUuid >> 22n) & 0x3ffffffffffn) || Date.now(),
       packet,
     });
+  }
+
+  async decryptMessage(chatId: string, ciphertextB64: string, nonceB64: string): Promise<string | null> {
+    const key = await this.chatKeyFor(chatId).catch(() => null);
+    if (!key) return null;
+    try {
+      return new TextDecoder().decode(decryptBytes(key, ciphertextB64, nonceB64));
+    } catch {
+      return null;
+    }
   }
 
   private async chatKeyFor(chatId: string): Promise<Uint8Array | null> {

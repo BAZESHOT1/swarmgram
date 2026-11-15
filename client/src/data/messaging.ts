@@ -503,10 +503,18 @@ function envelopeMeta(env: Envelope): EnvelopeMeta {
 }
 
 async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUsername: string): Promise<ViewMessage> {
+  const envHeader = parseHeader(env.header);
+  // Сообщения, сохранённые через KMesh, держат шифртекст в header.
+  if (!env.envelopeB64 && typeof envHeader.ciphertextB64 === 'string') {
+    env = {
+      ...env,
+      envelopeB64: envHeader.ciphertextB64,
+      nonce: env.nonce || (typeof envHeader.nonceB64 === 'string' ? envHeader.nonceB64 : env.nonce),
+    };
+  }
   const meta = envelopeMeta(env);
   // clientId может прийти полем конверта или из header — нужен для склейки
   // с оптимистичным сообщением без дублей.
-  const envHeader = parseHeader(env.header);
   const clientId = env.clientId ?? (typeof envHeader.clientId === 'string' ? envHeader.clientId : undefined);
   const envExt = env as Envelope & { asChannel?: boolean; viewsCount?: number };
   const common = {

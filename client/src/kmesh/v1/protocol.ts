@@ -49,6 +49,7 @@ export const RpcOp = {
   FEED_SYNC_RESP: 0x0b,
   CHAT_HISTORY_REQ: 0x0c,
   CHAT_HISTORY_RESP: 0x0d,
+  SEND_ENVELOPE: 0x0e,
 } as const;
 
 export const SearchType = {
@@ -201,8 +202,67 @@ export function encodeRpcText(chatRef: number, text: string, flags = 0): Uint8Ar
   return out;
 }
 
-export function encodeRpcAck(chatRef: number, ackedPacketId: number, status: number): Uint8Array {
-  const out = new Uint8Array(9);
+function uuidToBytes(hex: string): Uint8Array {
+  const clean = hex.replace(/[^0-9a-f]/gi, '').toLowerCase();
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i += 1) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2) || '00', 16);
+  return out;
+}
+
+function bytesToUuid(bytes: Uint8Array): string {
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** E2EE-конверт сообщения: постоянный ключ чата, temp-ключ только транспорт. */
+export function encodeEnvelopeRpc(input: {
+  chatRef: number;
+  chatId: string;
+  kind: string;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+}): Uint8Array {
+  const nonce = input.nonce.subarray(0, 12);
+  const out = new Uint8Array(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16);
+  out[0] = RpcOp.SEND_ENVELOPE;
+  out[1] = 0;
+  new DataView(out.buffer).setUint16(2, input.chatRef & 0xffff, true);
+  out[4] = input.kind === 'media' ? 2 : 1;
+  out[5] = nonce.length;
+  out.set(nonce, 6);
+  new DataView(out.buffer).setUint16(6 + nonce.length, input.ciphertext.length, true);
+  out.set(input.ciphertext, 8 + nonce.length);
+  out.set(uuidToBytes(input.chatId), 8 + nonce.length + input.ciphertext.length);
+  return out;
+}
+
+export function decodeEnvelopeRpc(payload: Uint8Array): {
+  chatRef: number;
+  chatId: string;
+  kind: string;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+} | null {
+  if (payload.length < 8 + 16 || payload[0] !== RpcOp.SEND_ENVELOPE) return null;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const chatRef = view.getUint16(2, true);
+  const kind = payload[4] === 2 ? 'media' : 'text';
+  const nonceLen = payload[5];
+  if (nonceLen < 8 || nonceLen > 24) return null;
+  const cipherLen = view.getUint16(6 + nonceLen, true);
+  const cipherStart = 8 + nonceLen;
+  const chatStart = cipherStart + cipherLen;
+  if (chatStart + 16 > payload.length) return null;
+  return {
+    chatRef,
+    kind,
+    nonce: payload.slice(6, 6 + nonceLen),
+    ciphertext: payload.slice(cipherStart, chatStart),
+    chatId: bytesToUuid(payload.subarray(chatStart, chatStart + 16)),
+  };
+}
+
+export function encodeRpcAck(chatRef: number, ackedPacketId: number, status: number): Uint8Array {  const out = new Uint8Array(9);
   const view = new DataView(out.buffer);
   out[0] = RpcOp.MSG_ACK;
   view.setUint16(2, chatRef & 0xffff, true);
