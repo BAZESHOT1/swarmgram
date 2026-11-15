@@ -449,8 +449,31 @@ export default function ModulesScreen() {
         byMac.set(key, module);
       }
     }
+    // Модуль может быть уже подключён по BLE, но ещё не появиться в ответе
+    // сервера (pair/attach в процессе или офлайн). Показываем локальную карточку.
+    const info = localConnection.connected ? localConnection.info : null;
+    if (info?.hardwareId) {
+      const key = info.hardwareId.toLowerCase();
+      if (!byMac.has(key)) {
+        byMac.set(key, {
+          id: `local:${key}`,
+          hardwareId: info.hardwareId,
+          publicId: info.publicId,
+          role: info.role,
+          online: true,
+          status: 'attached',
+          transport: localConnection.connection?.kind ?? 'ble',
+          firmware: info.firmware,
+          battery: info.battery,
+          name: info.publicId ? `Модуль ${info.publicId}` : 'Носимый модуль',
+          lastSeenAt: new Date().toISOString(),
+          attached: true,
+          blocked: false,
+        } as unknown as ModuleRow);
+      }
+    }
     return [...byMac.values()];
-  }, [list]);
+  }, [list, localConnection.connected, localConnection.info, localConnection.connection]);
   const shadows = list.filter(isShadow);
   const total = realModules.length;
   const online = realModules.filter((module) => module.online === true && !module.blocked).length;

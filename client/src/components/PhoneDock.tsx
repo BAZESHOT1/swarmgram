@@ -48,6 +48,7 @@ export function PhoneDock() {
   const transportKnown = useStore((s) => s.transportKnown);
   const directPeer = useStore((s) => s.transportDirectPeer);
   const transportModule = useStore((s) => s.transportModule);
+  const transportGateway = useStore((s) => s.transportGateway);
   const meshPeers = useStore((s) => s.meshPeers);
 
   const [dockWidth, setDockWidth] = React.useState(0);
@@ -136,8 +137,19 @@ export function PhoneDock() {
   if (!dockVisible) return null;
 
   const syncing = chats.isLoading || (chats.isFetching && !chats.data);
-  const showLeft = !transportKnown || !transportOnline || syncing;
-  const leftText = !transportOnline ? 'Соединение...' : syncing ? 'Синхронизация...' : 'Обновление...';
+  const moduleConnected = Boolean(transportModule || directPeer);
+  const clusterOnline = Boolean(transportOnline || transportGateway);
+  const showLeft =
+    syncing ||
+    (moduleConnected ? !clusterOnline : !transportKnown || !transportOnline);
+  const leftText = moduleConnected
+    ? clusterOnline
+      ? 'Синхронизация...'
+      : 'Кластер офлайн'
+    : !transportOnline
+      ? 'Соединение...'
+      : 'Обновление...';
+
   const moduleOn = Boolean(transportModule || directPeer);
   const routeCount = Math.max(1, Object.keys(meshPeers || {}).length + 1);
 
@@ -156,7 +168,7 @@ export function PhoneDock() {
           reduced={reduced}
           style={[styles.sideCapsule, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)', maxWidth: narrow ? 66 : compact ? 74 : 96 }]}
         >
-          <View style={[styles.dot, { backgroundColor: transportOnline ? '#30D158' : '#FF9F0A' }]} />
+          <View style={[styles.dot, { backgroundColor: clusterOnline ? '#30D158' : '#FF9F0A' }]} />
           <Text numberOfLines={1} style={styles.sideText}>
             {leftText}
           </Text>

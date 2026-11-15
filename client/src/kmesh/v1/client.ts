@@ -90,7 +90,7 @@ export interface KMeshV1ClientOptions {
     srcNodeId: number;
   }) => void;
   onStatus?: (event: KMeshV1StatusEvent) => void;
-  onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number }) => void;
+  onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number; gateway: boolean }) => void;
   onSearch?: (reqId: number, results: SearchResult[], more: boolean) => void;
   onFeed?: (entries: FeedEntry[], more: boolean) => void;
   onHistory?: (chatRef: number, messages: HistoryEntry[], more: boolean) => void;
@@ -315,6 +315,7 @@ export class KMeshV1Client {
               role?: number;
               mtu?: number;
               queue?: number;
+              gateway?: boolean;
             };
             if (typeof info.nodeId === 'number') this.nodeId = info.nodeId >>> 0;
             this.opts.onInfo?.({
@@ -322,6 +323,7 @@ export class KMeshV1Client {
               role: Number(info.role ?? 0),
               mtu: Number(info.mtu ?? 0),
               queue: Number(info.queue ?? 0),
+              gateway: info.gateway === true,
             });
           } catch {
             /* ignore malformed info */

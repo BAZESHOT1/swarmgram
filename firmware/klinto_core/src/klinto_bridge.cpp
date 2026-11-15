@@ -138,6 +138,8 @@ void KlintoClientBridge::flush_legacy_reply() {
   const char *role = cfg_.role == KL_ROLE_GATEWAY
                          ? "gateway"
                          : (cfg_.role == KL_ROLE_ROUTER ? "repeater" : "wearable");
+  const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
+                       (router_ && router_->gateway_route()->valid);
   char json[320];
   const int n = snprintf(
       json, sizeof(json),
@@ -147,7 +149,7 @@ void KlintoClientBridge::flush_legacy_reply() {
       "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
       cfg_.hardware_id, cfg_.ble_mod6, (unsigned long)cfg_.node_id, role,
       (unsigned)KL_FIRMWARE_BUILD, (unsigned)(router_ ? router_->battery_percent() : 0),
-      cfg_.role == KL_ROLE_GATEWAY ? "true" : "false", (unsigned)pending_outbox(),
+      gateway ? "true" : "false", (unsigned)pending_outbox(),
       (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
   if (n > 0 && (size_t)n < sizeof(json)) {
     send_legacy_frame(type == 6 ? 7 : 2, json, (size_t)n);
@@ -586,13 +588,16 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[224];
+  char info[240];
+  const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
+                       (router_ && router_->gateway_route()->valid);
   const int n = snprintf(
       info, sizeof(info),
       "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u,"
-      "\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
+      "\"gateway\":%s,\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
       (unsigned long)cfg_.node_id, (unsigned)cfg_.role,
       (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0),
+      gateway ? "true" : "false",
       (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
   if (n <= 0) return false;
   return send_frame(KL_CF_INFO, (const uint8_t *)info, (size_t)n);

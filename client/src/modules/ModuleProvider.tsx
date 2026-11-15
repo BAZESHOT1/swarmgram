@@ -287,6 +287,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           resolveChatByRef: resolveChat,
           onInfo: (info) => {
             setMeshCapabilities({ queue: info.queue });
+            setTransportGateway(info.gateway);
             if (info.nodeId) void api.kmeshV1NodeBind(info.nodeId).catch(() => undefined);
           },
           onSearch: (reqId, results, more) => emitKmeshSearch({ reqId, results, more }),

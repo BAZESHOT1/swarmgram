@@ -522,6 +522,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       archivedVia: 'gateway',
       ciphertextB64,
       nonceB64,
+      nonce: nonceB64,
     });
     const inserted = await one<{ seq: number; id: string; created_at: string }>(
       `INSERT INTO messages
@@ -555,9 +556,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
           senderUsername: sender?.username ?? '',
           kind: envelope.kind,
           createdAt: row.created_at,
-          nonce: envelope.nonce.toString('base64'),
-          header: { kmeshV1: true, transport: 'mesh' },
-          ciphertext: envelope.ciphertext.toString('base64'),
+          nonce: nonceB64,
+          header: { kmeshV1: true, transport: 'mesh', ciphertextB64, nonceB64, nonce: nonceB64 },
+          envelopeB64: ciphertextB64,
         },
       });
     }
