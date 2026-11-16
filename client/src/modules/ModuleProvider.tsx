@@ -988,10 +988,17 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
   // Периодически обновляем нагрузку mesh для политики трафика.
   useEffect(() => {
+    let tick = 0;
     const timer = setInterval(() => {
       const current = connectionRef.current;
       const currentInfo = current?.info;
       if (!current || !currentInfo) return;
+      // HELLO раз в 15 секунд: модуль отвечает INFO, и gateway/queue остаются
+      // свежими даже если периодический notify потерялся.
+      tick += 1;
+      if (tick % 3 === 0) {
+        void v1ClientRef.current?.hello().catch(() => undefined);
+      }
       setMeshCapabilities({
         connected: true,
         gateway: Boolean(currentInfo.gateway),

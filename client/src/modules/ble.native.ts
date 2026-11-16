@@ -307,8 +307,24 @@ export class NativeBleTransport implements ModuleConnection {
       /* ignore */
     }
     if (!found.size) {
+      // Некоторые Android-прошивки не фильтруют connectedDevices по сервису —
+      // пробуем без фильтра и отбираем по имени KL-*/SG-*.
+      try {
+        for (const device of await ble.connectedDevices([])) add(device);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!found.size) {
       try {
         for (const device of await ble.devices([BLE_UUIDS.service])) add(device);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!found.size) {
+      try {
+        for (const device of await ble.devices([])) add(device);
       } catch {
         /* ignore */
       }
@@ -883,6 +899,14 @@ export class NativeBleTransport implements ModuleConnection {
     if (this.disconnected) return;
     this.disconnected = true;
     this.info = null;
+    // Освобождаем GATT-соединение: иначе модуль остаётся «занятым» системой,
+    // перестаёт рекламироваться, и приложение больше не может его найти.
+    const deviceId = this.deviceId;
+    if (deviceId) {
+      void manager()
+        .cancelDeviceConnection(deviceId)
+        .catch(() => undefined);
+    }
     for (const handler of this.disconnectHandlers) {
       try {
         handler();
