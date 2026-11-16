@@ -1781,6 +1781,34 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** Uplink мобильного шлюза: модуль → приложение → Hub. */
+  kmeshV1MobileRelay: (body: {
+    gateway_id: number;
+    msg_uuid: string;
+    packet_b64: string;
+    src_id?: number;
+    packet_id?: number;
+    rssi?: number;
+    iface?: number;
+  }) =>
+    req<{ ok: true; gateway_id: number }>('/v1/kmesh/v1/mobile/relay', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Downlink мобильного шлюза: Hub → приложение → модуль. */
+  kmeshV1MobileDownlink: (gatewayId: number, since = 0) =>
+    req<{
+      ok: true;
+      cursor: number;
+      items: Array<{
+        kind: string;
+        dst_node_id: number;
+        packet_id: number;
+        packet_b64?: string;
+      }>;
+    }>(`/v1/kmesh/v1/mobile/downlink?gateway_id=${gatewayId}&since=${since}`),
+
   kmeshV1Search: (q: string, type: 'all' | 'users' | 'groups' | 'channels' = 'all') =>
     req<{
       ok: true;

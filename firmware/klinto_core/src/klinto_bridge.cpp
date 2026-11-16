@@ -146,7 +146,8 @@ void KlintoClientBridge::flush_legacy_reply() {
                          ? "gateway"
                          : (cfg_.role == KL_ROLE_ROUTER ? "repeater" : "wearable");
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
-                       (router_ && router_->gateway_route()->valid);
+                       (router_ && router_->gateway_route()->valid) ||
+                       (router_ && router_->mobile_gateway_active());
   char json[320];
   const int n = snprintf(
       json, sizeof(json),
@@ -600,20 +601,26 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[320];
+  char info[384];
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
-                       (router_ && router_->gateway_route()->valid);
+                       (router_ && router_->gateway_route()->valid) ||
+                       (router_ && router_->mobile_gateway_active());
   const int n = snprintf(
       info, sizeof(info),
       "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u,"
       "\"gateway\":%s,\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\","
-      "\"hardwareId\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,\"attached\":true}",
+      "\"hardwareId\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,\"attached\":true,"
+      "\"bcn\":%lu,\"gwAge\":%ld,\"ch\":%u,\"mobile\":%u}",
       (unsigned long)cfg_.node_id, (unsigned)cfg_.role,
       (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0),
       gateway ? "true" : "false",
       (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6,
       cfg_.hardware_id, (unsigned)KL_FIRMWARE_BUILD,
-      (unsigned)(router_ ? router_->battery_percent() : 0));
+      (unsigned)(router_ ? router_->battery_percent() : 0),
+      (unsigned long)(router_ ? router_->beacons_rx() : 0),
+      (long)(router_ ? router_->gateway_age_ms(kl_uptime_ms()) : -1),
+      (unsigned)(router_ ? router_->channel() : 0),
+      (unsigned)((router_ && router_->mobile_gateway_active()) ? 1 : 0));
   if (n <= 0) return false;
   return send_frame(KL_CF_INFO, (const uint8_t *)info, (size_t)n);
 }

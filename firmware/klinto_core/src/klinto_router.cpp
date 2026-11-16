@@ -407,6 +407,7 @@ void KlintoRouter::handle_beacon(const kl_packet_t *pkt, uint8_t iface, int16_t 
 
   const uint8_t hops = pkt->hop_count;
   const bool better = !gw_.valid || hops < gw_.hops || (hops == gw_.hops && rssi > gw_.rssi + 6);
+  beacons_rx_++;
   if (better) {
     gw_.valid = true;
     gw_.gateway_id = gateway_id;
@@ -794,6 +795,10 @@ void KlintoRouter::tick(uint32_t now_ms) {
 
 void KlintoRouter::on_channel_changed(uint8_t wifi_channel) {
   KlintoGuard guard(lock_);
+  /* Тот же канал — маршруты и gw_ не трогаем. Раньше periodic rescan
+   * обнулял маршрут до шлюза, и INFO показывал gateway=false до следующего
+   * beacon (до 30 секунд). */
+  if (wifi_channel == cfg_.wifi_channel && gw_.valid) return;
   cfg_.wifi_channel = wifi_channel;
   memset(routes_, 0, sizeof(routes_));
   memset(neighbors_, 0, sizeof(neighbors_));
@@ -914,7 +919,7 @@ void KlintoRouter::set_internet_status(bool has_internet, uint16_t rtt_ms, bool 
   inet_rtt_ms_ = rtt_ms;
   relay_allowed_ = allow_relay;
   const bool active = has_internet && allow_relay && cfg_.role == KL_ROLE_CLIENT &&
-                      cfg_.hybrid_portable && !battery_low_;
+                      !battery_low_;
   if (active != mobile_gateway_) {
     mobile_gateway_ = active;
     last_mobile_beacon_ms_ = 0;
@@ -927,7 +932,7 @@ bool KlintoRouter::relay_enabled() const {
 }
 
 bool KlintoRouter::mobile_gateway_active() const {
-  return cfg_.role == KL_ROLE_CLIENT && cfg_.hybrid_portable && mobile_gateway_ &&
+  return cfg_.role == KL_ROLE_CLIENT && mobile_gateway_ &&
          inet_has_ && relay_allowed_ && !battery_low_;
 }
 

@@ -24,6 +24,7 @@ import { KMeshV1Client } from '../kmesh/v1/client';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
+import { startMobileGateway, type MobileGatewayHandle } from '../kmesh/v1/mobileGateway';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
 import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
@@ -133,6 +134,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const lastRecordRef = useRef<LastModuleRecord | null>(null);
   const unsubEnvelopeRef = useRef<(() => void) | null>(null);
   const v1ClientRef = useRef<KMeshV1Client | null>(null);
+  const mobileGatewayRef = useRef<MobileGatewayHandle | null>(null);
   const v1UnsubRef = useRef<(() => void) | null>(null);
   const unsubInfoRef = useRef<(() => void) | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -149,6 +151,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const detachCurrent = useCallback(async () => {
+    mobileGatewayRef.current?.stop();
+    mobileGatewayRef.current = null;
     unsubEnvelopeRef.current?.();
     unsubInfoRef.current?.();
     unsubDisconnectRef.current?.();
@@ -215,6 +219,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       unsubDisconnectRef.current?.();
       unsubDisconnectRef.current = transport.onDisconnect(() => {
         if (connectionRef.current !== transport) return;
+        mobileGatewayRef.current?.stop();
+        mobileGatewayRef.current = null;
         void stopMeshForegroundService();
         const last = lastRecordRef.current;
         connectionRef.current = null;
@@ -408,6 +414,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         v1ClientRef.current = v1;
         setActiveKMeshV1(v1);
         v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
+        // Мобильный шлюз: модуль → приложение → Hub и обратно.
+        mobileGatewayRef.current?.stop();
+        mobileGatewayRef.current = startMobileGateway(v1);
         setMeshV1Sender(async (chatId, text, clientId) => {
           try {
             void api.kmeshV1RegisterRef(chatId).catch(() => undefined);

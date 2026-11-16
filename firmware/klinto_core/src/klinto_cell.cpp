@@ -55,8 +55,14 @@ bool KlintoCellManager::apply(uint8_t channel) {
   const uint8_t band = kl_channel_plan_band_for_freq(cfg_.lora.freq_mhz);
   const kl_channel_plan_entry_t *entry = kl_channel_plan_entry(channel, band);
   if (!entry) return false;
+  /* Повторное применение того же канала не должно сбрасывать маршруты и
+   * маршрут до шлюза: periodic rescan вызывает apply() тем же каналом,
+   * и раньше это обнуляло gw_ до следующего beacon. */
+  const bool same = applied_once_ && channel == current_channel_;
   kl_channel_plan_apply(&cfg_, channel);
   current_channel_ = channel;
+  if (same) return true;
+  applied_once_ = true;
   if (host_.apply_channel) return host_.apply_channel(host_.ctx, channel);
   return true;
 }

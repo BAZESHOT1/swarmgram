@@ -656,7 +656,15 @@ export class NativeBleTransport implements ModuleConnection {
       if (frame.type !== ClientFrameType.INFO) continue;
       const info = this.infoFromV1(frame.payload);
       if (!info) continue;
-      dbg(`v1 info node=${info.publicId ?? '?'} gateway=${info.gateway ? 1 : 0}`);
+      let diag = '';
+      try {
+        const raw = JSON.parse(new TextDecoder().decode(frame.payload)) as Record<string, unknown>;
+        const g = (key: string): string => (raw[key] == null ? '?' : String(raw[key]));
+        diag = `bcn=${g('bcn')} gwAge=${g('gwAge')} mobile=${g('mobile')} ch=${g('ch')}`;
+      } catch {
+        /* ignore malformed info */
+      }
+      dbg(`v1 info node=${info.publicId ?? '?'} gateway=${info.gateway ? 1 : 0} ${diag}`);
       this.applyInfo(info);
       if (this.infoWaiter) {
         clearTimeout(this.infoWaiter.timer);

@@ -106,6 +106,8 @@ export class KMeshV1Client {
   private seq = 1;
   private nodeId = 0;
   private opts: KMeshV1ClientOptions;
+  /** Мобильный шлюз подключает обработчик после создания клиента. */
+  private proxyHandler?: (packet: MeshPacket, raw: Uint8Array) => void;
   private proxyBytesToday = 0;
   private proxyDay = '';
   private dailyProxyLimit = 10 * 1024 * 1024;
@@ -154,6 +156,11 @@ export class KMeshV1Client {
   attachLink(link: KMeshV1Link): void {
     this.link = link;
     this.decoder.reset();
+  }
+
+  /** Обработчик PROXY_UP (мобильный шлюз включает его после создания). */
+  setProxyUplinkHandler(handler: (packet: MeshPacket, raw: Uint8Array) => void): void {
+    this.proxyHandler = handler;
   }
 
   setNodeId(nodeId: number): void {
@@ -400,8 +407,9 @@ export class KMeshV1Client {
         case ClientFrameType.PROXY_UP: {
           const packet = decodeMeshPacket(frame.payload);
           if (!packet) break;
+          const handler = this.opts.onProxyUplink ?? this.proxyHandler;
           void this.addProxyBytes(frame.payload.length).then((allowed) => {
-            if (allowed) this.opts.onProxyUplink?.(packet, frame.payload);
+            if (allowed) handler?.(packet, frame.payload);
           });
           break;
         }

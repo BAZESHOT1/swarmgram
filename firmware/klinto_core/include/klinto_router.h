@@ -165,6 +165,12 @@ class KlintoRouter {
 
   const kl_route_entry_t *route(uint32_t dst_id) const;
   const kl_gw_route_t *gateway_route() const { return &gw_; }
+  /** Диагностика для INFO: сколько beacon'ов услышали и когда последний. */
+  uint32_t beacons_rx() const { return beacons_rx_; }
+  int32_t gateway_age_ms(uint32_t now_ms) const {
+    return gw_.valid ? (int32_t)(now_ms - gw_.last_seen_ms) : -1;
+  }
+  uint8_t channel() const { return cfg_.wifi_channel; }
   const kl_neighbor_t *neighbors() const { return neighbors_; }
   uint16_t neighbor_count() const;
 
@@ -254,6 +260,7 @@ class KlintoRouter {
   uint32_t last_presence_gw_hop_;
   uint32_t last_beacon_ms_;
   uint32_t last_mobile_beacon_ms_;
+  uint32_t beacons_rx_ = 0;
   uint32_t boot_ms_;
   kl_router_stats_t stats_;
   KlintoLock lock_;

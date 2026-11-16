@@ -87,6 +87,8 @@ class KlintoCellManager {
   kl_cell_host_t host_;
   uint8_t state_;
   uint8_t current_channel_;
+  /** Канал уже применялся к радио (нужно, чтобы не дёргать маршруты зря). */
+  bool applied_once_ = false;
   uint8_t scan_index_;
   uint8_t scan_cycle_;
   uint32_t scan_deadline_ms_;

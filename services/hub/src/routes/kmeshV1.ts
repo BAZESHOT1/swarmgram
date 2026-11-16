@@ -790,6 +790,104 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, chat_ref: ref });
   });
 
+  /**
+   * Мобильный шлюз: приложение с подключённым по BLE модулем пересылает
+   * uplink-пакеты в Hub. Аутентификация — пользовательский JWT, поэтому
+   * доверяем только узлу, привязанному к этому пользователю.
+   */
+  app.post('/kmesh/v1/mobile/relay', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const gatewayId = num(body.gateway_id);
+    if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+    const packetB64 = String(body.packet_b64 ?? '');
+    if (!packetB64 || packetB64.length > MAX_ARCHIVE_B64) throw badRequest('invalid_packet');
+
+    const bound = await one<{ user_id: string }>(
+      'SELECT user_id::text FROM kmesh_v1_node_bindings WHERE node_id = $1',
+      [gatewayId],
+    );
+    if (bound && bound.user_id !== auth.userId) throw forbidden('node_owned_by_other');
+    if (!bound) {
+      await query(
+        `INSERT INTO kmesh_v1_node_bindings (node_id, user_id, updated_at)
+         VALUES ($1,$2, now())
+         ON CONFLICT (node_id) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()`,
+        [gatewayId, auth.userId],
+      );
+    }
+    // Узел онлайн; шлюз для его downlink — он сам (phone-tethered).
+    await query(
+      `INSERT INTO kmesh_v1_presence
+         (node_id, gateway_id, rssi, hops, iface, role, user_id, last_seen_at, expires_at)
+       VALUES ($1,$1,$2,$3,0,0,$4, now(), now() + interval '120 seconds')
+       ON CONFLICT (node_id) DO UPDATE SET
+         gateway_id = EXCLUDED.gateway_id,
+         user_id = EXCLUDED.user_id,
+         last_seen_at = now(),
+         expires_at = EXCLUDED.expires_at`,
+      [gatewayId, num(body.rssi), num(body.hops), auth.userId],
+    );
+
+    const relayBody = { ...body, gateway_id: gatewayId };
+    await storeArchive(relayBody, gatewayId);
+    await routeRelayedPacket(relayBody, gatewayId);
+
+    const src = num(body.src_id);
+    const packetId = num(body.packet_id);
+    if (src > 1 && packetId > 0) {
+      await query(
+        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, expires_at)
+         VALUES ($1,$2,'ack',$3,$4, now() + interval '24 hours')`,
+        [gatewayId, src, packetId, String(body.msg_uuid ?? '')],
+      );
+    }
+    rateLimit(`kmesh-mobile-relay:${auth.userId}`, 600, 60_000);
+    return reply.send({ ok: true, gateway_id: gatewayId });
+  });
+
+  /** Downlink для мобильного шлюза (приложение → модуль → mesh). */
+  app.get('/kmesh/v1/mobile/downlink', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const q = req.query as { gateway_id?: string; since?: string };
+    const gatewayId = num(q.gateway_id);
+    const since = Math.max(0, num(q.since));
+    if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
+    const bound = await one<{ user_id: string }>(
+      'SELECT user_id::text FROM kmesh_v1_node_bindings WHERE node_id = $1',
+      [gatewayId],
+    );
+    if (!bound || bound.user_id !== auth.userId) throw forbidden('node_not_bound');
+    const rows = await query<{
+      id: string; dst_node_id: string; kind: string; packet_id: string | null; packet_b64: string | null;
+    }>(
+      `SELECT id::text, dst_node_id::text, kind, packet_id::text, packet_b64
+         FROM kmesh_v1_downlink
+        WHERE (gateway_id = $1 OR gateway_id = 0)
+          AND id > $2 AND delivered_at IS NULL AND expires_at > now()
+        ORDER BY id ASC LIMIT 20`,
+      [gatewayId, since],
+    );
+    if (rows.length) {
+      const ids = rows.map((r) => r.id);
+      await query(
+        'UPDATE kmesh_v1_downlink SET delivered_at = now() WHERE id = ANY($1::bigint[])',
+        [ids],
+      );
+    }
+    const cursor = rows.length ? Number(rows[rows.length - 1].id) : since;
+    return reply.send({
+      ok: true,
+      cursor,
+      items: rows.map((r) => ({
+        kind: r.kind,
+        dst_node_id: Number(r.dst_node_id),
+        packet_id: r.packet_id == null ? 0 : Number(r.packet_id),
+        ...(r.packet_b64 ? { packet_b64: r.packet_b64 } : {}),
+      })),
+    });
+  });
+
   /** Короткий поллинг ответов шлюзом (MQTT не требуется). */
   app.get('/kmesh/v1/downlink', async (req, reply) => {
     await authorizeGateway(req);

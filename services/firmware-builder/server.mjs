@@ -50,6 +50,7 @@ const CORE_CHECK_TTL_MS = 30_000;
 const FQBN = {
   esp32c3: 'esp32:esp32:esp32c3:PartitionScheme=min_spiffs',
   esp32: 'esp32:esp32:esp32:PartitionScheme=min_spiffs',
+  esp32s2: 'esp32:esp32:esp32s2:PartitionScheme=min_spiffs',
   esp32s3: 'esp32:esp32:esp32s3:PartitionScheme=min_spiffs',
   esp32c6: 'esp32:esp32:esp32c6:PartitionScheme=min_spiffs',
 };
@@ -63,6 +64,7 @@ const FQBN = {
 const FQBN_KMESH = {
   esp32c3: 'esp32:esp32:esp32c3',
   esp32: 'esp32:esp32:esp32',
+  esp32s2: 'esp32:esp32:esp32s2',
   esp32s3: 'esp32:esp32:esp32s3',
   esp32c6: 'esp32:esp32:esp32c6',
 };
@@ -252,6 +254,15 @@ function generateConfigHeader(config, version) {
   const isSx1262 = chip === 'sx1262';
 
   const useKmeshV1 = cfgBoolean(kmesh.v1, true);
+  // BLE-мост: wearable/repeater по умолчанию, шлюзу — только по запросу.
+  // ESP32-S2 физически без Bluetooth, для него BLE отключаем.
+  const BLE_BOARDS = new Set(['esp32', 'esp32c3', 'esp32s3', 'esp32c6']);
+  const bleRequested = config.ble === true || role === 'wearable' || role === 'repeater';
+  const bleSupported = BLE_BOARDS.has(board);
+  if (bleRequested && board === 'esp32s2') {
+    throw new Error('ble_not_supported:esp32s2');
+  }
+  const hasBle = bleRequested && bleSupported;
   const tempMeshKey = String(kmesh.tempKey ?? config.mesh?.tempKey ?? config.tempMeshKey ?? '').replace(/[^0-9a-fA-F]/g, '').slice(0, 64);
   if (useKmeshV1 && tempMeshKey.length !== 64) {
     // All nodes of one mesh share this transport key. Never generate a
@@ -273,7 +284,7 @@ function generateConfigHeader(config, version) {
     `#define KL_CHIP_ARCH ${CHIP_ARCH[board] || 1}`,
     `#define KL_FIRMWARE_BUILD ${FIRMWARE_BUILD}`,
     `#define KL_HAS_LORA ${useLora ? 1 : 0}`,
-    `#define KL_HAS_BLE ${role === 'wearable' ? 1 : 0}`,
+    `#define KL_HAS_BLE ${hasBle ? 1 : 0}`,
     `#define KL_HAS_MQTT ${role === 'gateway' ? 1 : 0}`,
     `#define KL_OTA_PUBKEY_HEX ${cString(OTA_PUBKEY)}`,
     `#define KL_CONNECTIVITY ${cString(connectivity)}`,
@@ -416,8 +427,8 @@ async function findBinary(outDir, sketchName) {
   return anyBin.length ? join(outDir, anyBin[0]) : null;
 }
 
-const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3', esp32c6: 'esp32c6' };
-const CHIP_ARCH = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4 };
+const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3', esp32c6: 'esp32c6', esp32s2: 'esp32s2' };
+const CHIP_ARCH = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32s2: 5 };
 
 /** Р РµРєСѓСЂСЃРёРІРЅС‹Р№ РїРѕРёСЃРє С„Р°Р№Р»Р° (flash_args Р»РµР¶РёС‚ РІРЅСѓС‚СЂРё build-path). */
 async function findFileRecursive(dir, name, depth = 0) {
@@ -623,7 +634,7 @@ async function compileFirmware(config, version) {
       'RADIOLIB_EXCLUDE_LORAWAN', 'RADIOLIB_EXCLUDE_FSK4', 'RADIOLIB_EXCLUDE_BELL',
       'RADIOLIB_EXCLUDE_PAGER', 'RADIOLIB_EXCLUDE_LR11X0',
     ].map((name) => `-D${name}=1`).join(' ');
-    const bleFlags = role === 'wearable'
+    const bleFlags = hasBle
       ? [
           '-DCONFIG_BT_NIMBLE_ROLE_CENTRAL_DISABLED=1',
           '-DCONFIG_BT_NIMBLE_ROLE_OBSERVER_DISABLED=1',

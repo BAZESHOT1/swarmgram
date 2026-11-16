@@ -87,7 +87,7 @@ bool kl_config_validate(kl_config_t *cfg) {
   if (cfg->station_presence_ms < cfg->presence_interval_ms) {
     cfg->station_presence_ms = KL_DEFAULT_STATION_PRESENCE_MS;
   }
-  if (cfg->gw_beacon_interval_ms < 30000) cfg->gw_beacon_interval_ms = 30000;
+  if (cfg->gw_beacon_interval_ms < 5000) cfg->gw_beacon_interval_ms = 5000;
   if (cfg->lora.sf < 6 || cfg->lora.sf > 12) cfg->lora.sf = 9;
   if (cfg->lora.cr < 5 || cfg->lora.cr > 8) cfg->lora.cr = 5;
   if (cfg->lora.bw_khz <= 0) cfg->lora.bw_khz = 125.0f;
