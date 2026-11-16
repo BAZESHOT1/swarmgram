@@ -111,6 +111,11 @@ class KlintoClientBridge {
   void handle_legacy_frame(uint8_t type, const uint8_t *payload, size_t len);
   void flush_legacy_reply();
   uint8_t legacy_reply_type_ = 0;
+  uint8_t legacy_reply_left_ = 0;
+  uint32_t legacy_reply_next_ms_ = 0;
+  /** KMesh_v1 INFO: отправляем несколько раз, пока клиент подписывается. */
+  uint8_t info_reply_left_ = 0;
+  uint32_t info_reply_next_ms_ = 0;
   void flush_outbox();
   void log_line(const char *fmt, ...);
 

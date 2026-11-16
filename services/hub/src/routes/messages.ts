@@ -338,7 +338,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           senderUserId: r.sender_user_id,
           senderUsername: r.sender_username,
           senderDeviceId: r.sender_device_id,
-          clientId: r.client_id,
+          clientId: r.client_id ?? extractClientId(r.header),
         };
       }),
     );
@@ -382,7 +382,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       senderUserId: r.sender_user_id,
       senderUsername: r.sender_username,
       senderDeviceId: r.sender_device_id,
-      clientId: r.client_id,
+      clientId: r.client_id ?? extractClientId(r.header),
     });
   });
 
@@ -625,6 +625,20 @@ async function notifyMessageRecipients(input: NotifyRecipientsInput): Promise<vo
 function extractNonce(header: unknown): string {
   if (header && typeof header === 'object' && typeof (header as any).nonce === 'string') return (header as any).nonce;
   return '';
+}
+
+/** clientId из header: нужен для склейки оптимистичного сообщения и архива. */
+function extractClientId(header: unknown): string | null {
+  if (!header || typeof header !== 'object') return null;
+  const h = header as Record<string, unknown>;
+  const direct = h.clientId;
+  if (typeof direct === 'string' && direct) return direct;
+  const nested = h.clientHeader;
+  if (nested && typeof nested === 'object') {
+    const value = (nested as Record<string, unknown>).clientId;
+    if (typeof value === 'string' && value) return value;
+  }
+  return null;
 }
 
 /** Активная блокировка пользователя в чате. */

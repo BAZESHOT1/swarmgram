@@ -156,17 +156,20 @@ void BleClientLink::onConnected(uint16_t conn_id, uint16_t mtu) {
   conn_id_ = conn_id;
   mtu_ = mtu < 23 ? 23 : mtu;
   connected_ = true;
+  Serial.printf("[ble] connected mtu=%u\n", (unsigned)mtu_);
   if (hook_) hook_(hook_ctx_, true);
 }
 
 void BleClientLink::onDisconnected() {
   connected_ = false;
   conn_id_ = 0;
+  Serial.println("[ble] disconnected");
   if (hook_) hook_(hook_ctx_, false);
   BLEDevice::startAdvertising();
 }
 
 void BleClientLink::onWrite(const uint8_t *data, size_t len) {
+  Serial.printf("[ble] rx %u\n", (unsigned)len);
   if (cb_) cb_(cb_ctx_, data, len, 0, 0xFF);
 }
 

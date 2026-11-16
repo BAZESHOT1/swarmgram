@@ -247,6 +247,7 @@ export class KMeshV1Client {
     text: string;
     toInternet?: boolean;
     group?: boolean;
+    clientId?: string;
   }): Promise<{ msgUuid: string; state: KMeshV1SyncState }> {
     const keys = await storage.loadKeys();
     if (!keys) throw new Error('device_keys_missing');
@@ -292,6 +293,7 @@ export class KMeshV1Client {
       state: 'LOCAL_MESH_ONLY',
       attempts: 0,
       permanentSignature: '',
+      ...(input.clientId ? { clientId: input.clientId } : {}),
     };
     await kmeshV1Enqueue(item);
 
@@ -484,7 +486,11 @@ export class KMeshV1Client {
           ciphertext_b64: item.ciphertextB64,
           nonce: item.nonce,
           kind: 'text',
-          header: { chatRef: item.chatRef, transport: 'kmesh-v1' },
+          header: {
+            chatRef: item.chatRef,
+            transport: 'kmesh-v1',
+            ...(item.clientId ? { clientId: item.clientId } : {}),
+          },
           signature,
           sig_alg: 'ecdsa-p256',
           resign_mode: 'client',

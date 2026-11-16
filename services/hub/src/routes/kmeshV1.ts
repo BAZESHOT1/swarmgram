@@ -1800,6 +1800,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       : signature;
     const storedAlg = resignMode === 'server' ? 'server-hmac-sha256' : sigAlg;
 
+    const clientHeader =
+      body.header && typeof body.header === 'object'
+        ? (body.header as Record<string, unknown>)
+        : {};
+    const clientId =
+      typeof clientHeader.clientId === 'string' && clientHeader.clientId
+        ? clientHeader.clientId
+        : null;
     const header = {
       kmeshV1: true,
       msgUuid: uuid,
@@ -1811,7 +1819,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       chatRef: body.chat_ref == null ? null : num(body.chat_ref),
       ciphertextB64,
       nonce: String(body.nonce ?? ''),
-      clientHeader: body.header && typeof body.header === 'object' ? body.header : {},
+      clientHeader,
+      ...(clientId ? { clientId } : {}),
     };
 
     const inserted = await one<{ seq: number; id: string; created_at: string }>(

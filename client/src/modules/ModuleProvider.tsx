@@ -408,7 +408,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         v1ClientRef.current = v1;
         setActiveKMeshV1(v1);
         v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
-        setMeshV1Sender(async (chatId, text) => {
+        setMeshV1Sender(async (chatId, text, clientId) => {
           try {
             void api.kmeshV1RegisterRef(chatId).catch(() => undefined);
             const result = await v1.sendText({
@@ -417,6 +417,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               peerNodeId: 1,
               text,
               toInternet: true,
+              clientId,
             });
             return result.state !== 'FAILED';
           } catch {
@@ -584,7 +585,20 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   /** Ручное подключение: пользователь сам выбирает устройство. */
   const connect = useCallback(
     async (kind: ConnectionKind): Promise<ModuleInfo | null> => {
-      if (inFlightRef.current) return null;
+      // Автоскан restore() может держать inFlightRef до ~12 с (скан + HELLO).
+      // Раньше ручное подключение молча возвращало null — теперь ждём.
+      if (inFlightRef.current) {
+        const deadline = Date.now() + 14_000;
+        while (inFlightRef.current && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        if (inFlightRef.current) {
+          const busyMessage = 'Bluetooth занят поиском модуля. Подождите пару секунд и повторите.';
+          lastErrorRef.current = busyMessage;
+          if (mountedRef.current) setError(busyMessage);
+          return null;
+        }
+      }
       inFlightRef.current = true;
       setBusy(kind);
       setError(null);
@@ -605,6 +619,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         await transport.close().catch(() => undefined);
         const message =
           connectError instanceof Error ? connectError.message : 'Не удалось подключить модуль.';
+        console.log('[ble] connect failed:', message);
         lastErrorRef.current = message;
         if (mountedRef.current) setError(message);
         return null;
@@ -740,6 +755,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const scanTransport = getModuleTransport('ble');
         const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
         setNearbyModules(nearby);
+        console.log(
+          '[ble] restore scan:',
+          nearby.map((device) => `${device.name}/${device.id}`).join(', ') || 'empty',
+        );
         const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
         let incomingClaims: Array<{ id: string; oldBleName: string; claimToken: string; moduleMac: string; mod6: string }> = [];
         try {
@@ -864,6 +883,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             );
           }
         } catch (e) {
+          console.log('[ble] restore connect failed:', e instanceof Error ? e.message : String(e));
           await transport.close().catch(() => undefined);
           if (cancelAutoKeyRef.current !== key) {
             setAutoModule((prev) =>

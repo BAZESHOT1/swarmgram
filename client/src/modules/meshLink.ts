@@ -8,7 +8,7 @@
 import type { Envelope } from '../data/api';
 
 type MeshSender = (chatId: string, envelope: unknown) => Promise<void>;
-type MeshV1Sender = (chatId: string, text: string) => Promise<boolean>;
+type MeshV1Sender = (chatId: string, text: string, clientId?: string) => Promise<boolean>;
 type MeshListener = (envelope: Envelope) => void;
 
 let sender: MeshSender | null = null;
@@ -47,11 +47,12 @@ export function canSendViaMesh(): boolean {
 
 /** Отправить конверт через модуль. false — модуль не подключён или ошибка. */
 export async function sendViaMesh(chatId: string, envelope: unknown): Promise<boolean> {
-  const item = (envelope ?? {}) as { text?: unknown; kind?: unknown };
+  const item = (envelope ?? {}) as { text?: unknown; kind?: unknown; clientId?: unknown };
   const text = typeof item.text === 'string' ? item.text : '';
+  const clientId = typeof item.clientId === 'string' ? item.clientId : undefined;
   if (v1Sender && text) {
     try {
-      if (await v1Sender(chatId, text)) return true;
+      if (await v1Sender(chatId, text, clientId)) return true;
     } catch {
       /* падаем в legacy-путь ниже */
     }

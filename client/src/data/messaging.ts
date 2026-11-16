@@ -533,9 +533,11 @@ async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUserna
     asChannel: envExt.asChannel === true || envHeader.asChannel === true,
     viewsCount: envExt.viewsCount,
   };
-  // Системное сообщение (или конверт без объекта) нечего скачивать с узлов:
-  // текст лежит открытым в header. UI рисует его отдельной центрированной строкой.
-  if (env.kind === 'system' || !env.objectId) {
+  // Системное сообщение нечего скачивать с узлов: текст лежит открытым в
+  // header. Но KMesh-сообщения тоже приходят без objectId — у них шифртекст
+  // лежит в header.ciphertextB64. Их обязательно расшифровываем, иначе в
+  // ленте появляется «Зашифрованное сообщение» вместо текста.
+  if (env.kind === 'system' || (!env.objectId && !env.envelopeB64)) {
     const systemText = typeof envHeader.systemText === 'string' ? envHeader.systemText : '';
     return {
       ...common,
@@ -554,7 +556,9 @@ async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUserna
   }
   const bytes = env.envelopeB64
     ? fromB64u(env.envelopeB64)
-    : await downloadObject(env.objectId);
+    : env.objectId
+      ? await downloadObject(env.objectId)
+      : null;
   // внимание: decryptPayload ожидает стандартный base64 (toB64), не base64url —
   // иначе fromB64 отбрасывает '-'/'_' и шифротекст повреждается.
   const payload = bytes ? await decryptPayload(rawKey, toB64(bytes), env.nonce) : null;

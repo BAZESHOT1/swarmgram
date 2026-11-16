@@ -209,6 +209,8 @@ export interface KMeshV1OutboxItem {
   attempts: number;
   serverSeq?: number;
   permanentSignature: string;
+  /** clientId оптимистичного сообщения — для склейки с историей Hub. */
+  clientId?: string;
 }
 
 const KMESH_V1_KV = 'sg:kmeshV1Outbox';

@@ -30,6 +30,7 @@ import {
 } from './types';
 import { updateClusterFromModule } from '../mesh/ClusterAwarenessService';
 import { parseModuleBleName } from './identity';
+import { ClientFrameDecoder, ClientFrameType, encodeClientFrame } from '../kmesh/v1/protocol';
 
 let sharedManager: BleManager | null = null;
 
@@ -80,9 +81,9 @@ function manager(): BleManager {
 }
 
 const BLE_READY_TIMEOUT_MS = 8000;
-const HELLO_ATTEMPTS = 3;
+const HELLO_ATTEMPTS = 4;
 const HELLO_RETRY_DELAY_MS = 700;
-const INFO_TIMEOUT_MS = 5000;
+const INFO_TIMEOUT_MS = 7000;
 
 /**
  * Заранее запрашивает разрешения Bluetooth и создаёт BleManager.
@@ -123,6 +124,36 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Диагностика BLE: короткие строки уходят в logcat (`ReactNativeJS`) и в
+ * подписчиков (страница модулей), чтобы живую отладку можно было снимать
+ * без отладочной сборки.
+ */
+export type BleDebugEntry = { at: number; text: string };
+const debugListeners = new Set<(entry: BleDebugEntry) => void>();
+
+export function onBleDebug(listener: (entry: BleDebugEntry) => void): () => void {
+  debugListeners.add(listener);
+  return () => debugListeners.delete(listener);
+}
+
+function dbg(text: string): void {
+  const entry: BleDebugEntry = { at: Date.now(), text };
+  try {
+    // console.log в release-сборке RN виден в logcat как ReactNativeJS.
+    console.log('[ble]', text);
+  } catch {
+    /* ignore */
+  }
+  for (const listener of debugListeners) {
+    try {
+      listener(entry);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Сервис a5c0 в рекламе устройства (Android/iOS отдают UUID в разном виде). */
 function hasModuleService(device: Device): boolean {
   const uuids = device.serviceUUIDs ?? [];
@@ -134,7 +165,11 @@ function hasModuleService(device: Device): boolean {
 
 /** Резервное сопоставление без фильтра: имя SG-* или сервис a5c0 в рекламе. */
 function looksLikeModule(device: Device): boolean {
-  const name = device.localName || device.name || '';
+  return looksLikeModuleNamed(device);
+}
+
+function looksLikeModuleNamed(device: Device, knownName?: string): boolean {
+  const name = knownName || device.localName || device.name || '';
   return /^KL-/i.test(name) || /^SG-/i.test(name) || hasModuleService(device);
 }
 
@@ -202,6 +237,9 @@ export class NativeBleTransport implements ModuleConnection {
   private deviceId: string | null = null;
   private mtu = 23;
   private decoder = new FrameDecoder();
+  /** Параллельный разбор KMesh_v1: модуль отвечает INFO в новом формате. */
+  private v1Decoder = new ClientFrameDecoder();
+  private v1HelloSeq = 0;
   private closing = false;
   private disconnected = false;
   private rxSub: Subscription | null = null;
@@ -232,10 +270,50 @@ export class NativeBleTransport implements ModuleConnection {
     await this.waitForPoweredOn();
     const filteredMs = Math.max(2500, Math.min(durationMs, 4000));
     const filtered = await this.scanPhase([BLE_UUIDS.service], filteredMs, () => true);
+    dbg(`scan filtered: ${filtered.length} (${filtered.map((d) => d.name).join(', ') || '-'})`);
     if (filtered.length) return filtered;
     // iOS/Edge иногда не отдают сервис в рекламе — повторяем без фильтра.
     const fallbackMs = Math.max(3000, Math.min(durationMs, 4000));
-    return this.scanPhase(null, fallbackMs, looksLikeModule);
+    const fallback = await this.scanPhase(null, fallbackMs, (device, name) =>
+      looksLikeModuleNamed(device, name),
+    );
+    dbg(`scan fallback: ${fallback.length} (${fallback.map((d) => d.name).join(', ') || '-'})`);
+    if (fallback.length) return fallback;
+    // Модуль может быть уже подключён системой/прошлой сессией — тогда он не
+    // рекламируется. Берём известные (bonded) и активные устройства.
+    const known = await this.knownDevices();
+    dbg(`scan known: ${known.length} (${known.map((d) => d.name).join(', ') || '-'})`);
+    return known;
+  }
+
+  /** Уже подключённые и известные системе устройства с сервисом модуля. */
+  private async knownDevices(): Promise<ScannedModule[]> {
+    const ble = manager();
+    const found = new Map<string, ScannedModule>();
+    const add = (device: Device): void => {
+      if (!device?.id || found.has(device.id)) return;
+      const name = device.localName || device.name || '';
+      if (!looksLikeModule(device)) return;
+      found.set(device.id, {
+        id: device.id,
+        name: name || 'KL-модуль',
+        rssi: Number(device.rssi ?? 0),
+        ...(parseModuleBleName(name) ?? {}),
+      });
+    };
+    try {
+      for (const device of await ble.connectedDevices([BLE_UUIDS.service])) add(device);
+    } catch {
+      /* ignore */
+    }
+    if (!found.size) {
+      try {
+        for (const device of await ble.devices([BLE_UUIDS.service])) add(device);
+      } catch {
+        /* ignore */
+      }
+    }
+    return [...found.values()];
   }
 
   /**
@@ -332,30 +410,25 @@ export class NativeBleTransport implements ModuleConnection {
   private async scanPhase(
     serviceUuids: string[] | null,
     durationMs: number,
-    accept: (device: Device) => boolean,
+    accept: (device: Device, name: string) => boolean,
   ): Promise<ScannedModule[]> {
     const ble = manager();
-    const found = new Map<string, ScannedModule>();
+    const found = new Map<string, { device: Device; name: string }>();
     // Предыдущий скан не должен оставаться активным: iOS молча игнорирует новый.
     await ble.stopDeviceScan().catch(() => undefined);
     try {
-      await ble.startDeviceScan(serviceUuids, { allowDuplicates: false }, (error, device) => {
-        if (error || !device || !accept(device)) return;
-        const rssi = Number(device.rssi ?? 0);
-        const existing = found.get(device.id);
-        if (existing) {
-          existing.rssi = rssi;
-          if (!existing.name || existing.name === 'SG-модуль') {
-            existing.name = device.localName || device.name || existing.name;
-          }
+      // allowDuplicates нужен, чтобы поймать scan response с именем KL-*:
+      // первый пакет Android часто отдаёт без localName.
+      await ble.startDeviceScan(serviceUuids, { allowDuplicates: true }, (error, device) => {
+        if (error || !device) return;
+        const name = device.localName || device.name || '';
+        const prev = found.get(device.id);
+        if (!prev) {
+          found.set(device.id, { device, name });
           return;
         }
-        found.set(device.id, {
-          id: device.id,
-          name: device.localName || device.name || 'KL-модуль',
-          rssi,
-          ...(parseModuleBleName(device.localName || device.name) ?? {}),
-        });
+        if (name && !prev.name) prev.name = name;
+        prev.device = device;
       });
     } catch (error) {
       await ble.stopDeviceScan().catch(() => undefined);
@@ -369,7 +442,15 @@ export class NativeBleTransport implements ModuleConnection {
     } finally {
       await ble.stopDeviceScan().catch(() => undefined);
     }
-    return [...found.values()].sort((a, b) => b.rssi - a.rssi);
+    return [...found.values()]
+      .filter((entry) => accept(entry.device, entry.name))
+      .map((entry) => ({
+        id: entry.device.id,
+        name: entry.name || 'KL-модуль',
+        rssi: Number(entry.device.rssi ?? 0),
+        ...(parseModuleBleName(entry.name) ?? {}),
+      }))
+      .sort((a, b) => b.rssi - a.rssi);
   }
 
   async open(): Promise<ModuleInfo> {
@@ -425,11 +506,14 @@ export class NativeBleTransport implements ModuleConnection {
     return this.openDeviceInternal(deviceId);
   }
 
-  private async openDeviceInternal(deviceId: string): Promise<ModuleInfo> {    if (this.isOpen) await this.close();
+  private async openDeviceInternal(deviceId: string): Promise<ModuleInfo> {
+    if (this.isOpen) await this.close();
     this.closing = false;
     this.disconnected = false;
     this.decoder = new FrameDecoder();
+    this.v1Decoder = new ClientFrameDecoder();
     this.info = null;
+    dbg(`connect ${deviceId}`);
 
     let device: Device | null = null;
     let lastError: unknown = null;
@@ -498,6 +582,9 @@ export class NativeBleTransport implements ModuleConnection {
     );
 
     // iOS/Edge могут потерять первый HELLO при медленном старте GATT — повторяем.
+    // Android иногда подтверждает подписку на notify с задержкой, поэтому
+    // первый HELLO уходит не сразу.
+    await delay(250);
     let helloError: Error | null = null;
     for (let attempt = 0; attempt < HELLO_ATTEMPTS; attempt += 1) {
       if (this.info || this.closing) break;
@@ -510,6 +597,18 @@ export class NativeBleTransport implements ModuleConnection {
         helloError = error instanceof Error ? error : new Error(String(error));
         if (this.closing) break;
       }
+      // KMesh_v1 HELLO: текущие прошивки отвечают INFO в новом формате.
+      try {
+        const helloPayloadV1 = new TextEncoder().encode(
+          JSON.stringify({ v: 3, kind: 'hello', app: 'klinto', client: 'native-ble' }),
+        );
+        await this.writeBytes(
+          encodeClientFrame(ClientFrameType.HELLO, helloPayloadV1, this.v1HelloSeq++ & 0xffff),
+        );
+      } catch {
+        /* v1-канал опционален: legacy HELLO уже отправлен */
+      }
+      dbg(`hello attempt ${attempt + 1}`);
     }
     const info = await this.waitInfo(INFO_TIMEOUT_MS, helloError ?? undefined).catch(async (error: unknown) => {
       await this.close().catch(() => undefined);
@@ -520,6 +619,7 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   private handleChunk(chunk: Uint8Array): void {
+    if (chunk.length) dbg(`rx ${chunk.length}b`);
     for (const handler of this.rawHandlers) {
       try {
         handler(chunk);
@@ -528,11 +628,54 @@ export class NativeBleTransport implements ModuleConnection {
       }
     }
     for (const frame of this.decoder.push(chunk)) this.handleFrame(frame);
+    for (const frame of this.v1Decoder.push(chunk)) {
+      if (frame.type !== ClientFrameType.INFO) continue;
+      const info = this.infoFromV1(frame.payload);
+      if (!info) continue;
+      dbg(`v1 info node=${info.publicId ?? '?'} gateway=${info.gateway ? 1 : 0}`);
+      this.applyInfo(info);
+      if (this.infoWaiter) {
+        clearTimeout(this.infoWaiter.timer);
+        this.infoWaiter.resolve(info);
+        this.infoWaiter = null;
+      }
+    }
+  }
+
+  /** ModuleInfo из KMesh_v1 INFO: nodeId/hardwareId выводятся из node_id. */
+  private infoFromV1(payload: Uint8Array): ModuleInfo | null {
+    try {
+      const raw = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
+      const nodeId = Number(raw.nodeId ?? 0) >>> 0;
+      if (!nodeId) return null;
+      const roleNum = Number(raw.role ?? 0);
+      const role = roleNum === 2 ? 'gateway' : roleNum === 1 ? 'repeater' : 'wearable';
+      const hardwareId =
+        typeof raw.hardwareId === 'string' && raw.hardwareId
+          ? raw.hardwareId
+          : `esp32-${nodeId.toString(16).padStart(8, '0')}`;
+      return normalizeInfo({
+        hardwareId,
+        publicId: String(nodeId),
+        role,
+        firmware: typeof raw.firmware === 'string' ? raw.firmware : '',
+        battery: Number(raw.battery ?? this.info?.battery ?? 0),
+        attached: true,
+        gateway: raw.gateway === true,
+        queue: Number(raw.queue ?? 0),
+        ownerNetId: Number(raw.ownerNetId ?? 0) >>> 0,
+        ownerPrefix: String(raw.ownerPrefix ?? '00000000').toLowerCase(),
+        bleMod6: typeof raw.bleMod6 === 'string' ? raw.bleMod6.toLowerCase() : undefined,
+      });
+    } catch {
+      return null;
+    }
   }
 
   /** Обновляет info и рассылает его подписчикам (шапка чатов, транспорт). */
   private applyInfo(info: ModuleInfo): void {
     this.info = info;
+    dbg(`info ${info.hardwareId} role=${info.role} gw=${info.gateway ? 1 : 0} q=${info.queue}`);
     for (const handler of this.infoHandlers) {
       try {
         handler(info);
@@ -615,6 +758,7 @@ export class NativeBleTransport implements ModuleConnection {
     return new Promise<ModuleInfo>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.infoWaiter = null;
+        dbg(`info timeout ${timeoutMs}ms${cause ? `: ${cause.message}` : ''}`);
         reject(
           new ModuleTransportError(
             `Модуль не ответил на HELLO за ${Math.round(timeoutMs / 1000)} с. ` +

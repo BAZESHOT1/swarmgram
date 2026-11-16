@@ -127,14 +127,21 @@ void KlintoClientBridge::handle_legacy_frame(uint8_t type, const uint8_t *payloa
   (void)len;
   if (type != 1 && type != 6) return; /* HELLO или PING */
   /* Ответ нельзя отправлять из GATT-колбэка: NimBLE может зависнуть.
-   * Запоминаем тип и отдаём INFO/PONG из clientTask. */
+   * Запоминаем тип и отдаём INFO/PONG из clientTask (трижды, чтобы
+   * пережить задержку подписки на notify в Android). */
   legacy_reply_type_ = type;
+  legacy_reply_left_ = 3;
+  legacy_reply_next_ms_ = 0;
 }
 
 void KlintoClientBridge::flush_legacy_reply() {
-  if (!legacy_reply_type_) return;
+  if (!legacy_reply_left_ || !legacy_reply_type_) return;
+  uint32_t now = kl_uptime_ms();
+  if (legacy_reply_next_ms_ && now < legacy_reply_next_ms_) return;
   const uint8_t type = legacy_reply_type_;
-  legacy_reply_type_ = 0;
+  legacy_reply_left_ = (uint8_t)(legacy_reply_left_ - 1);
+  legacy_reply_next_ms_ = now + 350;
+  if (!legacy_reply_left_) legacy_reply_type_ = 0;
   const char *role = cfg_.role == KL_ROLE_GATEWAY
                          ? "gateway"
                          : (cfg_.role == KL_ROLE_ROUTER ? "repeater" : "wearable");
@@ -152,7 +159,8 @@ void KlintoClientBridge::flush_legacy_reply() {
       gateway ? "true" : "false", (unsigned)pending_outbox(),
       (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
   if (n > 0 && (size_t)n < sizeof(json)) {
-    send_legacy_frame(type == 6 ? 7 : 2, json, (size_t)n);
+    const bool sent = send_legacy_frame(type == 6 ? 7 : 2, json, (size_t)n);
+    log_line("[ble] legacy reply type=%u len=%d sent=%u", (unsigned)type, n, sent ? 1u : 0u);
   }
 }
 
@@ -269,7 +277,11 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
   (void)flags;
   switch (type) {
     case KL_CF_HELLO:
-      send_info();
+      /* INFO отправляем из clientTask: из GATT-колбэка NimBLE может зависнуть.
+       * Повторяем 3 раза — Android иногда подтверждает подписку на notify
+       * уже после первого HELLO, и первый INFO теряется. */
+      info_reply_left_ = 3;
+      info_reply_next_ms_ = 0;
       break;
     case KL_CF_RPC_UP:
       handle_rpc_up(payload, len);
@@ -588,17 +600,20 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[240];
+  char info[320];
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
                        (router_ && router_->gateway_route()->valid);
   const int n = snprintf(
       info, sizeof(info),
       "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u,"
-      "\"gateway\":%s,\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
+      "\"gateway\":%s,\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\","
+      "\"hardwareId\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,\"attached\":true}",
       (unsigned long)cfg_.node_id, (unsigned)cfg_.role,
       (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0),
       gateway ? "true" : "false",
-      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
+      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6,
+      cfg_.hardware_id, (unsigned)KL_FIRMWARE_BUILD,
+      (unsigned)(router_ ? router_->battery_percent() : 0));
   if (n <= 0) return false;
   return send_frame(KL_CF_INFO, (const uint8_t *)info, (size_t)n);
 }
@@ -623,6 +638,11 @@ void KlintoClientBridge::loop(uint32_t now_ms) {
   if (link_) link_->poll(now_ms);
   if (link_ && link_->connected()) {
     flush_legacy_reply();
+    if (info_reply_left_ && (!info_reply_next_ms_ || now_ms >= info_reply_next_ms_)) {
+      send_info();
+      info_reply_left_ = (uint8_t)(info_reply_left_ - 1);
+      info_reply_next_ms_ = now_ms + 350;
+    }
   }
   if (link_ && link_->connected() && now_ms - last_flush_ms_ > 250) {
     last_flush_ms_ = now_ms;
