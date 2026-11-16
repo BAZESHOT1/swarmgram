@@ -104,13 +104,25 @@ void BleClientLink::end() {
 }
 
 void BleClientLink::rename(const char *deviceName) {
+  if (!deviceName) return;
+  strncpy(pending_name_, deviceName, sizeof(pending_name_) - 1);
+  pending_name_[sizeof(pending_name_) - 1] = '\0';
+  pending_rename_ = true;
+  /* deinit при активном клиенте рвёт соединение и иногда оставляет стек
+   * в состоянии без advertising. Применяем после disconnect в clientTask. */
+  if (!connected_) applyPendingRename();
+}
+
+void BleClientLink::applyPendingRename() {
+  if (!pending_rename_ || connected_ || !pending_name_[0]) return;
+  pending_rename_ = false;
   end();
   BLEDevice::deinit(true);
   server_ = nullptr;
   tx_ = nullptr;
   rx_ = nullptr;
   status_ = nullptr;
-  begin(deviceName);
+  begin(pending_name_);
 }
 
 bool BleClientLink::send(const uint8_t *data, size_t len) {

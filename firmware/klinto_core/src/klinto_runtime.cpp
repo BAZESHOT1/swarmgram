@@ -706,6 +706,9 @@ void KlintoNode::meshTaskEntry(void *arg) {
 void KlintoNode::clientTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
   for (;;) {
+#if KL_HAS_BLE
+    if (self->ble_.renamePending()) self->ble_.applyPendingRename();
+#endif
     self->bridge_.loop(kl_uptime_ms());
     vTaskDelay(pdMS_TO_TICKS(20));
   }

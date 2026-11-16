@@ -417,8 +417,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // nodeId из legacy INFO: не зависим от доставки v1 INFO.
         if (nextInfo.nodeId) {
           v1.setNodeId(nextInfo.nodeId);
-          // Биндим узел до старта мобильного шлюза: downlink требует binding.
-          await api.kmeshV1NodeBind(nextInfo.nodeId).catch(() => undefined);
+          // Биндим в фоне: adopt не должен ждать HTTP, иначе мастер
+          // подключения «висит» на медленной сети.
+          void api.kmeshV1NodeBind(nextInfo.nodeId).catch(() => undefined);
         }
         // Мобильный шлюз: модуль → приложение → Hub и обратно.
         mobileGatewayRef.current?.stop();

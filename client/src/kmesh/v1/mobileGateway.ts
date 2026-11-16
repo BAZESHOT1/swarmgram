@@ -192,13 +192,17 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
   // Первый INET_STATUS сразу: прошивка должна узнать про интернет до того,
   // как приложение отправит первое сообщение через KMesh.
   sendInet();
-  void pollDownlink();
+  // Первый downlink — после того, как node/bind успеет сохраниться на Hub.
+  const firstPoll = setTimeout(() => {
+    void pollDownlink();
+  }, 2500);
 
   return {
     stop: () => {
       stopped = true;
       clearInterval(heartbeat);
       clearInterval(downlinkTimer);
+      clearTimeout(firstPoll);
       markGateway(false);
       try {
         unsubscribe();

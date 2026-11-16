@@ -22,6 +22,9 @@ class BleClientLink : public IClientLink {
   void end();
   /** Перезапустить advertising с новым именем KL-<USER8>-<MOD6>. */
   void rename(const char *deviceName);
+  /** Отложенное переименование: применяем, когда нет активного подключения. */
+  bool renamePending() const { return pending_rename_; }
+  void applyPendingRename();
   bool send(const uint8_t *data, size_t len) override;
   bool connected() const override { return connected_; }
   uint16_t mtu() const override;
@@ -48,6 +51,9 @@ class BleClientLink : public IClientLink {
   uint16_t conn_id_;
   void (*hook_)(void *ctx, bool connected);
   void *hook_ctx_;
+  /** Отложенное переименование (нельзя делать deinit при активном клиенте). */
+  bool pending_rename_ = false;
+  char pending_name_[32] = {0};
 
 #if defined(ESP32)
   BLEServer *server_;
