@@ -323,6 +323,15 @@ bool KlintoRouter::send(kl_packet_t *pkt, uint32_t now_ms, uint8_t iface_hint, b
       if (sink_.deliver) sink_.deliver(sink_.ctx, pkt, 0, iface_hint);
       return true;
     }
+    /* Маршрута до шлюза ещё нет (пропустили beacon): отправляем пакет
+     * широковещательно соседям. Шлюз в одном хопе — типовой сценарий, и он
+     * подхватит пакет так же, как presence. Раньше пакет молча лежал в
+     * очереди pending и уходил только после RREP, который мог не дойти. */
+    if (transmit_on_all(pkt, now_ms)) {
+      if (pkt->flags & KL_FLAG_NEED_ACK) register_ack(pkt, true, now_ms);
+      if (sink_.status) sink_.status(sink_.ctx, pkt->msg_uuid, pkt->packet_id, KL_STATUS_SENT_TO_MESH);
+      return true;
+    }
     queue_pending(pkt, iface_hint, now_ms);
     send_rreq(KL_ANY_GATEWAY_ID, iface_hint, now_ms);
     return true;
