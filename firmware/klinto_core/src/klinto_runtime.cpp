@@ -281,6 +281,9 @@ bool KlintoNode::begin() {
     Serial.println("[klinto3] LittleFS mount failed");
   }
   loadConfig();
+  /* Фиксируем в NVS роль/распиновку/тип модуля из сборки: эти параметры
+   * должны переживать перезагрузку и OTA. */
+  kl_config_save_nvs(&cfg_);
 
   Serial.printf("[klinto3] role=%u node=%lu iface=%s%s\n", (unsigned)cfg_.role,
                 (unsigned long)cfg_.node_id, cfg_.espnow_enabled ? "espnow" : "",
@@ -653,6 +656,9 @@ void KlintoNode::onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, 
   kl_nvs_set_str("klinto3", "owner_prefix", norm);
   kl_nvs_set_uint("klinto3", "owner_net", net_id);
   kl_nvs_set_uint("klinto3", "owner_epoch", epoch);
+  /* Дублируем в полный конфиг: prefix + net + pinout + тип модуля должны
+   * восстанавливаться из одного места и переживать OTA. */
+  kl_config_save_nvs(&self->cfg_);
   self->router_.set_owner_net_id(net_id);
   self->router_.request_presence();
 #if KL_HAS_BLE

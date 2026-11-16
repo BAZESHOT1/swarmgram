@@ -23,7 +23,6 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Swipeable } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
@@ -1956,12 +1955,6 @@ export default function ChatsScreen() {
             if (selecting) leaveSelection();
           })();
         }}
-      />
-      <LinearGradient
-        pointerEvents="none"
-        colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.72)', '#000000']}
-        locations={[0, 0.55, 1]}
-        style={styles.bottomFade}
       />
     </View>
   );

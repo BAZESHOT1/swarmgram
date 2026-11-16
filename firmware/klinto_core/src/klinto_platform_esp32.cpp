@@ -71,14 +71,14 @@ bool kl_nvs_set_uint(const char *ns, const char *key, uint32_t value) {
 
 bool kl_config_load_nvs(kl_config_t *cfg) {
   if (!cfg) return false;
-  char json[1024];
+  char json[2048];
   if (!kl_nvs_get_str("klinto3", "cfg", json, sizeof(json))) return false;
   return kl_config_from_json(cfg, json);
 }
 
 bool kl_config_save_nvs(const kl_config_t *cfg) {
   if (!cfg) return false;
-  char json[1024];
+  char json[2048];
   if (!kl_config_to_json(cfg, json, sizeof(json))) return false;
   return kl_nvs_set_str("klinto3", "cfg", json);
 }

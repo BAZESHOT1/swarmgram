@@ -27,7 +27,7 @@ import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
 import { startMobileGateway, type MobileGatewayHandle } from '../kmesh/v1/mobileGateway';
 import { startMeshForegroundService, stopMeshForegroundService } from './background';
 import { classifyModuleName, decodeOwnerClaimToken, parseModuleBleName } from './identity';
-import { loadCachedIdentity, refreshCachedIdentity } from '../kmesh/v1/identity';
+import { loadCachedIdentity, refreshCachedIdentity, saveCachedIdentity } from '../kmesh/v1/identity';
 import {
   addPendingBleClaim,
   listPendingBleClaims,
@@ -448,7 +448,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // Первичная привязка на уровне прошивки: если модуль ещё свободен,
         // сразу пишем в него prefix/net из оффлайн-кэша пользователя.
         if ((nextInfo.ownerPrefix ?? '00000000').toLowerCase() === '00000000') {
-          const cachedIdentity = await loadCachedIdentity();
+          const cachedIdentity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
           if (cachedIdentity) {
             await new Promise((resolve) => setTimeout(resolve, 250));
             await v1
@@ -766,7 +766,26 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         // Префикс своего модуля читаем ДО сканирования: иначе первый скан
         // может принять чужой KL-модуль за свой.
-        const identity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
+        let identity = await loadCachedIdentity();
+        if (!identity) identity = await refreshCachedIdentity();
+        // Список модулей аккаунта: даже если имя модуля по какой-то причине
+        // с другим префиксом, mod6 из user_modules доказывает владение.
+        const ownedMod6 = new Set<string>();
+        try {
+          const remote = await api.kmeshV1Modules();
+          if (remote.identity?.blePrefix) {
+            identity = await saveCachedIdentity({
+              userId: remote.identity.userId,
+              netId: remote.identity.netId,
+              blePrefix: remote.identity.blePrefix,
+            });
+          }
+          for (const item of remote.modules ?? []) {
+            if (item.mod6) ownedMod6.add(String(item.mod6).toLowerCase());
+          }
+        } catch {
+          /* оффлайн: доверяем кэшу идентичности и локальной очереди */
+        }
         const myPrefix = identity?.blePrefix ?? null;
         const scanTransport = getModuleTransport('ble');
         const nearby = scanTransport.scan ? await scanTransport.scan(2500).catch(() => []) : [];
@@ -774,24 +793,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         console.log(
           '[ble] restore scan:',
           nearby.map((device) => `${device.name}/${device.id}`).join(', ') || 'empty',
+          `my=${myPrefix ?? '-'} owned=${[...ownedMod6].join(',') || '-'}`,
         );
         const available = nearby.filter((device) => !ignoredModulesRef.current.has(device.id));
         let incomingClaims: Array<{ id: string; oldBleName: string; claimToken: string; moduleMac: string; mod6: string }> = [];
-        try {
-          const remote = await api.kmeshV1Modules();
-          incomingClaims = remote.claims;
-          for (const claim of remote.claims) {
-            await addPendingBleClaim({
-              bleName: claim.oldBleName,
-              moduleMac: claim.moduleMac,
-              mod6: claim.mod6,
-              claimToken: claim.claimToken,
-              createdAt: new Date().toISOString(),
-            });
-          }
-        } catch {
-          /* оффлайн: используем локальную очередь */
-        }
         const pendingClaims = await listPendingBleClaims();
 
         // После подтверждения передачи Hub: подключаемся к старому имени
@@ -836,9 +841,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Жёсткие правила: свой — автоподключение; свободный и чужой — только вручную.
-        const ownDevices = available.filter(
-          (device) => classifyModuleName(device.name, myPrefix) === 'own',
-        );
+        const ownDevices = available.filter((device) => {
+          if (classifyModuleName(device.name, myPrefix) === 'own') return true;
+          const mod6 = parseModuleBleName(device.name)?.mod6;
+          return Boolean(mod6 && ownedMod6.has(mod6));
+        });
         const lastMod6 = parseModuleBleName(String(last?.hardwareId ?? ''))?.mod6
           ?? String(last?.hardwareId ?? '').replace(/[^0-9a-f]/gi, '').slice(-6).toLowerCase();
         const mine = (lastMod6

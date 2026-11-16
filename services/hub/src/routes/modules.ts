@@ -242,7 +242,53 @@ interface ModuleRecord {
 }
 
 /** Реальный online: свежесть check-in + для wearable факт подключения к клиенту. */
-function computeOnline(m: ModuleRecord): boolean {
+function nodeIdFromHardware(hardwareId: string): number | null {
+  const match = /^esp32-([0-9a-f]{8,12})$/i.exec(String(hardwareId ?? '').trim());
+  if (!match) return null;
+  const raw = match[1].toLowerCase();
+  // Старый формат: esp32-<8 hex node_id> — это уже готовый node_id.
+  if (raw.length === 8) return parseInt(raw, 16) >>> 0;
+  const text = raw.slice(0, 12);
+  // FNV-1a 32 от MAC-строки — та же формула, что в прошивке.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  let id = ((hash & 0x7ffffffe) | 0x10000000) >>> 0;
+  if (id <= 1) id = 0x10000002;
+  return id >>> 0;
+}
+
+/**
+ * Узлы, которые прямо сейчас активны в KMesh (шлюз присылает presence/relay).
+ * Так модуль-шлюз не выглядит офлайн, даже если не делает REST-check-in.
+ */
+async function liveKmeshNodeIds(): Promise<Set<number>> {
+  const ids = new Set<number>();
+  try {
+    const gateways = await query<{ gateway_id: string }>(
+      `SELECT gateway_id::text FROM kmesh_v1_gateways
+        WHERE last_seen_at > now() - interval '4 minutes'`,
+    );
+    for (const row of gateways) ids.add(Number(row.gateway_id));
+    const presence = await query<{ node_id: string }>(
+      `SELECT node_id::text FROM kmesh_v1_presence
+        WHERE expires_at > now() AND last_seen_at > now() - interval '4 minutes'`,
+    );
+    for (const row of presence) ids.add(Number(row.node_id));
+  } catch {
+    /* таблицы могут быть пустыми */
+  }
+  return ids;
+}
+
+function computeOnline(m: ModuleRecord, liveNodes?: Set<number>): boolean {
+  const hardwareId = m.hardware_id || m.board_uuid || '';
+  if (liveNodes && liveNodes.size) {
+    const nodeId = nodeIdFromHardware(hardwareId);
+    if (nodeId != null && liveNodes.has(nodeId)) return true;
+  }
   const lastSeen = m.last_seen_at ? new Date(m.last_seen_at).getTime() : 0;
   if (!lastSeen || !Number.isFinite(lastSeen)) return false;
   const age = Date.now() - lastSeen;
@@ -253,12 +299,12 @@ function computeOnline(m: ModuleRecord): boolean {
 }
 
 /** Единый вид модуля для клиента: camelCase + старые snake_case поля. */
-function moduleView(m: ModuleRecord, blockedHashes?: Set<string>) {
+function moduleView(m: ModuleRecord, blockedHashes?: Set<string>, liveNodes?: Set<number>) {
   const hardwareId = (m.hardware_id || m.board_uuid || '').toLowerCase();
   const blocked =
     Boolean(m.blocked) ||
     (blockedHashes ? blockedHashes.has(sha256(hardwareId)) || blockedHashes.has(hardwareId) : false);
-  const online = !blocked && computeOnline(m);
+  const online = !blocked && computeOnline(m, liveNodes);
   return {
     id: m.id,
     boardUuid: m.board_uuid,
@@ -1960,8 +2006,9 @@ const moduleRoutes: FastifyPluginAsync = async (app) => {
       [me],
     );
     const blockedHashes = await activeBlockedHashes();
+    const liveNodes = await liveKmeshNodeIds();
     return reply.send([
-      ...rows.map((row) => moduleView(row, blockedHashes)),
+      ...rows.map((row) => moduleView(row, blockedHashes, liveNodes)),
       ...shadows.map(shadowView),
     ]);
   });

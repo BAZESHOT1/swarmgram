@@ -589,7 +589,8 @@ export class NativeBleTransport implements ModuleConnection {
         BLE_UUIDS.tx,
         (error, characteristic) => {
           if (error) {
-            if (!this.closing) this.emitDisconnect();
+            // Ошибки подписки (в т.ч. отмена при re-arm) не означают разрыв
+            // связи: реальный disconnect придёт через onDisconnected.
             return;
           }
           if (!characteristic?.value) return;

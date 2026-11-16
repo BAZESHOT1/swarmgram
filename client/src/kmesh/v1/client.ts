@@ -11,7 +11,7 @@
  */
 import { encryptBytes, decryptBytes, storage } from '../../crypto/core';
 import { kv } from '../../crypto/storage';
-import { loadChatKey } from '../../data/chatkit';
+import { getServerChatKey, loadChatKey } from '../../data/chatkit';
 import { api } from '../../data/api';
 import {
   kmeshV1Enqueue,
@@ -446,7 +446,16 @@ export class KMeshV1Client {
     if (this.opts.getChatKey) return this.opts.getChatKey(chatId);
     const keys = await storage.loadKeys();
     if (!keys) return null;
-    return loadChatKey(chatId, keys).catch(() => null);
+    const e2e = await loadChatKey(chatId, keys).catch(() => null);
+    if (e2e) return e2e;
+    // Серверный чат: используем сохранённый ключ Hub (кэшируется при онлайне),
+    // иначе KMesh-отправка офлайн была невозможна.
+    try {
+      const { key } = await getServerChatKey(chatId);
+      return key;
+    } catch {
+      return null;
+    }
   }
 
   /**
