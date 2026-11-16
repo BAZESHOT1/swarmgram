@@ -78,7 +78,12 @@ void HttpGatewayTransport::init(const kl_config_t *cfg) {
 }
 
 bool HttpGatewayTransport::connect() {
-  return enabled_ && WiFi.status() == WL_CONNECTED;
+  if (!enabled_) return false;
+  if (WiFi.status() == WL_CONNECTED) return true;
+  // Сеть могла отвалиться после старта: переподключаемся, иначе шлюз
+  // навсегда остаётся «офлайн» для Hub.
+  WiFi.reconnect();
+  return false;
 }
 
 void HttpGatewayTransport::disconnect() {

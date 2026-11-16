@@ -290,14 +290,27 @@ bool KlintoNode::begin() {
                 cfg_.lora_present ? "+lora" : "");
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
-    if (strlen(KL_WIFI_SSID)) {
+    /* Wi-Fi из приложения (SET_CONFIG) хранится в NVS и должен иметь
+     * приоритет над compile-time SSID: иначе шлюз поднимает AP из сборки
+     * и не выходит в Hub. */
+    char nvsSsid[64] = {0};
+    char nvsPass[64] = {0};
+    kl_nvs_get_str("wifi", "ssid", nvsSsid, sizeof(nvsSsid));
+    kl_nvs_get_str("wifi", "pass", nvsPass, sizeof(nvsPass));
+    const char *ssid = nvsSsid[0] ? nvsSsid : KL_WIFI_SSID;
+    const char *pass = nvsSsid[0] ? nvsPass : KL_WIFI_PASS;
+    if (strlen(ssid)) {
       WiFi.mode(WIFI_STA);
-      WiFi.begin(KL_WIFI_SSID, KL_WIFI_PASS);
+      WiFi.setSleep(false);
+      WiFi.begin(ssid, pass);
       const uint32_t start = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(200);
       if (WiFi.status() == WL_CONNECTED) {
         cfg_.wifi_channel = (uint8_t)WiFi.channel();
-        Serial.printf("[klinto3] wifi up, channel %u\n", (unsigned)cfg_.wifi_channel);
+        Serial.printf("[klinto3] wifi up ssid=%s channel=%u ip=%s\n", ssid,
+                      (unsigned)cfg_.wifi_channel, WiFi.localIP().toString().c_str());
+      } else {
+        Serial.printf("[klinto3] wifi failed ssid=%s\n", ssid);
       }
     }
   } else {
@@ -672,13 +685,23 @@ void KlintoNode::onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, 
 }
 
 void KlintoNode::onConfigJson(const char *json, size_t len) {
-  (void)len;  char ssid[64];
-  char pass[64];
-  if (kl_json_get_string(json, "wifiSsid", ssid, sizeof(ssid))) {
+  (void)len;
+  char ssid[64] = {0};
+  char pass[64] = {0};
+  bool changed = false;
+  if (kl_json_get_string(json, "wifiSsid", ssid, sizeof(ssid)) && ssid[0]) {
     kl_nvs_set_str("wifi", "ssid", ssid);
+    changed = true;
   }
   if (kl_json_get_string(json, "wifiPassword", pass, sizeof(pass))) {
     kl_nvs_set_str("wifi", "pass", pass);
+  }
+  if (changed) {
+    /* Применяем сразу, не дожидаясь перезагрузки шлюза. */
+    WiFi.disconnect(false, false);
+    delay(50);
+    WiFi.begin(ssid, pass);
+    Serial.printf("[klinto] wifi config applied ssid=%s\n", ssid);
   }
 }
 
