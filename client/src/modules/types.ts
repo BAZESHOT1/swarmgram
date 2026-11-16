@@ -15,6 +15,8 @@ export interface ModuleInfo {
   bleMac?: string;
   /** 8-значный публичный ID модуля для добавления в аккаунт. */
   publicId?: string;
+  /** 32-битный mesh node_id (нужен для KMesh/bind и мобильного шлюза). */
+  nodeId?: number;
   role: ModuleRole | string;
   firmware: string;
   battery: number;
@@ -115,6 +117,7 @@ export function normalizeInfo(raw: {
   hardwareId: string;
   bleMac?: string;
   publicId?: string;
+  nodeId?: number;
   role?: string;
   firmware?: string;
   battery?: number;
@@ -138,6 +141,7 @@ export function normalizeInfo(raw: {
     hardwareId: raw.hardwareId,
     bleMac: raw.bleMac,
     publicId: raw.publicId,
+    nodeId: raw.nodeId != null ? Number(raw.nodeId) >>> 0 : undefined,
     role,
     firmware: raw.firmware ?? '',
     battery: Math.max(0, Math.min(100, Number(raw.battery ?? 0))),

@@ -895,9 +895,11 @@ void KlintoRouter::set_battery(uint8_t percent, int8_t rssi) {
   last_rssi_ = rssi;
   if (cfg_.role != KL_ROLE_CLIENT || charging_) {
     battery_low_ = false;
-  } else if (battery_ < cfg_.relay_battery_min) {
+  } else if (battery_ > 0 && battery_ < cfg_.relay_battery_min) {
+    /* percent == 0 трактуем как «датчик не подключён»: у плат без батареи
+     * ADC читает 0, и mobile-gateway/relay блокировались ложно. */
     battery_low_ = true;
-  } else if (battery_ > cfg_.relay_battery_resume) {
+  } else if (battery_ >= cfg_.relay_battery_resume) {
     battery_low_ = false;
   }
 }

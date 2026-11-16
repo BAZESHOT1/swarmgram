@@ -301,6 +301,8 @@ export interface ModuleInfoPayload {
   hardwareId: string;
   /** BLE MAC — алиас для сопоставления с Wi-Fi MAC. */
   bleMac?: string;
+  /** 32-битный mesh node_id. */
+  nodeId?: number;
   /** 8-значный публичный ID для добавления в аккаунт. */
   publicId?: string;
   role?: 'wearable' | 'repeater' | 'gateway' | string;
@@ -381,12 +383,19 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
   };
+  const rawPublicId =
+    source.publicId != null ? String(source.publicId) : source.public_id != null ? String(source.public_id) : '';
+  const rawNodeId = source.nodeId ?? source.node_id;
   return {
     v: 1,
     kind: 'info',
     hardwareId,
     bleMac: source.bleMac != null ? String(source.bleMac) : source.ble_mac != null ? String(source.ble_mac) : undefined,
-    publicId: source.publicId != null ? String(source.publicId) : source.public_id != null ? String(source.public_id) : undefined,
+    // publicId — только настоящий 8-значный ID, иначе Hub отвергнет pair.
+    publicId: /^\d{8}$/.test(rawPublicId) ? rawPublicId : undefined,
+    nodeId: rawNodeId != null && Number.isFinite(Number(rawNodeId))
+      ? Number(rawNodeId) >>> 0
+      : undefined,
     role: source.role != null ? String(source.role) : undefined,
     firmware: source.firmware != null ? String(source.firmware) : undefined,
     battery: num(source.battery, 0),

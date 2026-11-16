@@ -688,7 +688,8 @@ export class NativeBleTransport implements ModuleConnection {
           : `esp32-${nodeId.toString(16).padStart(8, '0')}`;
       return normalizeInfo({
         hardwareId,
-        publicId: String(nodeId),
+        publicId: /^\d{8}$/.test(String(raw.publicId ?? '')) ? String(raw.publicId) : undefined,
+        nodeId,
         role,
         firmware: typeof raw.firmware === 'string' ? raw.firmware : '',
         battery: Number(raw.battery ?? this.info?.battery ?? 0),

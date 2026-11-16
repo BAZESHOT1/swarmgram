@@ -414,6 +414,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         v1ClientRef.current = v1;
         setActiveKMeshV1(v1);
         v1UnsubRef.current = raw.onData((chunk) => v1.handleData(chunk));
+        // nodeId из legacy INFO: не зависим от доставки v1 INFO.
+        if (nextInfo.nodeId) {
+          v1.setNodeId(nextInfo.nodeId);
+          void api.kmeshV1NodeBind(nextInfo.nodeId).catch(() => undefined);
+        }
         // Мобильный шлюз: модуль → приложение → Hub и обратно.
         mobileGatewayRef.current?.stop();
         mobileGatewayRef.current = startMobileGateway(v1);
@@ -480,12 +485,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
 
       let moduleId: string | undefined;
-      let publicId = nextInfo.publicId;
+      let publicId = /^\d{8}$/.test(String(nextInfo.publicId ?? '')) ? nextInfo.publicId : undefined;
       try {
         const paired = await api.pairModule({
           hardwareId: nextInfo.hardwareId,
           bleMac: nextInfo.bleMac,
-          publicId: nextInfo.publicId,
+          publicId,
           role: nextInfo.role,
           transport: kind,
           firmware: nextInfo.firmware || undefined,

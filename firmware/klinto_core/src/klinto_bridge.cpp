@@ -152,7 +152,7 @@ void KlintoClientBridge::flush_legacy_reply() {
   const int n = snprintf(
       json, sizeof(json),
       "{\"v\":1,\"kind\":\"info\",\"hardwareId\":\"%s\",\"bleMac\":\"%s\","
-      "\"publicId\":\"%lu\",\"role\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,"
+      "\"nodeId\":%lu,\"role\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,"
       "\"gateway\":%s,\"queue\":%u,\"rssi\":-50,\"attached\":true,\"ownerNetId\":%lu,"
       "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
       cfg_.hardware_id, cfg_.ble_mod6, (unsigned long)cfg_.node_id, role,
