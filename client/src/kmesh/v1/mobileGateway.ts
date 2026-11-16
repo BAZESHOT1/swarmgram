@@ -11,6 +11,7 @@
  */
 import { api } from '../../data/api';
 import { useStore } from '../../state/useStore';
+import { setMeshCapabilities } from '../../modules/meshLink';
 import { b64ToBytes, bytesToB64 } from './crypto';
 import {
   decodeMeshPacket,
@@ -59,11 +60,19 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
 
   const gatewayId = (): number => client.getNodeId() || 0;
 
+  /** Пока телефон выступает шлюзом, кластер имеет доступ к Hub. */
+  const markGateway = (online: boolean): void => {
+    const state = useStore.getState();
+    if (state.transportGateway !== online) state.setTransportGateway(online);
+    setMeshCapabilities({ connected: true, gateway: online });
+  };
+
   const sendInet = (): void => {
     if (stopped) return;
     const online = isOnline();
     const id = gatewayId();
     if (!id) return;
+    markGateway(online);
     void client.setInetStatus(online, online ? 80 : 0, true).catch(() => undefined);
     if (online) {
       void flushUplink();
@@ -190,6 +199,7 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
       stopped = true;
       clearInterval(heartbeat);
       clearInterval(downlinkTimer);
+      markGateway(false);
       try {
         unsubscribe();
       } catch {

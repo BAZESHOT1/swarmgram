@@ -148,17 +148,20 @@ void KlintoClientBridge::flush_legacy_reply() {
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
                        (router_ && router_->gateway_route()->valid) ||
                        (router_ && router_->mobile_gateway_active());
-  char json[320];
+  char json[384];
   const int n = snprintf(
       json, sizeof(json),
       "{\"v\":1,\"kind\":\"info\",\"hardwareId\":\"%s\",\"bleMac\":\"%s\","
       "\"nodeId\":%lu,\"role\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,"
       "\"gateway\":%s,\"queue\":%u,\"rssi\":-50,\"attached\":true,\"ownerNetId\":%lu,"
-      "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\"}",
+      "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\",\"mobile\":%u,\"bcn\":%lu,\"gwAge\":%ld}",
       cfg_.hardware_id, cfg_.ble_mod6, (unsigned long)cfg_.node_id, role,
       (unsigned)KL_FIRMWARE_BUILD, (unsigned)(router_ ? router_->battery_percent() : 0),
       gateway ? "true" : "false", (unsigned)pending_outbox(),
-      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6);
+      (unsigned long)cfg_.owner_net_id, cfg_.owner_ble_prefix, cfg_.ble_mod6,
+      (unsigned)((router_ && router_->mobile_gateway_active()) ? 1 : 0),
+      (unsigned long)(router_ ? router_->beacons_rx() : 0),
+      (long)(router_ ? router_->gateway_age_ms(kl_uptime_ms()) : -1));
   if (n > 0 && (size_t)n < sizeof(json)) {
     const bool sent = send_legacy_frame(type == 6 ? 7 : 2, json, (size_t)n);
     log_line("[ble] legacy reply type=%u len=%d sent=%u", (unsigned)type, n, sent ? 1u : 0u);

@@ -245,6 +245,7 @@ export class NativeBleTransport implements ModuleConnection {
   private rxSub: Subscription | null = null;
   private statusSub: Subscription | null = null;
   private disconnectSub: Subscription | null = null;
+  private rearmTimer: ReturnType<typeof setInterval> | null = null;
   private readonly envelopeHandlers = new Set<(message: ModuleEnvelope) => void>();
   private readonly rawHandlers = new Set<(chunk: Uint8Array) => void>();
   private readonly infoHandlers = new Set<(info: ModuleInfo) => void>();
@@ -581,29 +582,55 @@ export class NativeBleTransport implements ModuleConnection {
       if (!this.closing) this.emitDisconnect();
     });
 
-    this.rxSub = manager().monitorCharacteristicForDevice(
-      device.id,
-      BLE_UUIDS.service,
-      BLE_UUIDS.tx,
-      (error, characteristic) => {
-        if (error) {
-          if (!this.closing) this.emitDisconnect();
-          return;
-        }
-        if (!characteristic?.value) return;
-        this.handleChunk(base64ToBytes(characteristic.value));
-      },
-    );
+    const subscribeTx = (): void => {
+      this.rxSub = manager().monitorCharacteristicForDevice(
+        device.id,
+        BLE_UUIDS.service,
+        BLE_UUIDS.tx,
+        (error, characteristic) => {
+          if (error) {
+            if (!this.closing) this.emitDisconnect();
+            return;
+          }
+          if (!characteristic?.value) return;
+          this.handleChunk(base64ToBytes(characteristic.value));
+        },
+      );
+    };
 
-    this.statusSub = manager().monitorCharacteristicForDevice(
-      device.id,
-      BLE_UUIDS.service,
-      BLE_UUIDS.status,
-      (error, characteristic) => {
-        if (error || !characteristic?.value) return;
-        this.mergeStatus(base64ToBytes(characteristic.value));
-      },
-    );
+    const subscribeStatus = (): void => {
+      this.statusSub = manager().monitorCharacteristicForDevice(
+        device.id,
+        BLE_UUIDS.service,
+        BLE_UUIDS.status,
+        (error, characteristic) => {
+          if (error || !characteristic?.value) return;
+          this.mergeStatus(base64ToBytes(characteristic.value));
+        },
+      );
+    };
+
+    subscribeTx();
+    subscribeStatus();
+
+    /* Android (MediaTek/Bluedroid) иногда «теряет» notify-подписку после
+     * серии записей: событий нет и ошибки тоже нет. Периодически
+     * переподписываемся — это дешево и возвращает INFO/входящие сообщения. */
+    this.rearmTimer = setInterval(() => {
+      if (this.closing || !this.deviceId) return;
+      try {
+        this.rxSub?.remove();
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.statusSub?.remove();
+      } catch {
+        /* ignore */
+      }
+      subscribeTx();
+      subscribeStatus();
+    }, 20_000);
 
     // iOS/Edge могут потерять первый HELLO при медленном старте GATT — повторяем.
     // Android иногда подтверждает подписку на notify с задержкой, поэтому
@@ -695,6 +722,8 @@ export class NativeBleTransport implements ModuleConnection {
         battery: Number(raw.battery ?? this.info?.battery ?? 0),
         attached: true,
         gateway: raw.gateway === true,
+        mobile: raw.mobile === true || Number(raw.mobile) === 1,
+        beacons: Number(raw.bcn ?? 0),
         queue: Number(raw.queue ?? 0),
         ownerNetId: Number(raw.ownerNetId ?? 0) >>> 0,
         ownerPrefix: String(raw.ownerPrefix ?? '00000000').toLowerCase(),
@@ -708,7 +737,10 @@ export class NativeBleTransport implements ModuleConnection {
   /** Обновляет info и рассылает его подписчикам (шапка чатов, транспорт). */
   private applyInfo(info: ModuleInfo): void {
     this.info = info;
-    dbg(`info ${info.hardwareId} role=${info.role} gw=${info.gateway ? 1 : 0} q=${info.queue}`);
+    dbg(
+      `info ${info.hardwareId} role=${info.role} gw=${info.gateway ? 1 : 0} ` +
+        `mobile=${info.mobile ? 1 : 0} bcn=${info.beacons ?? 0} nid=${info.nodeId ?? 0} q=${info.queue}`,
+    );
     for (const handler of this.infoHandlers) {
       try {
         handler(info);
@@ -943,6 +975,10 @@ export class NativeBleTransport implements ModuleConnection {
     }
     this.decoder.dispose();
     this.info = null;
+    if (this.rearmTimer) {
+      clearInterval(this.rearmTimer);
+      this.rearmTimer = null;
+    }
     try {
       this.rxSub?.remove();
       this.statusSub?.remove();

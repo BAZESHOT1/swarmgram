@@ -17,6 +17,10 @@ export interface ModuleInfo {
   publicId?: string;
   /** 32-битный mesh node_id (нужен для KMesh/bind и мобильного шлюза). */
   nodeId?: number;
+  /** Мобильный шлюз (телефон раздаёт интернет кластеру). */
+  mobile?: boolean;
+  /** Диагностика: сколько GW_BEACON услышали. */
+  beacons?: number;
   role: ModuleRole | string;
   firmware: string;
   battery: number;
@@ -118,6 +122,8 @@ export function normalizeInfo(raw: {
   bleMac?: string;
   publicId?: string;
   nodeId?: number;
+  mobile?: boolean;
+  beacons?: number;
   role?: string;
   firmware?: string;
   battery?: number;
@@ -142,6 +148,8 @@ export function normalizeInfo(raw: {
     bleMac: raw.bleMac,
     publicId: raw.publicId,
     nodeId: raw.nodeId != null ? Number(raw.nodeId) >>> 0 : undefined,
+    mobile: raw.mobile === true,
+    beacons: Math.max(0, Number(raw.beacons ?? 0)),
     role,
     firmware: raw.firmware ?? '',
     battery: Math.max(0, Math.min(100, Number(raw.battery ?? 0))),

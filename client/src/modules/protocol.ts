@@ -303,6 +303,10 @@ export interface ModuleInfoPayload {
   bleMac?: string;
   /** 32-битный mesh node_id. */
   nodeId?: number;
+  /** Мобильный шлюз (телефон с интернетом) активен. */
+  mobile?: boolean;
+  /** Сколько GW_BEACON услышали (диагностика). */
+  bcn?: number;
   /** 8-значный публичный ID для добавления в аккаунт. */
   publicId?: string;
   role?: 'wearable' | 'repeater' | 'gateway' | string;
@@ -396,6 +400,8 @@ export function parseModuleInfo(payload: Uint8Array): ModuleInfoPayload | null {
     nodeId: rawNodeId != null && Number.isFinite(Number(rawNodeId))
       ? Number(rawNodeId) >>> 0
       : undefined,
+    mobile: source.mobile === true || Number(source.mobile) === 1,
+    bcn: num(source.bcn, 0),
     role: source.role != null ? String(source.role) : undefined,
     firmware: source.firmware != null ? String(source.firmware) : undefined,
     battery: num(source.battery, 0),
