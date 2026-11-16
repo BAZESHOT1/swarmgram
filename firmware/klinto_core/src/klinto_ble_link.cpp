@@ -121,6 +121,10 @@ bool BleClientLink::send(const uint8_t *data, size_t len) {
   while (offset < len) {
     const size_t take = (len - offset) > chunk ? chunk : (len - offset);
     tx_->setValue((uint8_t *)(data + offset), take);
+    /* BLE-стек Arduino не сообщает об переполнении очереди notify, поэтому
+     * просто держим безопасный темп: Android забирает пакеты по одному за
+     * connection interval. Раньше 4 мс приводили к обрыву длинного INFO
+     * после 1–2 пакетов. */
     tx_->notify();
     /* Совместимость со старыми клиентами: у них роли a5c1/a5c2 были
      * зеркальными, подписка шла на a5c2. Дублируем notify во вторую
@@ -130,7 +134,7 @@ bool BleClientLink::send(const uint8_t *data, size_t len) {
       rx_->notify();
     }
     offset += take;
-    if (offset < len) delay(4); /* let the controller drain */
+    delay(offset < len ? 28 : 10); /* let the controller drain */
   }
   return true;
 }

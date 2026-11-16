@@ -116,6 +116,8 @@ class KlintoClientBridge {
   /** KMesh_v1 INFO: отправляем несколько раз, пока клиент подписывается. */
   uint8_t info_reply_left_ = 0;
   uint32_t info_reply_next_ms_ = 0;
+  /** Периодический INFO: gateway/queue должны обновляться в приложении. */
+  uint32_t last_info_ms_ = 0;
   void flush_outbox();
   void log_line(const char *fmt, ...);
 

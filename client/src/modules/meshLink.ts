@@ -45,6 +45,20 @@ export function canSendViaMesh(): boolean {
   return sender !== null || v1Sender !== null;
 }
 
+/** Отправка текста только через KMesh_v1 (без legacy-конверта). */
+export async function sendTextViaMesh(
+  chatId: string,
+  text: string,
+  clientId?: string,
+): Promise<boolean> {
+  if (!v1Sender || !text) return false;
+  try {
+    return await v1Sender(chatId, text, clientId);
+  } catch {
+    return false;
+  }
+}
+
 /** Отправить конверт через модуль. false — модуль не подключён или ошибка. */
 export async function sendViaMesh(chatId: string, envelope: unknown): Promise<boolean> {
   const item = (envelope ?? {}) as { text?: unknown; kind?: unknown; clientId?: unknown };

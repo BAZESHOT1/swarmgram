@@ -109,6 +109,7 @@ export default function ChatInfoScreen() {
   const messages = messagesQuery.data ?? [];
 
   const loadedOnce = React.useRef(false);
+  const [fromCache, setFromCache] = React.useState(false);
 
   const loadChat = React.useCallback(async () => {
     // Скелетон только при первом открытии: действия в «Управлении» не должны
@@ -118,10 +119,26 @@ export default function ChatInfoScreen() {
     try {
       const fresh = await api.api.getChat(chatId);
       setChat(fresh);
+      setFromCache(false);
       setNotMember(false);
       setSubscribed(fresh.members.some((m) => m.username === myUsername));
       loadedOnce.current = true;
     } catch (e: unknown) {
+      // Без интернета (KMesh) показываем данные чата из локального кэша:
+      // шапка и вкладки должны открываться, а не упираться в ошибку сети.
+      const cached =
+        qc.getQueryData<Chat>(['chat', chatId]) ??
+        (useStore.getState() as unknown as { chats?: Chat[] }).chats?.find((c) => c.id === chatId) ??
+        null;
+      if (cached) {
+        setChat(cached);
+        setFromCache(true);
+        setNotMember(false);
+        setSubscribed(cached.members.some((m) => m.username === myUsername));
+        loadedOnce.current = true;
+        setLoadError('');
+        return;
+      }
       // Не участник: даём экран вступления вместо «Чат не найден».
       const code = e instanceof api.ApiError ? e.code : '';
       const status = e instanceof api.ApiError ? e.status : 0;
@@ -130,7 +147,7 @@ export default function ChatInfoScreen() {
     } finally {
       setLoading(false);
     }
-  }, [chatId, myUsername]);
+  }, [chatId, myUsername, qc]);
 
   React.useEffect(() => {
     void loadChat();
@@ -543,6 +560,19 @@ export default function ChatInfoScreen() {
             ownerUsername={chat.ownerUsername}
             onBack={() => router.back()}
           />
+
+          {fromCache ? (
+            <Text
+              style={{
+                color: theme.textSecondary,
+                fontSize: 11.5,
+                marginTop: 8,
+                textAlign: 'center',
+              }}
+            >
+              Данные чата из локального кэша: связь с Hub недоступна, работает KMesh.
+            </Text>
+          ) : null}
 
           <InfoQuickActions actions={quickActions} />
 

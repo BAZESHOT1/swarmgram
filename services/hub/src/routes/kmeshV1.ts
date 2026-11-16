@@ -1827,7 +1827,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       `INSERT INTO messages
          (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid)
        VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL DO NOTHING
+       ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL
+       DO UPDATE SET header = EXCLUDED.header
        RETURNING seq, id, created_at`,
       [chatId, auth.userId, device.id, str(String(body.kind ?? 'text'), 'kind', { max: 24 }),
        JSON.stringify(header), uuid],

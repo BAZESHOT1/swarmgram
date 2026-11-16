@@ -138,7 +138,9 @@ export function PhoneDock() {
 
   const syncing = chats.isLoading || (chats.isFetching && !chats.data);
   const moduleConnected = Boolean(transportModule || directPeer);
-  const clusterOnline = Boolean(transportOnline || transportGateway);
+  // Если работаем через модуль, доступность Hub определяет шлюз кластера,
+  // а не интернет самого телефона.
+  const clusterOnline = moduleConnected ? Boolean(transportGateway) : Boolean(transportOnline);
   const showLeft =
     syncing ||
     (moduleConnected ? !clusterOnline : !transportKnown || !transportOnline);

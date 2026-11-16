@@ -130,7 +130,7 @@ void KlintoClientBridge::handle_legacy_frame(uint8_t type, const uint8_t *payloa
    * Запоминаем тип и отдаём INFO/PONG из clientTask (трижды, чтобы
    * пережить задержку подписки на notify в Android). */
   legacy_reply_type_ = type;
-  legacy_reply_left_ = 3;
+  legacy_reply_left_ = 1;
   legacy_reply_next_ms_ = 0;
 }
 
@@ -280,7 +280,7 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
       /* INFO отправляем из clientTask: из GATT-колбэка NimBLE может зависнуть.
        * Повторяем 3 раза — Android иногда подтверждает подписку на notify
        * уже после первого HELLO, и первый INFO теряется. */
-      info_reply_left_ = 3;
+      info_reply_left_ = 1;
       info_reply_next_ms_ = 0;
       break;
     case KL_CF_RPC_UP:
@@ -642,6 +642,10 @@ void KlintoClientBridge::loop(uint32_t now_ms) {
       send_info();
       info_reply_left_ = (uint8_t)(info_reply_left_ - 1);
       info_reply_next_ms_ = now_ms + 350;
+    }
+    if (!info_reply_left_ && now_ms - last_info_ms_ > 15000) {
+      last_info_ms_ = now_ms;
+      send_info();
     }
   }
   if (link_ && link_->connected() && now_ms - last_flush_ms_ > 250) {

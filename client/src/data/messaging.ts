@@ -27,7 +27,7 @@ import {
 } from '../crypto/core';
 import { dbGet, dbSet, enqueueOutbox, listOutbox, removeOutbox, updateOutboxState, type OutboxItem } from './db';
 import { compressImage, uploadBytesWithProgress, type UploadStage } from './uploader';
-import { sendViaMesh, canSendViaMesh, isMeshCongested } from '../modules/meshLink';
+import { sendViaMesh, sendTextViaMesh, canSendViaMesh, isMeshCongested } from '../modules/meshLink';
 import { loadCachedMessages } from './cache';
 import { useStore } from '../state/useStore';
 
@@ -225,6 +225,33 @@ export async function sendMessage(
   const skipHttp = transportState.transportKnown === true && !online;
   const httpStartedAt = Date.now();
 
+  // Оффлайн через KMesh: текст уходит сразу через модуль, не дожидаясь
+  // локального шифрования серверного чата (без сети ключа может не быть).
+  if (skipHttp && meshAvailable && kind === 'text' && typeof payload.text === 'string' && payload.text) {
+    const createdAt = new Date().toISOString();
+    const sent = await sendTextViaMesh(chatId, payload.text, clientId);
+    if (sent) {
+      return {
+        id: clientId,
+        clientId,
+        seq: Number.MAX_SAFE_INTEGER,
+        senderUsername: myUsername,
+        mine: true,
+        createdAt,
+        kind,
+        text: payload.text,
+        file: payload.file,
+        replyTo: opts.replyTo ?? null,
+        scheme: 'e2e',
+        reactions: [],
+        delivered: false,
+        failed: false,
+        pending: true,
+        asChannel: opts.asChannel,
+      };
+    }
+  }
+
   // режим чата определяет схему шифрования; без сети сохраняем прежний E2E-режим,
   // если для чата уже есть локальный ключ
   let chat: Chat | null = null;
@@ -389,6 +416,8 @@ async function localFallback(
     kind,
     // Ключей устройства нет — сообщение остаётся в ленте без красной ошибки,
     // отправим после синхронизации ключей.
+    text: payload.text,
+    file: payload.file,
     failed: false,
     delivered: false,
     pending: true,
