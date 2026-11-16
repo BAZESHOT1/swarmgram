@@ -204,7 +204,15 @@ KlintoNode::KlintoNode()
 bool KlintoNode::loadConfig() {
   kl_config_defaults(&cfg_);
   cfg_.node_id = kl_node_id_from_mac();
-  snprintf(hardware_id_, sizeof(hardware_id_), "esp32-%08lx", (unsigned long)cfg_.node_id);
+  /* hardwareId = esp32-<12 hex MAC>: Hub и клиент сверяют его с MAC модуля
+   * (mod6 — последние 3 байта). Раньше здесь был 8-hex node_id, из-за чего
+   * /kmesh/v1/modules/claim отвечал invalid_module_mac. */
+  {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(hardware_id_, sizeof(hardware_id_), "esp32-%02x%02x%02x%02x%02x%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  }
   strncpy(cfg_.hardware_id, hardware_id_, sizeof(cfg_.hardware_id) - 1);
   cfg_.wifi_channel = KL_MESH_CHANNEL;
   cfg_.espnow_enabled = strcmp(KL_CONNECTIVITY, "lora") != 0;
@@ -503,10 +511,10 @@ void KlintoNode::sinkArchive(void *ctx, const kl_packet_t *pkt) {
 }
 
 void KlintoNode::sinkPresence(void *ctx, const kl_packet_t *pkt, int16_t rssi, uint8_t iface) {
-  (void)rssi;
-  (void)iface;
   KlintoNode *self = (KlintoNode *)ctx;
   if (!pkt) return;
+  Serial.printf("[kmesh] presence src=%lu rssi=%d iface=%u\n", (unsigned long)pkt->src_id,
+                (int)rssi, (unsigned)iface);
   if (self->router_.mobile_gateway_active()) {
     self->bridge_.proxy_uplink(pkt);
   } else {
@@ -521,6 +529,8 @@ void KlintoNode::sinkBeacon(void *ctx, const kl_packet_t *pkt, int16_t rssi, uin
   uint32_t gateway_id = pkt->src_id;
   if (pkt->payload_len >= 8) gateway_id = kl_read_le32(pkt->payload + 4);
   const uint8_t advertised_channel = pkt->payload_len >= 11 ? pkt->payload[10] : 0;
+  Serial.printf("[kmesh] beacon gw=%lu rssi=%d ch=%u\n", (unsigned long)gateway_id, (int)rssi,
+                (unsigned)advertised_channel);
   self->cell_.on_beacon(gateway_id, pkt->hop_count, rssi, kl_uptime_ms(),
                         advertised_channel);
 }

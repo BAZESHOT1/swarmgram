@@ -506,12 +506,20 @@ export class NativeBleTransport implements ModuleConnection {
       try {
         const info = await this.openDeviceInternal(device.id);
         const got = info.hardwareId.toLowerCase();
+        const gotMod6 = got.replace(/^esp32-/, '').replace(/[^0-9a-z]/g, '').slice(-6);
+        // Имя BLE (KL-<prefix>-<mod6>) — самый надёжный идентификатор: даже если
+        // в сохранённой записи старый hardwareId, mod6 совпадает с MAC модуля.
+        const nameMod6 = (device.mod6 ?? parseModuleBleName(device.name)?.mod6 ?? '').toLowerCase();
         const matches = !expected
           || got === expected
-          || got === `esp32-${reversedHex}`;
+          || got === `esp32-${reversedHex}`
+          || (Boolean(nameMod6) && gotMod6 === nameMod6)
+          || (info.bleMod6 != null && info.bleMod6.toLowerCase() === nameMod6);
+        dbg(`openKnown ${device.id} got=${got} want=${expected || '-'} match=${matches ? 1 : 0}`);
         if (matches) return info;
         await this.close();
-      } catch {
+      } catch (e) {
+        dbg(`openKnown ${device.id} failed: ${e instanceof Error ? e.message : String(e)}`);
         await this.close().catch(() => undefined);
       }
     }
