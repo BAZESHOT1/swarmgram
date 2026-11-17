@@ -2583,37 +2583,37 @@ function ChatRow({
           avatar={peer?.avatar ?? chat.avatar ?? null}
         />
         {chat.type !== 'direct' ? (
-          <View style={[styles.typeBadge, { backgroundColor: '#2C2C2E', borderColor: '#000000' }]}>
-            <Ionicons name={chat.type === 'channel' ? 'megaphone' : 'people'} size={12} color="#FFFFFF" />
+          <View style={[styles.typeBadge, { backgroundColor: theme.surfacePressed, borderColor: theme.background }]}>
+            <Ionicons name={chat.type === 'channel' ? 'megaphone' : 'people'} size={12} color={theme.textPrimary} />
           </View>
         ) : online ? (
-          <View style={[styles.onlineDot, { backgroundColor: '#30D158', borderColor: '#000000' }]} />
+          <View style={[styles.onlineDot, { backgroundColor: '#30D158', borderColor: theme.background }]} />
         ) : null}
       </View>
 
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1 }}>
-            {chat.encryption === 'e2e' ? <Ionicons name="lock-closed" size={12} color="#8E8E93" /> : null}
-            <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 17, flexShrink: 1 }} numberOfLines={1}>
+            {chat.encryption === 'e2e' ? <Ionicons name="lock-closed" size={12} color={theme.textSecondary} /> : null}
+            <Text style={{ color: theme.textPrimary, fontWeight: '600', fontSize: 17, flexShrink: 1 }} numberOfLines={1}>
               {title}
             </Text>
-            {muted ? <Ionicons name="notifications-off" size={12} color="#636366" /> : null}
+            {muted ? <Ionicons name="notifications-off" size={12} color={theme.textDisabled} /> : null}
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
             {showChecks ? (
               <Ionicons
                 name={last?.read ? 'checkmark-done' : 'checkmark'}
                 size={13}
-                color={last?.read ? '#30D158' : '#636366'}
+                color={last?.read ? '#30D158' : theme.textDisabled}
               />
             ) : null}
-            <Text style={{ color: '#8E8E93', fontSize: 13, fontVariant: ['tabular-nums'] as never }}>{timeStr}</Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 13, fontVariant: ['tabular-nums'] as never }}>{timeStr}</Text>
           </View>
         </View>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'flex-end' }}>
           <Text
-            style={{ color: '#8E8E93', fontSize: 14, marginTop: 2, flexShrink: 1, lineHeight: 19 }}
+            style={{ color: theme.textSecondary, fontSize: 14, marginTop: 2, flexShrink: 1, lineHeight: 19 }}
             numberOfLines={2}
           >
             {preview}
@@ -2625,7 +2625,7 @@ function ChatRow({
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 3,
-                  backgroundColor: '#2C2C2E',
+                  backgroundColor: theme.surfacePressed,
                   borderRadius: 11,
                   paddingHorizontal: 7,
                   height: 22,
@@ -2638,7 +2638,7 @@ function ChatRow({
             {unread > 0 ? (
               <View
                 style={{
-                  backgroundColor: '#2C2C2E',
+                  backgroundColor: theme.surfacePressed,
                   borderRadius: 11,
                   minWidth: 22,
                   height: 22,
@@ -2647,12 +2647,12 @@ function ChatRow({
                   justifyContent: 'center',
                 }}
               >
-                <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '600' }}>
+                <Text style={{ color: theme.textPrimary, fontSize: 12, fontWeight: '600' }}>
                   {unread > 99 ? '99+' : unread}
                 </Text>
               </View>
             ) : null}
-            {pinned ? <Ionicons name="bookmark" size={14} color="#8E8E93" /> : null}
+            {pinned ? <Ionicons name="bookmark" size={14} color={theme.textSecondary} /> : null}
           </View>
         </View>
       </View>
@@ -2947,7 +2947,7 @@ function OnboardingCard() {
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44, position: 'relative', backgroundColor: 'transparent' },
   headerTitle: { height: 44, justifyContent: 'center', overflow: 'hidden' },
-  headerTitleText: { color: '#FFFFFF', fontSize: 28, fontWeight: '700', letterSpacing: -0.6 },
+  headerTitleText: { fontSize: 28, fontWeight: '700', letterSpacing: -0.6 },
   headerCreate: { height: 44, justifyContent: 'center', overflow: 'hidden', alignItems: 'flex-end' },
   searchHost: { flex: 1, position: 'relative', zIndex: 40 },
   headerHistory: { position: 'absolute', top: 46, left: 0, right: 0, zIndex: 50 },
