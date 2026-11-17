@@ -64,5 +64,8 @@
 | Host-тесты ядра | 635 проверок, 0 ошибок |
 | Hub typecheck | OK |
 | Клиент typecheck | OK |
-| Шлюз → Hub | uplink ok 200, прошивка 159 |
-| KMesh-модуль в списке | онлайн по presence/gateway ≤ 4 мин |
+| Шлюз → Hub | uplink ok 200, прошивка 160+ |
+| Онлайн в `/kmesh/v1/modules` | шлюз `7bd24c` = true, носимый `11b11c` = true |
+| Входящее серверное сообщение | доставлено через KMesh и показано текстом |
+| APK 1.10.18 | SHA-256 `7d6aaf56229d18ddce2711bd7ea7784bcf266ebd1e2923c28eee3e086512dfc9` |
+| IPA 1.10.18 | SHA-256 `20d323c6b4c1efcadbe77f95afed7b138782df8cd0b0e78923e213e90aa5c799` |

@@ -49,20 +49,13 @@ uint16_t KlintoClientBridge::crc16(const uint8_t *data, size_t len) {
 }
 
 void KlintoClientBridge::log_line(const char *fmt, ...) {
+  if (!sink_.log) return;
   char line[160];
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(line, sizeof(line), fmt, ap);
   va_end(ap);
-  if (sink_.log) sink_.log(sink_.ctx, line);
-  // Дублируем в приложение: у части плат Serial уходит в USB-CDC и в UART
-  // его не видно, а по BLE логи доступны всегда.
-  if (link_ && link_->connected() && log_count_ < kLogSlots) {
-    char *slot = log_queue_[(uint8_t)((log_head_ + log_count_) % kLogSlots)];
-    strncpy(slot, line, sizeof(log_queue_[0]) - 1);
-    slot[sizeof(log_queue_[0]) - 1] = '\0';
-    log_count_++;
-  }
+  sink_.log(sink_.ctx, line);
 }
 
 bool KlintoClientBridge::send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags) {
@@ -672,13 +665,6 @@ void KlintoClientBridge::loop(uint32_t now_ms) {
     last_flush_ms_ = now_ms;
     flush_statuses();
     flush_outbox();
-    if (log_count_) {
-      char *slot = log_queue_[log_head_];
-      if (send_frame(KL_CF_LOG, (const uint8_t *)slot, strlen(slot))) {
-        log_head_ = (uint8_t)((log_head_ + 1) % kLogSlots);
-        log_count_--;
-      }
-    }
   }
   for (int i = 0; i < 2; ++i) {
     if (frags_[i].used && now_ms - frags_[i].started_ms > 15000) frags_[i].used = false;

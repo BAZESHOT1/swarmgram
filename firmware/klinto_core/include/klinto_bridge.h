@@ -120,11 +120,6 @@ class KlintoClientBridge {
   uint32_t last_info_ms_ = 0;
   void flush_outbox();
   void log_line(const char *fmt, ...);
-  /** Журнал модуля в приложение (KL_CF_LOG), чтобы видеть логи по BLE. */
-  static constexpr uint8_t kLogSlots = 4;
-  char log_queue_[kLogSlots][160];
-  uint8_t log_head_ = 0;
-  uint8_t log_count_ = 0;
 
   struct FragSlot {
     bool used;
