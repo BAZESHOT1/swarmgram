@@ -248,6 +248,8 @@ export class NativeBleTransport implements ModuleConnection {
   private statusSub: Subscription | null = null;
   private disconnectSub: Subscription | null = null;
   private rearmTimer: ReturnType<typeof setInterval> | null = null;
+  /** Время последнего входящего notify — чтобы не дёргать подписку зря. */
+  private lastDataMs = 0;
   private readonly envelopeHandlers = new Set<(message: ModuleEnvelope) => void>();
   private readonly rawHandlers = new Set<(chunk: Uint8Array) => void>();
   private readonly infoHandlers = new Set<(info: ModuleInfo) => void>();
@@ -534,7 +536,15 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   private async openDeviceInternal(deviceId: string): Promise<ModuleInfo> {
-    if (this.isOpen) await this.close();
+    if (this.isOpen) {
+      // Уже подключены к этому же модулю — не закрываем GATT и не открываем
+      // второй: Android не умеет два GATT-клиента, из-за этого и был timeout.
+      if (!this.deviceId || this.deviceId === deviceId) {
+        for (let i = 0; i < 25 && !this.info; i += 1) await delay(100);
+        if (this.info) return this.info;
+      }
+      await this.close();
+    }
     this.closing = false;
     this.disconnected = false;
     this.decoder = new FrameDecoder();
@@ -621,6 +631,9 @@ export class NativeBleTransport implements ModuleConnection {
      * переподписываемся — это дешево и возвращает INFO/входящие сообщения. */
     this.rearmTimer = setInterval(() => {
       if (this.closing || !this.deviceId) return;
+      // Модуль шлёт INFO каждые 15 секунд. Если notify жив — не пересоздаём
+      // подписку: remove/add монитора на MediaTek иногда роняет GATT.
+      if (this.lastDataMs && Date.now() - this.lastDataMs < 25_000) return;
       try {
         this.rxSub?.remove();
       } catch {
@@ -673,7 +686,10 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   private handleChunk(chunk: Uint8Array): void {
-    if (chunk.length) dbg(`rx ${chunk.length}b`);
+    if (chunk.length) {
+      this.lastDataMs = Date.now();
+      dbg(`rx ${chunk.length}b`);
+    }
     for (const handler of this.rawHandlers) {
       try {
         handler(chunk);

@@ -855,7 +855,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   /** Автовосстановление последнего модуля без запроса нового порта/устройства. */
   const restore = useCallback(async () => {
     if (!useStore.getState().session) return;
-    if (inFlightRef.current || connectionRef.current) return;
+    if (inFlightRef.current || connectionRef.current?.isOpen) return;
     if (autoRef.current?.phase === 'found' || autoRef.current?.phase === 'connecting') return;
     const now = Date.now();
     if (now - lastAttemptRef.current < AUTO_RETRY_MS) return;
@@ -986,9 +986,17 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const key = mine.id;
         const displayName = mine?.name ?? `Модуль ${last.publicId ?? ''}`.trim();
         cancelAutoKeyRef.current = null;
-        setAutoModule({ key, name: displayName, isMine: true, phase: 'connecting' });
 
         const transport = getModuleTransport('ble');
+        // GATT уже открыт к этому же модулю — не открываем второй.
+        if (transport.isOpen && transport.info) {
+          console.log('[module]', 'already connected, adopt instead of reconnect');
+          await adopt(transport, transport.info);
+          setAutoModule(null);
+          return;
+        }
+        setAutoModule({ key, name: displayName, isMine: true, phase: 'connecting' });
+
         if (!transport.openKnown) {
           setAutoModule(null);
           return;
@@ -1162,9 +1170,6 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       // HELLO раз в 15 секунд: модуль отвечает INFO, и gateway/queue остаются
       // свежими даже если периодический notify потерялся.
       tick += 1;
-      if (tick % 3 === 0) {
-        void v1ClientRef.current?.hello().catch(() => undefined);
-      }
       setMeshCapabilities({
         connected: true,
         gateway: Boolean(currentInfo.gateway),

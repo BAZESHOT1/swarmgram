@@ -49,6 +49,7 @@ export function PhoneDock() {
   const directPeer = useStore((s) => s.transportDirectPeer);
   const transportModule = useStore((s) => s.transportModule);
   const transportGateway = useStore((s) => s.transportGateway);
+  const meshIncomingActive = useStore((s) => s.meshIncomingActive);
   const meshPeers = useStore((s) => s.meshPeers);
 
   const [dockWidth, setDockWidth] = React.useState(0);
@@ -140,14 +141,20 @@ export function PhoneDock() {
   const moduleConnected = Boolean(transportModule || directPeer);
   // Если работаем через модуль, доступность Hub определяет шлюз кластера,
   // а не интернет самого телефона.
-  const clusterOnline = moduleConnected ? Boolean(transportGateway) : Boolean(transportOnline);
+  // Если модуль подключён и по mesh уже шёл трафик (presence/ACK), кластер
+  // живой — даже когда INFO ещё не успел выставить gateway-бит.
+  const clusterOnline = moduleConnected
+    ? Boolean(transportGateway || transportOnline || meshIncomingActive)
+    : Boolean(transportOnline);
   const showLeft =
     syncing ||
     (moduleConnected ? !clusterOnline : !transportKnown || !transportOnline);
   const leftText = moduleConnected
     ? clusterOnline
-      ? 'Синхронизация...'
-      : 'Кластер офлайн'
+      ? transportGateway
+        ? 'Синхронизация...'
+        : 'Кластер: mesh'
+      : 'Кластер: локально'
     : !transportOnline
       ? 'Соединение...'
       : 'Обновление...';
