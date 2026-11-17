@@ -150,6 +150,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
 
   const connectionRef = useRef<ModuleConnection | null>(null);
   const infoRef = useRef<ModuleInfo | null>(null);
+  const lastTransportRef = useRef<ModuleConnection | null>(null);
   const lastRecordRef = useRef<LastModuleRecord | null>(null);
   const unsubEnvelopeRef = useRef<(() => void) | null>(null);
   const v1ClientRef = useRef<KMeshV1Client | null>(null);
@@ -993,6 +994,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         try {
+          lastTransportRef.current = transport;
           const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 5000), 6500);
           console.log('[ble]', 'restore openKnown', Boolean(nextInfo));
           if (cancelAutoKeyRef.current === key) {
@@ -1051,6 +1053,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const transport = getModuleTransport(kind);
         if (!transport.supported || !transport.openKnown) continue;
         try {
+          lastTransportRef.current = transport;
           const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 3000), 4500);
           console.log('[ble]', 'restore openKnown', Boolean(nextInfo));
           if (nextInfo) {
@@ -1107,6 +1110,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     }, 30_000);
     return () => clearInterval(timer);
   }, []);
+
+  /* Страховка от «connect/close»-цикла: если GATT уже открыт и модуль прислал
+   * INFO, но мастер подключения не дошёл до adopt — принимаем соединение. */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const t = lastTransportRef.current;
+      if (!t || !t.isOpen || !t.info || connectionRef.current) return;
+      console.log('[module]', 'watchdog adopt', t.info.hardwareId);
+      void adopt(t, t.info).catch(() => undefined);
+    }, 1200);
+    return () => clearInterval(timer);
+  }, [adopt]);
 
   // Переход в фон не должен рвать BLE: соединение и активное сканирование
   // продолжают жить (iOS — bluetooth-central, Android — foreground service).
