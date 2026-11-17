@@ -907,6 +907,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         for (const pending of pendingClaims) {
           const device = available.find((d) => d.name.toLowerCase() === pending.bleName.toLowerCase());
           if (!device) continue;
+          // Модуль уже носит наш префикс — claim о передаче устарел, не рвём
+          // им текущее подключение (иначе приложение зацикливается на connect/close).
+          if (classifyModuleName(device.name, myPrefix) === 'own') {
+            await removePendingBleClaim(pending.bleName).catch(() => undefined);
+            continue;
+          }
           const claim = decodeOwnerClaimToken(pending.claimToken);
           const transport = getModuleTransport('ble');
           if (!claim || !transport.setOwner) continue;
