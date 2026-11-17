@@ -860,6 +860,9 @@ export class NativeBleTransport implements ModuleConnection {
           bytesToBase64(chunk),
         );
         onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
+        // Модуль обрабатывает write в GATT-колбэке; без паузы 5-й чанк
+        // большого кадра зависает (service RPC из 2 чанков проходят).
+        if (offset + chunkSize < frame.length) await delay(24);
       }
     };
     const next = this.writeChain.then(run, run);
