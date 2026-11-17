@@ -309,6 +309,29 @@ export interface SecureEnvelope {
   ciphertext: Buffer;
 }
 
+/** Собрать SEND_ENVELOPE RPC (обратная операция к decodeEnvelopeRpc). */
+export function encodeEnvelopeRpc(input: {
+  chatRef: number;
+  chatId: string;
+  kind: string;
+  nonce: Buffer;
+  ciphertext: Buffer;
+}): Buffer {
+  const nonce = Buffer.from(input.nonce.subarray(0, 12));
+  const uuid = Buffer.from(input.chatId.replace(/[^0-9a-f]/gi, '').padEnd(32, '0').slice(0, 32), 'hex');
+  const out = Buffer.alloc(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16);
+  out[0] = RpcOp.SEND_ENVELOPE;
+  out[1] = 0;
+  out.writeUInt16LE(input.chatRef & 0xffff, 2);
+  out[4] = input.kind === 'media' ? 2 : 1;
+  out[5] = nonce.length;
+  nonce.copy(out, 6);
+  out.writeUInt16LE(input.ciphertext.length, 6 + nonce.length);
+  input.ciphertext.copy(out, 8 + nonce.length);
+  uuid.copy(out, 8 + nonce.length + input.ciphertext.length);
+  return out;
+}
+
 export function decodeEnvelopeRpc(payload: Buffer): SecureEnvelope | null {
   if (payload.length < 8 + 16 || payload[0] !== RpcOp.SEND_ENVELOPE) return null;
   const chatRef = payload.readUInt16LE(2);

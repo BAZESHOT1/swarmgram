@@ -62,9 +62,10 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
 
   /** Пока телефон выступает шлюзом, кластер имеет доступ к Hub. */
   const markGateway = (online: boolean): void => {
+    if (!online) return; // офлайн телефона не отменяет ESP32-шлюз в кластере
     const state = useStore.getState();
-    if (state.transportGateway !== online) state.setTransportGateway(online);
-    setMeshCapabilities({ connected: true, gateway: online });
+    if (state.transportGateway !== true) state.setTransportGateway(true);
+    setMeshCapabilities({ connected: true, gateway: true });
   };
 
   const sendInet = (): void => {

@@ -348,13 +348,24 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 message.nonce,
               );
               if (text == null) return;
+              // Серверные сообщения шифруют JSON-payload (text/kind/file),
+              // KMesh-отправки — обычный текст. Поддерживаем оба вида.
+              let bodyText = text;
+              if (text.startsWith('{')) {
+                try {
+                  const parsed = JSON.parse(text) as { text?: unknown };
+                  if (typeof parsed.text === 'string') bodyText = parsed.text;
+                } catch {
+                  /* это обычный текст */
+                }
+              }
               const createdAt = new Date().toISOString();
               const entry = {
                 id: `mesh-${message.msgUuid}`,
                 chatId: message.chatId,
                 seq: 0,
                 kind: message.kind,
-                text,
+                text: bodyText,
                 createdAt,
                 mine: false,
                 senderNodeId: message.srcNodeId,
@@ -370,7 +381,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               });
               useStore.getState().setChatPreview(message.chatId, {
                 id: entry.id,
-                text,
+                text: bodyText,
                 kind: message.kind,
                 mine: false,
                 at: createdAt,
@@ -436,7 +447,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               clientId,
             });
             return result.state !== 'FAILED';
-          } catch {
+          } catch (error) {
+            console.warn('[kmesh]', 'sendTextViaMesh failed', String(error));
             return false;
           } finally {
             // Гарантия сохранения: сразу пробуем выгрузить подписанную копию.

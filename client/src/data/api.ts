@@ -1664,6 +1664,7 @@ export const api = {
         customName: string;
         claimedAt: string;
         bleName: string;
+        online?: boolean;
       }>;
       incoming: Array<{
         id: string;

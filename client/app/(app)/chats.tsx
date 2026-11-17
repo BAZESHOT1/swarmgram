@@ -46,6 +46,7 @@ import {
   prefetchChat,
 } from '../../src/data/queries';
 import { loadChatMessages, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
+import { getServerChatKey } from '../../src/data/chatkit';
 import { saveMessages } from '../../src/data/cache';
 import { Avatar } from '../../src/components/Avatar';
 import { Glass, GLASS_FILL_BUTTON, PINNED_SURFACE } from '../../src/components/Glass';
@@ -529,6 +530,16 @@ export default function ChatsScreen() {
   const haptics = useHaptics();
   const reduced = useReducedMotion();
   const insets = useSafeAreaInsets();
+
+  /* Ключи серверных чатов кэшируем заранее: иначе KMesh-отправка офлайн
+   * падает с chat_key_missing, и сообщение не уходит через модуль. */
+  useEffect(() => {
+    const list = chats.data ?? [];
+    for (const chat of list) {
+      if (chat.encryption === 'e2e') continue;
+      void getServerChatKey(chat.id).catch(() => undefined);
+    }
+  }, [chats.data]);
 
   /* -------------------------------------- скрытие поиска при скролле вниз */
   const searchAnim = useRef(new Animated.Value(0)).current; // 0 — видно, 1 — скрыто

@@ -244,6 +244,24 @@ async function ensureUserIdentity(userId: string): Promise<{ userId: string; net
   };
 }
 
+/** node_id модуля из hardwareId (та же FNV-1a, что в прошивке). */
+function nodeIdFromMac(mac: string): number {
+  // hardwareId выглядит как esp32-<12 hex MAC>; старый формат — esp32-<8 hex id>.
+  const match = /(?:^esp32-)?([0-9a-f]{8,12})$/i.exec(String(mac ?? '').trim());
+  if (!match) return 0;
+  const raw = match[1].toLowerCase();
+  if (raw.length === 8) return parseInt(raw, 16) >>> 0;
+  const text = raw.slice(0, 12);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  let id = ((hash & 0x7ffffffe) | 0x10000000) >>> 0;
+  if (id <= 1) id = 0x10000002;
+  return id >>> 0;
+}
+
 async function ownedModule(mac: string): Promise<{
   module_mac: string; mod6: string; owner_user_id: string; custom_name: string;
 } | null> {
@@ -1219,6 +1237,21 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         ORDER BY c.resolved_at DESC`,
       [auth.userId],
     );
+    const liveNodes = new Set<number>();
+    try {
+      const gateways = await query<{ gateway_id: string }>(
+        `SELECT gateway_id::text FROM kmesh_v1_gateways
+          WHERE last_seen_at > now() - interval '4 minutes'`,
+      );
+      for (const row of gateways) liveNodes.add(Number(row.gateway_id));
+      const presence = await query<{ node_id: string }>(
+        `SELECT node_id::text FROM kmesh_v1_presence
+          WHERE expires_at > now() AND last_seen_at > now() - interval '4 minutes'`,
+      );
+      for (const row of presence) liveNodes.add(Number(row.node_id));
+    } catch {
+      /* таблицы могут быть пустыми */
+    }
     return reply.send({
       ok: true,
       identity,
@@ -1228,6 +1261,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         customName: m.custom_name,
         claimedAt: m.claimed_at,
         bleName: `KL-${identity.blePrefix}-${m.mod6.trim()}`,
+        online: liveNodes.has(nodeIdFromMac(m.module_mac)),
       })),
       incoming: incoming.map((c) => ({
         id: c.id,

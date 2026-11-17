@@ -350,7 +350,7 @@ export default function ModulesScreen() {
   const [otaTarget, setOtaTarget] = useState<ModuleRow | null>(null);
   const [releases, setReleases] = useState<Record<string, string>>({});
   const [meshModules, setMeshModules] = useState<{
-    modules: Array<{ moduleMac: string; mod6: string; customName: string; bleName: string }>;
+    modules: Array<{ moduleMac: string; mod6: string; customName: string; bleName: string; online?: boolean }>;
     incoming: Array<{ id: string; moduleMac: string; mod6: string; toUsername: string }>;
     outgoing: Array<{ id: string; moduleMac: string; mod6: string; fromUsername: string }>;
     identity: { blePrefix: string; netId: number };
@@ -380,8 +380,13 @@ export default function ModulesScreen() {
       })
       .catch(() => undefined);
     void reloadMeshModules();
+    // Статус KMesh-модулей (онлайн/офлайн) должен обновляться без перезахода.
+    const meshTimer = setInterval(() => {
+      if (AppState.currentState !== 'background') void reloadMeshModules();
+    }, 15_000);
     return () => {
       alive = false;
+      clearInterval(meshTimer);
     };
   }, [reloadMeshModules]);
   /** События WebSocket, которые кладёт общий RealtimeBridge (второй сокет не нужен). */
@@ -723,9 +728,22 @@ export default function ModulesScreen() {
                 key={m.moduleMac}
                 style={{ paddingHorizontal: 12, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: theme.line }}
               >
-                <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
-                  {m.customName || `Модуль ${m.mod6}`}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <View
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: m.online ? '#30D158' : '#8E8E93',
+                    }}
+                  />
+                  <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700', flexShrink: 1 }}>
+                    {m.customName || `Модуль ${m.mod6}`}
+                  </Text>
+                  <Text style={{ color: m.online ? '#30D158' : theme.textDisabled, fontSize: 11, fontWeight: '600' }}>
+                    {m.online ? 'онлайн' : 'офлайн'}
+                  </Text>
+                </View>
                 <TextInput
                   defaultValue={m.customName}
                   placeholder="Название: Брелок, Рюкзак…"

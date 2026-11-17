@@ -260,14 +260,37 @@ export class KMeshV1Client {
     if (!keys) throw new Error('device_keys_missing');
     if (!this.nodeId) throw new Error('mesh_node_not_connected');
 
-    const chatKey = await this.chatKeyFor(input.chatId);
-    if (!chatKey) throw new Error('chat_key_missing');
-    const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
-    const ciphertextBytes = b64ToBytes(sealed.ciphertext);
-    const nonceBytes = b64ToBytes(sealed.nonce);
     const msgUuid = nextMsgUuid(this.nodeId);
     const uuidHex = msgUuidHex(msgUuid);
     const isGroup = Boolean(input.group);
+    const item: KMeshV1OutboxItem = {
+      msgUuid: uuidHex,
+      chatId: input.chatId,
+      chatRef: input.chatRef,
+      peerNodeId: input.peerNodeId,
+      senderNodeId: this.nodeId,
+      text: input.text,
+      createdAt: new Date().toISOString(),
+      ciphertextB64: '',
+      nonce: '',
+      state: 'SYNC_PENDING',
+      attempts: 0,
+      permanentSignature: '',
+      ...(input.clientId ? { clientId: input.clientId } : {}),
+    };
+    // Сначала фиксируем в очереди: сообщение не должно потеряться, даже если
+    // ключ чата ещё не в кэше (офлайн после переустановки). Такое сообщение
+    // уйдёт на Hub при появлении сети.
+    await kmeshV1Enqueue(item);
+
+    const chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+    if (!chatKey) {
+      console.warn('[kmesh]', 'sendText: chat key missing, message queued', input.chatId);
+      return { msgUuid: uuidHex, state: item.state };
+    }
+    const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
+    const ciphertextBytes = b64ToBytes(sealed.ciphertext);
+    const nonceBytes = b64ToBytes(sealed.nonce);
     // В эфир уходит готовый E2EE-конверт; temp-ключ только транспорт.
     const rpc = encodeEnvelopeRpc({
       chatRef: input.chatRef,
@@ -284,27 +307,19 @@ export class KMeshV1Client {
     const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
     const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
 
-    const ciphertextB64 = sealed.ciphertext;
-    const nonce = sealed.nonce;
-
-    const item: KMeshV1OutboxItem = {
-      msgUuid: uuidHex,
-      chatId: input.chatId,
-      chatRef: input.chatRef,
-      peerNodeId: input.peerNodeId,
-      senderNodeId: this.nodeId,
-      text: input.text,
-      createdAt: new Date().toISOString(),
-      ciphertextB64,
-      nonce,
-      state: 'LOCAL_MESH_ONLY',
-      attempts: 0,
-      permanentSignature: '',
-      ...(input.clientId ? { clientId: input.clientId } : {}),
-    };
-    await kmeshV1Enqueue(item);
+    item.ciphertextB64 = sealed.ciphertext;
+    item.nonce = sealed.nonce;
+    item.state = 'LOCAL_MESH_ONLY';
+    await kmeshV1Update(item);
 
     const ok = await this.link.send(frame).catch(() => false);
+    console.log('[kmesh]', 'sendText', {
+      chatId: input.chatId,
+      chatRef: input.chatRef,
+      nodeId: this.nodeId,
+      rpcLen: rpc.length,
+      ok,
+    });
     if (!ok) {
       item.state = 'FAILED';
       item.attempts += 1;

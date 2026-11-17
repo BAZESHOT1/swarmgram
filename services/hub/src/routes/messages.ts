@@ -13,8 +13,62 @@ import { enqueueNotification } from '../push.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { can } from './chats.js';
 import { getFragment } from '../nodes.js';
+import { crc16 } from '../kmeshRpc.js';
+import { queueEnvelopeDownlink } from '../kmeshDownlink.js';
 
 const MAX_NONCE_B64 = 64;
+
+/** KMesh: короткий текст дублируем в downlink-очередь получателей. */
+async function mirrorToKmesh(input: {
+  chatId: string;
+  chatRef: number;
+  kind: string;
+  nonce: string;
+  objectId: string;
+  senderUserId: string;
+  senderNodeId: number;
+}): Promise<void> {
+  if (input.kind !== 'text') return;
+  const obj = await one<{ size_bytes: number }>(
+    'SELECT size_bytes FROM objects WHERE id = $1 AND state = $2',
+    [input.objectId, 'active'],
+  );
+  if (!obj || obj.size_bytes <= 0 || obj.size_bytes > 213) return;
+  const frags = await query<{ index: number; id: string; node_id: string; public_url: string; ticket_secret: string }>(
+    `SELECT f.index, n.id, f.node_id, n.public_url, n.ticket_secret
+       FROM fragments f JOIN nodes n ON n.id = f.node_id
+      WHERE f.object_id = $1 AND f.state = 'ok' AND n.status = 'online'
+      ORDER BY n.reputation DESC`,
+    [input.objectId],
+  );
+  for (const frag of frags) {
+    try {
+      const stream = await getFragment(frag, input.objectId, frag.index, input.senderUserId);
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of stream) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+        total += buf.length;
+        if (total > 213) return;
+        chunks.push(buf);
+      }
+      const ciphertext = Buffer.concat(chunks);
+      if (!ciphertext.length) return;
+      await queueEnvelopeDownlink({
+        chatId: input.chatId,
+        chatRef: input.chatRef,
+        kind: input.kind,
+        nonceB64: input.nonce,
+        ciphertextB64: ciphertext.toString('base64'),
+        excludeUserId: input.senderUserId,
+        srcNodeId: input.senderNodeId,
+      });
+      return;
+    } catch {
+      /* попробуем следующую реплику */
+    }
+  }
+}
 
 const messageRoutes: FastifyPluginAsync = async (app) => {
   /* --------------------------------------------------------- отправка ---- */
@@ -175,6 +229,34 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       },
     };
     for (const m of members) publish(m.user_id, envelope);
+
+    // Мосты KMesh: получатели с активным модулем получат тот же конверт через
+    // downlink, даже если приложение офлайн. Не блокируем ответ пользователю.
+    void (async () => {
+      try {
+        const senderNode = await one<{ node_id: string }>(
+          `SELECT node_id::text FROM kmesh_v1_presence
+            WHERE user_id = $1 AND expires_at > now()
+            ORDER BY last_seen_at DESC LIMIT 1`,
+          [me],
+        ) ?? await one<{ node_id: string }>(
+          `SELECT node_id::text FROM kmesh_v1_node_bindings
+            WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+          [me],
+        );
+        await mirrorToKmesh({
+          chatId,
+          chatRef: crc16(Buffer.from(chatId, 'utf8')) || 1,
+          kind,
+          nonce,
+          objectId,
+          senderUserId: me,
+          senderNodeId: senderNode ? Number(senderNode.node_id) : 0,
+        });
+      } catch {
+        /* KMesh — best-effort, HTTP-доставка уже выполнена */
+      }
+    })();
 
     // Push получателям — best-effort и без ожидания: отправка сообщения не
     // должна зависеть от FCM. Текст уведомления не содержит содержимого.

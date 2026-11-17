@@ -253,6 +253,12 @@ bool KlintoNode::loadConfig() {
 #endif
   /* NVS wins over compile-time defaults (hardware is user-assembled). */
   kl_config_load_nvs(&cfg_);
+#ifdef KL_TEMP_MESH_KEY
+  /* Исключение — транспортный KMesh-ключ: его задаёт сервер при сборке.
+   * Сохранённая в NVS копия от старой прошивки не должна перекрывать новый
+   * ключ, иначе шлюз не сможет расшифровать пакеты кластера. */
+  kl_config_set_temp_key_hex(&cfg_, KL_TEMP_MESH_KEY);
+#endif
   {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);

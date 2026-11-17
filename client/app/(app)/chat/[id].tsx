@@ -52,7 +52,7 @@ import {
   decryptEnvelopeAuto,
   type ViewMessage,
 } from '../../../src/data/messaging';
-import { loadChatKey, topUpAllKeys } from '../../../src/data/chatkit';
+import { getServerChatKey, loadChatKey, topUpAllKeys } from '../../../src/data/chatkit';
 import { storage } from '../../../src/crypto/core';
 import * as api from '../../../src/data/api';
 import { useStore } from '../../../src/state/useStore';
@@ -511,7 +511,13 @@ export default function ChatScreen() {
     void api.api
       .getChat(chatId)
       .then((c) => {
-        if (alive) setChat(c as ChatExt);
+        if (!alive) return;
+        setChat(c as ChatExt);
+        // Кэшируем ключ серверного чата, чтобы KMesh-отправка работала офлайн
+        // (в офлайне ключ с Hub уже не получить).
+        if ((c as { encryption?: string }).encryption !== 'e2e') {
+          void getServerChatKey(chatId).catch(() => undefined);
+        }
       })
       .catch(() => undefined);
     return () => {
