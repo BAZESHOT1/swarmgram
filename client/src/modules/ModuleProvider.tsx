@@ -126,6 +126,16 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const autoRef = useRef<AutoModuleState | null>(null);
   autoRef.current = autoModule;
   const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* Если транспорт уже подключён (restore успел раньше мастера), не держим
+   * баннер «Устанавливаем связь…» бесконечно. */
+  useEffect(() => {
+    if (!connection) return;
+    if (autoRef.current?.phase !== 'connecting') return;
+    setAutoModule((prev) => (prev && prev.phase === 'connecting' ? { ...prev, phase: 'connected' } : prev));
+    const timer = setTimeout(() => setAutoModule(null), 2200);
+    return () => clearTimeout(timer);
+  }, [connection]);
   const ignoredModulesRef = useRef<Set<string>>(new Set());
   const cancelAutoKeyRef = useRef<string | null>(null);
 
