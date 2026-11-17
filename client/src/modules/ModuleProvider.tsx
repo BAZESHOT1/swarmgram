@@ -298,6 +298,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         refreshLists();
         // Разрыв (в т.ч. из-за сбоя записи) — сразу пробуем поднять связь
         // заново, не дожидаясь 30-секундного опроса.
+        lastAttemptRef.current = 0; // без 30-секундной паузы автоповтора
         setTimeout(() => void restoreRef.current?.(), 2500);
       });
 

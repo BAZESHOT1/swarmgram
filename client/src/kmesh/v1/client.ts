@@ -117,6 +117,9 @@ export interface KMeshV1ClientOptions {
   dailyProxyLimitBytes?: number;
 }
 
+/** Общий для всех экземпляров: повтор после переподключения использует тот же uuid. */
+const uuidByClient = new Map<string, bigint>();
+
 export class KMeshV1Client {
   private link: KMeshV1Link;
   private decoder = new ClientFrameDecoder();
@@ -134,7 +137,6 @@ export class KMeshV1Client {
    * должна использовать тот же uuid, иначе каждая попытка создавала новую
    * запись в outbox и дубликаты на Hub.
    */
-  private uuidByClient = new Map<string, bigint>();
 
   constructor(options: KMeshV1ClientOptions) {
     this.opts = options;
@@ -290,13 +292,13 @@ export class KMeshV1Client {
     if (!keys) throw new Error('device_keys_missing');
     if (!this.nodeId) throw new Error('mesh_node_not_connected');
 
-    const knownUuid = input.clientId ? this.uuidByClient.get(input.clientId) : undefined;
+    const knownUuid = input.clientId ? uuidByClient.get(input.clientId) : undefined;
     const msgUuid = knownUuid ?? nextMsgUuid(this.nodeId);
     if (input.clientId && !knownUuid) {
-      this.uuidByClient.set(input.clientId, msgUuid);
-      if (this.uuidByClient.size > 200) {
-        const first = this.uuidByClient.keys().next().value;
-        if (first !== undefined) this.uuidByClient.delete(first);
+      uuidByClient.set(input.clientId, msgUuid);
+      if (uuidByClient.size > 200) {
+        const first = uuidByClient.keys().next().value;
+        if (first !== undefined) uuidByClient.delete(first);
       }
     }
     const uuidHex = msgUuidHex(msgUuid);
@@ -346,7 +348,7 @@ export class KMeshV1Client {
       // сообщение вечно: по таймауту считаем попытку неуспешной, очередь повторит.
       const ok = await Promise.race([
         sendOnce.catch(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 12_000)),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 9_000)),
       ]);
       if (!ok) {
         console.log('[kmesh]', 'sendFrame timeout/failed', frame.length);

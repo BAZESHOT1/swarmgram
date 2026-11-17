@@ -15,7 +15,7 @@ let sender: MeshSender | null = null;
 let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
 /** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
-const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number }> = [];
+const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number; paused?: boolean }> = [];
 /** После стольких неудач перестаём долбить модуль: сообщение остаётся в outbox. */
 const MAX_V1_ATTEMPTS = 3;
 const giveUpListeners = new Set<(item: { chatId: string; text: string; clientId?: string }) => void>();
@@ -46,24 +46,26 @@ async function flushV1Queue(): Promise<void> {
   flushingV1 = true;
   try {
     while (pendingV1.length) {
-      const item = pendingV1[0];
+      const item = pendingV1.find((entry) => !entry.paused);
+      if (!item) break;
       try {
         const ok = await v1Sender(item.chatId, item.text, item.clientId);
         if (!ok) {
           item.attempts += 1;
           if (item.attempts >= MAX_V1_ATTEMPTS) {
-            pendingV1.shift();
+            // Не выбрасываем: ждём нового подключения модуля (setMeshV1Sender).
+            item.paused = true;
             giveUp(item);
             continue;
           }
           break;
         }
-        pendingV1.shift();
+        pendingV1.splice(pendingV1.indexOf(item), 1);
         console.log('[kmesh]', 'queued text sent', item.chatId);
       } catch {
         item.attempts += 1;
         if (item.attempts >= MAX_V1_ATTEMPTS) {
-          pendingV1.shift();
+          item.paused = true;
           giveUp(item);
           continue;
         }
@@ -108,6 +110,11 @@ export function setMeshSender(next: MeshSender | null): void {
 export function setMeshV1Sender(next: MeshV1Sender | null): void {
   v1Sender = next;
   if (next) {
+    // Новое подключение модуля: приостановленные тексты пробуем заново.
+    for (const item of pendingV1) {
+      item.paused = false;
+      item.attempts = 0;
+    }
     ensureFlushTimer();
     void flushV1Queue();
   }

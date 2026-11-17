@@ -86,6 +86,10 @@ const HELLO_RETRY_DELAY_MS = 700;
 const INFO_TIMEOUT_MS = 2500;
 /** Сколько ждём INFO после каждого HELLO, прежде чем повторить. */
 const HELLO_WAIT_MS = 1600;
+/** Столько тишины от модуля считаем обрывом связи (INFO приходит раз в 15 с). */
+const LINK_SILENT_MS = 45_000;
+/** Общий предел на запись кадра: дольше — GATT завис. */
+const FRAME_WRITE_LIMIT_MS = 7000;
 /** Ранняя остановка скана: минимум времени и ожидание имени из scan response. */
 const SCAN_EARLY_MIN_MS = 1000;
 const SCAN_EARLY_NAMELESS_MS = 2200;
@@ -643,14 +647,21 @@ export class NativeBleTransport implements ModuleConnection {
     subscribeTx();
     subscribeStatus();
 
-    /* Android (MediaTek/Bluedroid) иногда «теряет» notify-подписку после
-     * серии записей: событий нет и ошибки тоже нет. Периодически
-     * переподписываемся — это дешево и возвращает INFO/входящие сообщения. */
+    /* Сторож связи. Модуль шлёт INFO каждые 15 с, поэтому долгая тишина —
+     * признак «зомби»-соединения: GATT формально жив, но notify/write больше
+     * не проходят (так выглядело зависание отправки на iOS). Тогда рвём
+     * соединение, ModuleProvider переподключается и очередь досылает текст.
+     * Android дополнительно пересоздаёт подписку после 25 с тишины. */
+    this.lastDataMs = Date.now();
     this.rearmTimer = setInterval(() => {
       if (this.closing || !this.deviceId) return;
-      // Модуль шлёт INFO каждые 15 секунд. Если notify жив — не пересоздаём
-      // подписку: remove/add монитора на MediaTek иногда роняет GATT.
-      if (this.lastDataMs && Date.now() - this.lastDataMs < 25_000) return;
+      const silentMs = Date.now() - this.lastDataMs;
+      if (silentMs >= LINK_SILENT_MS) {
+        dbg(`link silent ${Math.round(silentMs / 1000)}s -> reconnect`);
+        void this.failLink();
+        return;
+      }
+      if (Platform.OS !== 'android' || silentMs < 25_000) return;
       try {
         this.rxSub?.remove();
       } catch {
@@ -663,40 +674,35 @@ export class NativeBleTransport implements ModuleConnection {
       }
       subscribeTx();
       subscribeStatus();
-    }, 20_000);
+    }, 10_000);
 
-    // Первый HELLO — только KMesh_v1: прошивка отвечает на него одним INFO.
-    // Раньше уходили сразу оба (legacy + v1), модуль дважды гнал длинный INFO
-    // по 20 байт с паузой 28 мс, очередь notify забивалась и клиент ждал
-    // подтверждения дольше таймаута. Legacy HELLO добавляем со 2-й попытки
-    // (старые прошивки), и после каждой попытки ждём INFO, а не шлём вслепую.
+    // Живой лог показал: модуль отвечает на legacy HELLO сразу, а на первый
+    // v1 HELLO — нет. Поэтому 1-я попытка — legacy (его понимает и новая
+    // прошивка), со 2-й добавляем v1. Оба сразу не шлём: прошивка отвечает на
+    // каждый длинным INFO, и очередь notify забивается. После каждой попытки
+    // ждём INFO, а не шлём вслепую.
     await delay(250);
     let helloError: Error | null = null;
     for (let attempt = 0; attempt < HELLO_ATTEMPTS; attempt += 1) {
       if (this.info || this.closing) break;
-      let v1Ok = false;
       try {
-        const helloPayloadV1 = new TextEncoder().encode(
-          JSON.stringify({ v: 3, kind: 'hello', app: 'klinto', client: 'native-ble' }),
-        );
-        await this.writeBytes(
-          encodeClientFrame(ClientFrameType.HELLO, helloPayloadV1, this.v1HelloSeq++ & 0xffff),
-        );
-        v1Ok = true;
+        await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
+        helloError = null;
       } catch (error) {
         helloError = error instanceof Error ? error : new Error(String(error));
         if (this.closing) break;
       }
-      if (attempt > 0 || !v1Ok) {
+      if (attempt > 0) {
         try {
-          await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
-          helloError = null;
-        } catch (error) {
-          helloError = error instanceof Error ? error : new Error(String(error));
-          if (this.closing) break;
+          const helloPayloadV1 = new TextEncoder().encode(
+            JSON.stringify({ v: 3, kind: 'hello', app: 'klinto', client: 'native-ble' }),
+          );
+          await this.writeBytes(
+            encodeClientFrame(ClientFrameType.HELLO, helloPayloadV1, this.v1HelloSeq++ & 0xffff),
+          );
+        } catch {
+          /* v1-канал опционален */
         }
-      } else {
-        helloError = null;
       }
       dbg(`hello attempt ${attempt + 1}`);
       await this.waitInfoPoll(HELLO_WAIT_MS);
@@ -954,7 +960,7 @@ export class NativeBleTransport implements ModuleConnection {
   ): Promise<boolean> {
     if (!this.isOpen) return false;
     try {
-      await this.writeBytes(frame, onProgress, true);
+      await this.withFrameLimit(this.writeBytes(frame, onProgress, true));
       return true;
     } catch (error) {
       // GATT завис (типично для MediaTek после серии reconnect): закрываем и
@@ -974,13 +980,30 @@ export class NativeBleTransport implements ModuleConnection {
   async sendRaw(frame: Uint8Array): Promise<boolean> {
     if (!this.isOpen) return false;
     try {
-      await this.writeBytes(frame);
+      await this.withFrameLimit(this.writeBytes(frame));
       return true;
     } catch (error) {
       dbg(`sendRaw failed: ${errorMessage(error)}`);
       await this.failLink();
       return false;
     }
+  }
+
+  /** Ограничивает ожидание записи кадра (включая очередь перед ним). */
+  private withFrameLimit(promise: Promise<void>): Promise<void> {
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    return Promise.race([
+      promise.then(() => {
+        const took = Date.now() - startedAt;
+        if (took > 1500) dbg(`write slow ${took}ms`);
+      }),
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('ble_frame_timeout')), FRAME_WRITE_LIMIT_MS);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
   }
 
   /**
@@ -1063,6 +1086,7 @@ export class NativeBleTransport implements ModuleConnection {
 
   private emitDisconnect(): void {
     if (this.disconnected) return;
+    dbg('disconnected');
     this.disconnected = true;
     this.info = null;
     // Освобождаем GATT-соединение: иначе модуль остаётся «занятым» системой,
@@ -1092,6 +1116,8 @@ export class NativeBleTransport implements ModuleConnection {
     }
     this.decoder.dispose();
     this.info = null;
+    // Зависшая запись не должна блокировать очередь нового соединения.
+    this.writeChain = Promise.resolve();
     if (this.rearmTimer) {
       clearInterval(this.rearmTimer);
       this.rearmTimer = null;

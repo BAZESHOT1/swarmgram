@@ -127,8 +127,13 @@ void BleClientLink::applyPendingRename() {
 
 bool BleClientLink::send(const uint8_t *data, size_t len) {
   if (!connected_ || !tx_ || !data || !len) return false;
-  size_t chunk = (mtu_ > 3 ? mtu_ - 3 : 20);
+  /* mtu_ запоминается в onConnect, когда обмен MTU ещё не завершён (23), и
+   * INFO в 300+ байт уходил 16 пакетами по 20 байт (каждый ещё и дублем).
+   * mtu() берёт актуальное значение у стека, и тот же INFO идёт 2 пакетами. */
+  const uint16_t cur_mtu = mtu();
+  size_t chunk = (cur_mtu > 3 ? cur_mtu - 3 : 20);
   if (chunk > 244) chunk = 244;
+  if (chunk < 20) chunk = 20;
   size_t offset = 0;
   while (offset < len) {
     const size_t take = (len - offset) > chunk ? chunk : (len - offset);
