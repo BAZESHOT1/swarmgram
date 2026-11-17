@@ -1100,7 +1100,15 @@ export default function ChatScreen() {
     const body = text.trim();
     // Текст не блокируем на время чужой медиа-загрузки: оптимистичное
     // сообщение уходит в кэш сразу, а транспорт решает HTTP/mesh.
-    if (!canCompose || !body) return;
+    if (!body) return;
+    if (!canCompose) {
+      setError(
+        !chat
+          ? 'Чат ещё загружается. Подождите пару секунд.'
+          : 'Ключ чата ещё не получен. Подключитесь к Hub или модулю и повторите.',
+      );
+      return;
+    }
     if (editing && sending) return;
 
     if (editing) {
@@ -2002,7 +2010,7 @@ export default function ChatScreen() {
               onPress={() => void onSend()}
               onPressIn={() => pressSend(true)}
               onPressOut={() => pressSend(false)}
-              disabled={!canCompose || !text.trim() || (sending && Boolean(editing))}
+              disabled={!text.trim() || (sending && Boolean(editing))}
               accessibilityRole="button"
               accessibilityLabel={editing ? 'Сохранить изменения' : 'Отправить'}
               style={({ pressed }) => [

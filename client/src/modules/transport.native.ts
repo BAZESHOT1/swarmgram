@@ -58,10 +58,18 @@ class UnsupportedUsbTransport implements ModuleConnection {
 
 export { NativeBleTransport } from './ble.native';
 
+/**
+ * BLE-транспорт — синглтон. Раньше каждый вызов создавал новый экземпляр,
+ * и авто-подключение/восстановление открывали второй GATT к тому же модулю:
+ * Android/iOS не умеют два централа, соединение рвалось по таймауту.
+ */
+let bleSingleton: NativeBleTransport | null = null;
+
 /** Выбирает нативный транспорт: BLE есть, USB — заглушка с понятной ошибкой. */
 export function getModuleTransport(kind: ConnectionKind = 'ble'): ModuleConnection {
   if (kind === 'usb') return new UnsupportedUsbTransport();
-  return new NativeBleTransport();
+  if (!bleSingleton) bleSingleton = new NativeBleTransport();
+  return bleSingleton;
 }
 
 /** Нативный BLE всегда доступен в собранном приложении. */
