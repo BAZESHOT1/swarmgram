@@ -307,29 +307,35 @@ export class KMeshV1Client {
     await kmeshV1Enqueue(item);
 
     const sendFrame = async (frame: Uint8Array): Promise<boolean> => {
-      const ok = this.link.sendProgress
-        ? await this.link
-            .sendProgress(frame, (sent, total) =>
-              this.opts.onSendProgress?.({
-                msgUuid: uuidHex,
-                clientId: input.clientId,
-                chatId: input.chatId,
-                sent,
-                total,
-              }),
-            )
-            .catch(() => false)
-        : await this.link.send(frame).catch(() => false);
-      if (ok) {
-        this.opts.onSendProgress?.({
-          msgUuid: uuidHex,
-          clientId: input.clientId,
-          chatId: input.chatId,
-          sent: frame.length,
-          total: frame.length,
-        });
+      const sendOnce = this.link.sendProgress
+        ? this.link.sendProgress(frame, (sent, total) =>
+            this.opts.onSendProgress?.({
+              msgUuid: uuidHex,
+              clientId: input.clientId,
+              chatId: input.chatId,
+              sent,
+              total,
+            }),
+          )
+        : this.link.send(frame);
+      // Android BLE иногда не вызывает callback write-with-response. Не держим
+      // сообщение вечно: по таймауту считаем попытку неуспешной, очередь повторит.
+      const ok = await Promise.race([
+        sendOnce.catch(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4500)),
+      ]);
+      if (!ok) {
+        console.log('[kmesh]', 'sendFrame timeout/failed', frame.length);
+        return false;
       }
-      return ok;
+      this.opts.onSendProgress?.({
+        msgUuid: uuidHex,
+        clientId: input.clientId,
+        chatId: input.chatId,
+        sent: frame.length,
+        total: frame.length,
+      });
+      return true;
     };
 
     let chatKey = await this.chatKeyFor(input.chatId).catch(() => null);

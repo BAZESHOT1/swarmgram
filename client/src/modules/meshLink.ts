@@ -16,20 +16,35 @@ let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
 /** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
 const pendingV1: Array<{ chatId: string; text: string; clientId?: string }> = [];
+let flushingV1 = false;
+let flushTimer: ReturnType<typeof setInterval> | null = null;
 
 async function flushV1Queue(): Promise<void> {
-  if (!v1Sender) return;
-  while (pendingV1.length) {
-    const item = pendingV1[0];
-    try {
-      const ok = await v1Sender(item.chatId, item.text, item.clientId);
-      if (!ok) break;
-      pendingV1.shift();
-      console.log('[kmesh]', 'queued text sent', item.chatId);
-    } catch {
-      break;
+  if (!v1Sender || flushingV1) return;
+  flushingV1 = true;
+  try {
+    while (pendingV1.length) {
+      const item = pendingV1[0];
+      try {
+        const ok = await v1Sender(item.chatId, item.text, item.clientId);
+        if (!ok) break;
+        pendingV1.shift();
+        console.log('[kmesh]', 'queued text sent', item.chatId);
+      } catch {
+        break;
+      }
     }
+  } finally {
+    flushingV1 = false;
   }
+}
+
+function ensureFlushTimer(): void {
+  if (flushTimer) return;
+  flushTimer = setInterval(() => {
+    if (!v1Sender || !pendingV1.length) return;
+    void flushV1Queue();
+  }, 4000);
 }
 
 /** Возможности mesh на текущем подключении (для политики трафика). */
@@ -56,7 +71,10 @@ export function setMeshSender(next: MeshSender | null): void {
 /** Бинарный KMesh_v1: приоритетнее legacy-конвертов. */
 export function setMeshV1Sender(next: MeshV1Sender | null): void {
   v1Sender = next;
-  if (next) void flushV1Queue();
+  if (next) {
+    ensureFlushTimer();
+    void flushV1Queue();
+  }
 }
 
 export function canSendViaMesh(): boolean {
