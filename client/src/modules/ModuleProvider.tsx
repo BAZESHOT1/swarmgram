@@ -206,6 +206,26 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       const previous = connectionRef.current;
       connectionRef.current = transport;
       infoRef.current = nextInfo;
+      // Транспорт уже открыт — сразу разрешаем отправку, не дожидаясь
+      // остальных шагов adopt (они могут подвиснуть на сети/сервисе).
+      setMeshSender((chatId, envelope) => transport.sendEnvelope(chatId, envelope));
+      setMeshV1Sender(async (chatId, text, clientId) => {
+        const client = v1ClientRef.current;
+        if (!client) return false;
+        try {
+          const result = await client.sendText({
+            chatId,
+            chatRef: crc16(new TextEncoder().encode(chatId)) || 1,
+            peerNodeId: 1,
+            text,
+            toInternet: true,
+            clientId,
+          });
+          return result.state !== 'FAILED';
+        } catch {
+          return false;
+        }
+      });
       if (mountedRef.current) {
         setConnection(transport);
         setInfo(nextInfo);

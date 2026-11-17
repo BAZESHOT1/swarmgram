@@ -7,7 +7,7 @@
  */
 import React from 'react';
 import { Animated, Modal, Pressable, Text, View, StyleSheet, useWindowDimensions, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
-import Reanimated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Reanimated, { FadeOut, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import { MotiView } from 'moti';
@@ -330,7 +330,14 @@ function SideCapsule({
     opacity: progress.value,
     transform: [{ translateX: fromX * (1 - progress.value) }],
   }));
-  return <Reanimated.View style={[style, animatedStyle]}>{children}</Reanimated.View>;
+  return (
+    <Reanimated.View
+      exiting={reduced ? undefined : FadeOut.duration(160)}
+      style={[style, animatedStyle]}
+    >
+      {children}
+    </Reanimated.View>
+  );
 }
 
 const styles = StyleSheet.create({
