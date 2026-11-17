@@ -599,8 +599,13 @@ export class KMeshV1Client {
     // E2E-чат: локальный ключ устройства.
     const e2e = await loadChatKey(chatId, keys).catch(() => null);
     if (e2e) return e2e;
+    // Офлайн HTTP-запрос ключа может висеть десятки секунд — ограничиваем.
+    // Дальше sendText сам запросит ключ через KMesh (CHAT_KEY_REQ).
     try {
-      const { key } = await getServerChatKey(chatId);
+      const key = await Promise.race([
+        getServerChatKey(chatId).then((result) => result.key),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+      ]);
       return key;
     } catch {
       return null;
@@ -624,9 +629,7 @@ export class KMeshV1Client {
       if (!item.ciphertextB64) {
         const key = await this.chatKeyFor(item.chatId);
         if (!key) {
-          item.state = 'FAILED';
-          item.attempts += 1;
-          await kmeshV1Update(item);
+          // Ключ ещё не получен (нет сети): не помечаем FAILED, повторим позже.
           continue;
         }
         const sealed = encryptBytes(key, new TextEncoder().encode(item.text));
