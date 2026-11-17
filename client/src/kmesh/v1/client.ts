@@ -351,7 +351,10 @@ export class KMeshV1Client {
       }
     }
 
-    if (!chatKey) {
+    if (!chatKey || !input.toInternet) {
+      // Офлайн/кластер: текст идёт открытым внутри mesh-пакета (он запечатан
+      // временным ключом кластера); при появлении Hub outbox зашифрует его
+      // постоянным ключом чата и сохранит.
       const textRpc = encodeRpcText(input.chatRef, input.text);
       const textFlags =
         (input.toInternet || isGroup ? PacketFlag.TO_INTERNET : 0) |

@@ -220,7 +220,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             chatRef: crc16(new TextEncoder().encode(chatId)) || 1,
             peerNodeId: 1,
             text,
-            toInternet: true,
+            toInternet: Boolean(useStore.getState().transportOnline),
             clientId,
           });
           return result.state !== 'FAILED';
@@ -535,7 +535,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               chatRef: refOf(chatId),
               peerNodeId: 1,
               text,
-              toInternet: true,
+              toInternet: Boolean(useStore.getState().transportOnline),
               clientId,
             });
             return result.state !== 'FAILED';
