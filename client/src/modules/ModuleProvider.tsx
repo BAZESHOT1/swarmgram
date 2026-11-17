@@ -202,6 +202,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const adopt = useCallback(
     async (transport: ModuleConnection, nextInfo: ModuleInfo) => {
       const kind = transport.kind;
+      console.log('[module]', 'adopt start', kind, nextInfo.hardwareId);
       // Старое соединение закрываем только после успешного нового handshake.
       const previous = connectionRef.current;
       connectionRef.current = transport;
@@ -226,6 +227,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           return false;
         }
       });
+      console.log('[module]', 'senders ready', kind);
       if (mountedRef.current) {
         setConnection(transport);
         setInfo(nextInfo);
@@ -986,6 +988,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
         try {
           const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 5000), 6500);
+          console.log('[ble]', 'restore openKnown', Boolean(nextInfo));
           if (cancelAutoKeyRef.current === key) {
             await transport.close().catch(() => undefined);
             setAutoModule(null);
@@ -1036,6 +1039,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         if (!transport.supported || !transport.openKnown) continue;
         try {
           const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 3000), 4500);
+          console.log('[ble]', 'restore openKnown', Boolean(nextInfo));
           if (nextInfo) {
             await adopt(transport, nextInfo);
             return;
@@ -1080,6 +1084,16 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       sub.remove();
     };
   }, [session?.userId, restore, session]);
+
+  /* Офлайн-сообщения KMesh: как только у телефона появляется сеть, выгружаем
+   * очередь на Hub (тот же текст шифруется постоянным ключом чата). */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!useStore.getState().transportOnline) return;
+      void v1ClientRef.current?.syncOutbox().catch(() => undefined);
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Переход в фон не должен рвать BLE: соединение и активное сканирование
   // продолжают жить (iOS — bluetooth-central, Android — foreground service).
