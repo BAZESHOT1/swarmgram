@@ -16,6 +16,7 @@ export const ANY_GATEWAY_ID = 1;
 export const TEMP_TAG_LEN = 4;
 export const CRYPTO_HDR_LEN = 2;
 export const FLAG_TEMP_MESH_KEY = 0x08;
+export const FLAG_FROM_INTERNET = 0x04;
 
 export function crc16(buf: Buffer): number {
   let crc = 0xffff;
@@ -123,9 +124,9 @@ function aadBuffer(aad: {
 }
 
 export function sealTemp(keyHex: string, packet: Omit<MeshPacketInput, 'payload' | 'flags'>,
-                         plain: Buffer): { payload: Buffer; flags: number } | null {
+                         plain: Buffer, flags = FLAG_TEMP_MESH_KEY): { payload: Buffer; flags: number } | null {
   if (!/^[0-9a-f]{64}$/i.test(keyHex)) return null;
-  const flags = FLAG_TEMP_MESH_KEY;
+  flags = (flags | FLAG_TEMP_MESH_KEY) & 0xff;
   const payloadLen = CRYPTO_HDR_LEN + plain.length + TEMP_TAG_LEN;
   if (payloadLen > 255) return null;
   const { enc, mac } = keys(keyHex);

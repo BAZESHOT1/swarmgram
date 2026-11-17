@@ -348,6 +348,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 message.nonce,
               );
               if (text == null) return;
+              console.log('[kmesh]', 'secure message', {
+                chatId: message.chatId,
+                src: message.srcNodeId,
+                bytes: message.ciphertext.length,
+              });
               // Серверные сообщения шифруют JSON-payload (text/kind/file),
               // KMesh-отправки — обычный текст. Поддерживаем оба вида.
               let bodyText = text;

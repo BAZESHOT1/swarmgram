@@ -11,7 +11,7 @@
  */
 import { encryptBytes, decryptBytes, storage } from '../../crypto/core';
 import { kv } from '../../crypto/storage';
-import { getServerChatKey, loadChatKey } from '../../data/chatkit';
+import { getServerChatKey, loadChatKey, peekServerChatKey } from '../../data/chatkit';
 import { api } from '../../data/api';
 import {
   kmeshV1Enqueue,
@@ -378,6 +378,13 @@ export class KMeshV1Client {
         }
         case ClientFrameType.RPC_DOWN: {
           const packet = decodeMeshPacket(frame.payload);
+          console.log('[kmesh]', 'RPC_DOWN', {
+            parsed: Boolean(packet),
+            op: packet ? packet.payload[0] : undefined,
+            src: packet?.srcId,
+            dst: packet?.dstId,
+            flags: packet?.flags,
+          });
           if (!packet) break;
           if (packet.flags & PacketFlag.PERM_USER_KEY) {
             /* Постоянный downlink забирается через /v1/kmesh/v1/history. */
@@ -448,23 +455,42 @@ export class KMeshV1Client {
   }
 
   async decryptMessage(chatId: string, ciphertextB64: string, nonceB64: string): Promise<string | null> {
-    const key = await this.chatKeyFor(chatId).catch(() => null);
-    if (!key) return null;
-    try {
-      return new TextDecoder().decode(decryptBytes(key, ciphertextB64, nonceB64));
-    } catch {
-      return null;
+    const candidates: Uint8Array[] = [];
+    const server = await peekServerChatKey(chatId).catch(() => null);
+    if (server) candidates.push(server);
+    const keys = await storage.loadKeys();
+    if (keys) {
+      const e2e = await loadChatKey(chatId, keys).catch(() => null);
+      if (e2e) candidates.push(e2e);
     }
+    if (!candidates.length) {
+      try {
+        candidates.push((await getServerChatKey(chatId)).key);
+      } catch {
+        return null;
+      }
+    }
+    for (const key of candidates) {
+      try {
+        return new TextDecoder().decode(decryptBytes(key, ciphertextB64, nonceB64));
+      } catch {
+        /* пробуем следующий ключ */
+      }
+    }
+    return null;
   }
 
   private async chatKeyFor(chatId: string): Promise<Uint8Array | null> {
     if (this.opts.getChatKey) return this.opts.getChatKey(chatId);
     const keys = await storage.loadKeys();
     if (!keys) return null;
-    const e2e = await loadChatKey(chatId, keys).catch(() => null);
-    if (e2e) return e2e;
     // Серверный чат: используем сохранённый ключ Hub (кэшируется при онлайне),
     // иначе KMesh-отправка офлайн была невозможна.
+    const server = await peekServerChatKey(chatId).catch(() => null);
+    if (server) return server;
+    // E2E-чат: локальный ключ устройства.
+    const e2e = await loadChatKey(chatId, keys).catch(() => null);
+    if (e2e) return e2e;
     try {
       const { key } = await getServerChatKey(chatId);
       return key;

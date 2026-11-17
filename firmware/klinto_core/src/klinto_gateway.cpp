@@ -182,9 +182,12 @@ void KlintoGateway::handle_downlink(const uint8_t *data, size_t len) {
   kl_packet_t pkt;
   if (!kl_packet_parse(data, len, &pkt)) return;
   /* Сервер может прислать пакет с уже выставленными флагами; принудительно
-   * ставим FROM_INTERNET и проверяем, что пакет маршрутизируем. */
-  pkt.flags |= KL_FLAG_FROM_INTERNET;
-  pkt.flags &= (uint8_t)~KL_FLAG_TO_INTERNET;
+   * ставим FROM_INTERNET только для нешифрованных пакетов: у запечатанных
+   * флаги входят в HMAC и менять их нельзя. */
+  if (!(pkt.flags & KL_FLAG_TEMP_MESH_KEY)) {
+    pkt.flags |= KL_FLAG_FROM_INTERNET;
+    pkt.flags &= (uint8_t)~KL_FLAG_TO_INTERNET;
+  }
   if (pkt.next_hop_id == 0) pkt.next_hop_id = KL_BROADCAST_ID;
   pkt.hop_count = 0;
   if (sink_.inject_downlink) {

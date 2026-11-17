@@ -213,6 +213,26 @@ export async function getServerChatKey(chatId: string, version?: number): Promis
   return { key: raw, version: res.version };
 }
 
+/** Ключ серверного чата только из локального кэша (без сети). */
+export async function peekServerChatKey(chatId: string): Promise<Uint8Array | null> {
+  try {
+    const storedVersion = Number(await kv.get(`sg:chat-key-current:${chatId}`));
+    if (Number.isFinite(storedVersion) && storedVersion > 0) {
+      const cached = serverKeyCache.get(`${chatId}:${storedVersion}`);
+      if (cached) return cached;
+      const stored = await kv.get(`sg:chat-key:${chatId}:${storedVersion}`);
+      if (stored) {
+        const raw = fromB64u(stored);
+        serverKeyCache.set(`${chatId}:${storedVersion}`, raw);
+        return raw;
+      }
+    }
+  } catch {
+    /* кэш не критичен */
+  }
+  return null;
+}
+
 /** Сбросить кэш серверных ключей (всего чата или конкретного). */
 export function clearServerKeyCache(chatId?: string): void {
   if (!chatId) {

@@ -36,6 +36,7 @@ import {
   encodeFeedResponse,
   encodeHistoryResponse,
   encodeSearchResponse,
+  FLAG_FROM_INTERNET,
   msgUuidHex,
   openTemp,
   parsePacket,
@@ -349,6 +350,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         type: input.type ?? 1,
       },
       input.rpc,
+      FLAG_FROM_INTERNET,
     );
     if (!sealed) return false;
     const wire = buildPacket({
@@ -534,10 +536,17 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const uuid = msgUuidHex(packet.msgUuid);
     const ciphertextB64 = envelope.ciphertext.toString('base64');
     const nonceB64 = envelope.nonce.toString('base64');
+    // Схема нужна клиенту, чтобы выбрать ключ при чтении истории.
+    const keyRow = await one<{ version: number }>(
+      `SELECT version FROM chat_key_versions WHERE chat_id = $1 ORDER BY version DESC LIMIT 1`,
+      [envelope.chatId],
+    );
     const header = JSON.stringify({
       kmeshV1: true,
       transport: 'mesh',
       archivedVia: 'gateway',
+      scheme: keyRow ? 'server' : 'e2e',
+      ...(keyRow ? { keyVersion: keyRow.version } : {}),
       ciphertextB64,
       nonceB64,
       nonce: nonceB64,

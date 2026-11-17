@@ -603,7 +603,11 @@ void KlintoNode::cellOffline(void *ctx, uint8_t channel) {
 bool KlintoNode::sinkInjectDownlink(void *ctx, const kl_packet_t *pkt) {
   KlintoNode *self = (KlintoNode *)ctx;
   kl_packet_t copy = *pkt;
-  return self->router_.forward_downlink(&copy, kl_uptime_ms());
+  const bool ok = self->router_.forward_downlink(&copy, kl_uptime_ms());
+#if defined(ARDUINO)
+  Serial.printf("[kmesh] downlink inject dst=%lu ok=%u\n", (unsigned long)pkt->dst_id, ok ? 1u : 0u);
+#endif
+  return ok;
 }
 
 void KlintoNode::sinkGatewayStatus(void *ctx, uint64_t msg_uuid, uint32_t packet_id,

@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
 import { one, query } from './db.js';
-import { buildPacket, encodeEnvelopeRpc, sealTemp } from './kmeshRpc.js';
+import { buildPacket, encodeEnvelopeRpc, FLAG_FROM_INTERNET, sealTemp } from './kmeshRpc.js';
 
 interface Target {
   nodeId: number;
@@ -84,6 +84,7 @@ export async function queueEnvelopeDownlink(input: EnvelopeDownlinkInput): Promi
         type: 1,
       },
       rpc,
+      FLAG_FROM_INTERNET,
     );
     if (!sealed) continue;
     const wire = buildPacket({

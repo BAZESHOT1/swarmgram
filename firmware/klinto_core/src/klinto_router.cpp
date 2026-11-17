@@ -354,8 +354,11 @@ bool KlintoRouter::send(kl_packet_t *pkt, uint32_t now_ms, uint8_t iface_hint, b
 bool KlintoRouter::forward_downlink(kl_packet_t *pkt, uint32_t now_ms) {
   if (!pkt) return false;
   KlintoGuard guard(lock_);
-  pkt->flags |= KL_FLAG_FROM_INTERNET;
-  pkt->flags &= (uint8_t)~KL_FLAG_TO_INTERNET;
+  /* Флаги запечатанного пакета входят в HMAC: не меняем их при пересылке. */
+  if (!(pkt->flags & KL_FLAG_TEMP_MESH_KEY)) {
+    pkt->flags |= KL_FLAG_FROM_INTERNET;
+    pkt->flags &= (uint8_t)~KL_FLAG_TO_INTERNET;
+  }
   pkt->magic = KL_PACKET_MAGIC;
   pkt->version = KL_PACKET_VERSION;
   if (pkt->packet_id == 0) pkt->packet_id = kl_packet_next_id();
