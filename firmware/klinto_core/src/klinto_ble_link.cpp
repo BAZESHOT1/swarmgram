@@ -6,11 +6,13 @@
 
 #if defined(ESP32) && KL_HAS_BLE
 
+/* BLE на NimBLE-Arduino для всех плат ESP32.
+ * Bluedroid из ядра Arduino на классическом ESP32 вместе с Wi-Fi/ESP-NOW съедал
+ * всю кучу (после BLE оставалось 4 КБ) и роняла модуль в btu_hcif; NimBLE
+ * требует в разы меньше памяти и одинаково ведёт себя на C3/C5/C6/S3/ESP32. */
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include <NimBLEDevice.h>
+#include <esp_bt.h>
 #include <string.h>
 
 #define KL_BLE_SERVICE "0000a5c0-0000-1000-8000-00805f9b34fb"
@@ -20,29 +22,43 @@
 
 namespace {
 
-class KlintoBleServerCallbacks : public BLEServerCallbacks {
+class KlintoBleServerCallbacks : public NimBLEServerCallbacks {
  public:
   explicit KlintoBleServerCallbacks(BleClientLink *owner) : owner_(owner) {}
-  void onConnect(BLEServer *server) override {
-    owner_->onConnected(0, server->getPeerMTU(0));
+  void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
+    /* Интервал 15..30 мс, latency 0, supervision 4 с: стабильнее при
+     * соседстве с Wi-Fi/ESP-NOW и быстрее отклик записи/notify. */
+    server->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
+    owner_->onConnected(info.getConnHandle(), info.getMTU());
   }
-  void onDisconnect(BLEServer *server) override {
+  void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
     (void)server;
+    (void)info;
+    (void)reason;
     owner_->onDisconnected();
+  }
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo &info) override {
+    (void)info;
+    owner_->onMtu(mtu);
+    Serial.printf("[ble] mtu=%u\n", (unsigned)mtu);
   }
 
  private:
   BleClientLink *owner_;
 };
 
-class KlintoBleRxCallbacks : public BLECharacteristicCallbacks {
+class KlintoBleCharCallbacks : public NimBLECharacteristicCallbacks {
  public:
-  explicit KlintoBleRxCallbacks(BleClientLink *owner) : owner_(owner) {}
-  void onWrite(BLECharacteristic *characteristic) override {
-    String value = characteristic->getValue();
-    if (value.length()) {
-      owner_->onWrite((const uint8_t *)value.c_str(), value.length());
-    }
+  explicit KlintoBleCharCallbacks(BleClientLink *owner) : owner_(owner) {}
+  void onWrite(NimBLECharacteristic *characteristic, NimBLEConnInfo &info) override {
+    (void)info;
+    const NimBLEAttValue &value = characteristic->getValue();
+    if (value.length()) owner_->onWrite(value.data(), value.length());
+  }
+  void onSubscribe(NimBLECharacteristic *characteristic, NimBLEConnInfo &info,
+                   uint16_t subValue) override {
+    (void)info;
+    owner_->onSubscribe(characteristic == owner_->txCharacteristic(), subValue);
   }
 
  private:
@@ -65,42 +81,40 @@ BleClientLink::BleClientLink()
       status_(nullptr) {}
 
 bool BleClientLink::begin(const char *deviceName) {
-  BLEDevice::init(deviceName ? deviceName : "Klinto");
-  BLEDevice::setMTU(247);
-  server_ = BLEDevice::createServer();
-  server_->setCallbacks(new KlintoBleServerCallbacks(this));
-
-  BLEService *service = server_->createService(KL_BLE_SERVICE);
-  tx_ = service->createCharacteristic(
-      KL_BLE_TX,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE |
-          BLECharacteristic::PROPERTY_WRITE_NR);
-  rx_ = service->createCharacteristic(
-      KL_BLE_RX,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR |
-          BLECharacteristic::PROPERTY_NOTIFY);
-  status_ = service->createCharacteristic(KL_BLE_STATUS, BLECharacteristic::PROPERTY_NOTIFY);
-#if defined(CONFIG_BLUEDROID_ENABLED)
-  tx_->addDescriptor(new BLE2902());
-  rx_->addDescriptor(new BLE2902());
-  status_->addDescriptor(new BLE2902());
+#if defined(CONFIG_IDF_TARGET_ESP32)
+  /* Классический ESP32: Classic BT модулю не нужен — отдаём его память куче. */
+  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
 #endif
-  rx_->setCallbacks(new KlintoBleRxCallbacks(this));
-  tx_->setCallbacks(new KlintoBleRxCallbacks(this));
+  const char *name = deviceName ? deviceName : "Klinto";
+  NimBLEDevice::init(name);
+  NimBLEDevice::setMTU(247);
+  server_ = NimBLEDevice::createServer();
+  server_->setCallbacks(new KlintoBleServerCallbacks(this));
+  server_->advertiseOnDisconnect(true);
+
+  NimBLEService *service = server_->createService(KL_BLE_SERVICE);
+  KlintoBleCharCallbacks *chars = new KlintoBleCharCallbacks(this);
+  tx_ = service->createCharacteristic(
+      KL_BLE_TX, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  rx_ = service->createCharacteristic(
+      KL_BLE_RX, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+  status_ = service->createCharacteristic(KL_BLE_STATUS, NIMBLE_PROPERTY::NOTIFY);
+  tx_->setCallbacks(chars);
+  rx_->setCallbacks(chars);
   service->start();
 
-  BLEAdvertising *advertising = BLEDevice::getAdvertising();
+  NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
   advertising->addServiceUUID(KL_BLE_SERVICE);
-  advertising->setScanResponse(true);
-  advertising->setMinPreferred(0x06);
-  advertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
+  advertising->setName(name);
+  advertising->enableScanResponse(true);
+  advertising->start();
+  Serial.printf("[ble] advertising name=%s\n", name);
   return true;
 }
 
 void BleClientLink::end() {
   connected_ = false;
-  BLEDevice::stopAdvertising();
+  NimBLEDevice::getAdvertising()->stop();
 }
 
 void BleClientLink::rename(const char *deviceName) {
@@ -108,8 +122,7 @@ void BleClientLink::rename(const char *deviceName) {
   strncpy(pending_name_, deviceName, sizeof(pending_name_) - 1);
   pending_name_[sizeof(pending_name_) - 1] = '\0';
   pending_rename_ = true;
-  /* deinit при активном клиенте рвёт соединение и иногда оставляет стек
-   * в состоянии без advertising. Применяем после disconnect в clientTask. */
+  /* deinit при активном клиенте рвёт соединение: применяем после disconnect. */
   if (!connected_) applyPendingRename();
 }
 
@@ -117,48 +130,49 @@ void BleClientLink::applyPendingRename() {
   if (!pending_rename_ || connected_ || !pending_name_[0]) return;
   pending_rename_ = false;
   end();
-  BLEDevice::deinit(true);
+  NimBLEDevice::deinit(true);
   server_ = nullptr;
   tx_ = nullptr;
   rx_ = nullptr;
   status_ = nullptr;
+  tx_subscribed_ = false;
+  rx_subscribed_ = false;
   begin(pending_name_);
 }
 
 bool BleClientLink::send(const uint8_t *data, size_t len) {
   if (!connected_ || !tx_ || !data || !len) return false;
-  /* mtu_ запоминается в onConnect, когда обмен MTU ещё не завершён (23), и
-   * INFO в 300+ байт уходил 16 пакетами по 20 байт (каждый ещё и дублем).
-   * mtu() берёт актуальное значение у стека, и тот же INFO идёт 2 пакетами. */
+  /* Размер пакета — по согласованному MTU (mtu() спрашивает стек), а не по
+   * значению на момент connect (там всегда 23). */
   const uint16_t cur_mtu = mtu();
   size_t chunk = (cur_mtu > 3 ? cur_mtu - 3 : 20);
   if (chunk > 244) chunk = 244;
   if (chunk < 20) chunk = 20;
+  /* Клиент подписан на a5c1 (tx_). Если подписки ещё нет — notify уйдёт в
+   * пустоту, поэтому шлём в ту характеристику, на которую подписались
+   * (старые клиенты слушают a5c2). */
+  NimBLECharacteristic *target = tx_;
+  if (!tx_subscribed_ && rx_subscribed_) target = rx_;
   size_t offset = 0;
   while (offset < len) {
     const size_t take = (len - offset) > chunk ? chunk : (len - offset);
-    tx_->setValue((uint8_t *)(data + offset), take);
-    /* BLE-стек Arduino не сообщает об переполнении очереди notify, поэтому
-     * просто держим безопасный темп: Android забирает пакеты по одному за
-     * connection interval. Раньше 4 мс приводили к обрыву длинного INFO
-     * после 1–2 пакетов. */
-    tx_->notify();
-    /* Совместимость со старыми клиентами: у них роли a5c1/a5c2 были
-     * зеркальными, подписка шла на a5c2. Дублируем notify во вторую
-     * характеристику — клиент подписан только на одну. */
-    if (rx_) {
-      rx_->setValue((uint8_t *)(data + offset), take);
-      rx_->notify();
+    bool ok = false;
+    /* notify() возвращает false, когда очередь mbuf контроллера полна:
+     * ждём и повторяем, а не теряем кусок кадра. */
+    for (int attempt = 0; attempt < 60 && !ok && connected_; ++attempt) {
+      ok = target->notify(data + offset, take, conn_id_);
+      if (!ok) delay(5);
     }
+    if (!ok) return false;
     offset += take;
-    delay(offset < len ? 28 : 10); /* let the controller drain */
+    if (offset < len) delay(3);
   }
   return true;
 }
 
 uint16_t BleClientLink::mtu() const {
   uint16_t value = mtu_;
-  if (server_) {
+  if (server_ && connected_) {
     const uint16_t peer = server_->getPeerMTU(conn_id_);
     if (peer > value) value = peer;
   }
@@ -169,28 +183,36 @@ void BleClientLink::poll(uint32_t now_ms) { (void)now_ms; }
 
 void BleClientLink::notifyStatus(const char *text) {
   if (!connected_ || !status_ || !text) return;
-  status_->setValue((uint8_t *)text, strlen(text));
-  status_->notify();
+  status_->notify((const uint8_t *)text, strlen(text), conn_id_);
 }
 
 void BleClientLink::onConnected(uint16_t conn_id, uint16_t mtu) {
   conn_id_ = conn_id;
   mtu_ = mtu < 23 ? 23 : mtu;
   connected_ = true;
-  Serial.printf("[ble] connected mtu=%u\n", (unsigned)mtu_);
+  tx_subscribed_ = false;
+  rx_subscribed_ = false;
+  Serial.printf("[ble] connected handle=%u mtu=%u\n", (unsigned)conn_id, (unsigned)mtu_);
   if (hook_) hook_(hook_ctx_, true);
 }
 
 void BleClientLink::onDisconnected() {
   connected_ = false;
   conn_id_ = 0;
+  tx_subscribed_ = false;
+  rx_subscribed_ = false;
   Serial.println("[ble] disconnected");
   if (hook_) hook_(hook_ctx_, false);
-  BLEDevice::startAdvertising();
+}
+
+void BleClientLink::onSubscribe(bool is_tx, uint16_t sub_value) {
+  const bool on = (sub_value & 0x03) != 0;
+  if (is_tx) tx_subscribed_ = on;
+  else rx_subscribed_ = on;
+  Serial.printf("[ble] subscribe %s=%u\n", is_tx ? "a5c1" : "a5c2", (unsigned)sub_value);
 }
 
 void BleClientLink::onWrite(const uint8_t *data, size_t len) {
-  Serial.printf("[ble] rx %u\n", (unsigned)len);
   if (cb_) cb_(cb_ctx_, data, len, 0, 0xFF);
 }
 

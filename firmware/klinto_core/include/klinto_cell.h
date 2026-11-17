@@ -50,6 +50,8 @@ struct kl_cell_host_t {
                     uint8_t hops, uint8_t reason);
   /** Шлюзов нет, включён аварийный канал. */
   void (*on_offline)(void *ctx, uint8_t channel);
+  /** Скан: отправить GW_PROBE на текущем канале (шлюз ответит маяком сразу). */
+  void (*send_probe)(void *ctx);
 };
 
 class KlintoCellManager {
@@ -102,6 +104,13 @@ class KlintoCellManager {
   uint32_t best_gateway_;
   int16_t best_rssi_;
   uint8_t best_hops_;
+  /** Скан: в каждом канале шлюзу шлём пробы, а не ждём маяк раз в 5 с. */
+  uint32_t probe_next_ms_ = 0;
+  uint8_t probes_left_ = 0;
+  /** on_beacon вызывается под блокировкой роутера: host-колбэки только из tick(). */
+  bool lock_now_ = false;
+  uint8_t pending_channel_ = 0;
+  void arm_probes(uint32_t now_ms);
 };
 
 #endif  // KLINTO_CELL_H

@@ -317,6 +317,11 @@ bool KlintoNode::begin() {
     if (strlen(ssid)) {
       WiFi.mode(WIFI_STA);
       WiFi.setSleep(false);
+      /* ESP32-C3 Super Mini: из-за антенны/питания на полной мощности роутер не
+       * отвечает на auth (reason=2 AUTH_EXPIRE). 8.5 дБм подключается стабильно. */
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+      WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
       // Диагностика: какие сети реально видны ESP32 (только 2.4 ГГц).
       const int found = WiFi.scanNetworks();
       Serial.printf("[klinto3] wifi scan: %d networks\n", found);
@@ -324,6 +329,13 @@ bool KlintoNode::begin() {
         Serial.printf("[klinto3]   ssid=%s ch=%d rssi=%d enc=%d\n", WiFi.SSID(i).c_str(),
                       (int)WiFi.channel(i), (int)WiFi.RSSI(i), (int)WiFi.encryptionType(i));
       }
+      /* Причина отказа STA (auth/no AP/…) — без неё «status=6» ничего не говорит. */
+      WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+          Serial.printf("[klinto3] wifi disconnect reason=%d\n",
+                        (int)info.wifi_sta_disconnected.reason);
+        }
+      });
       WiFi.begin(ssid, pass);
       const uint32_t start = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(200);
@@ -389,7 +401,7 @@ bool KlintoNode::begin() {
 
   /* Частотное кластерирование: шлюз фиксирует канал AP, остальные ищут соту. */
   kl_cell_host_t cell_host = {this, &KlintoNode::cellApplyChannel, &KlintoNode::cellLocked,
-                              &KlintoNode::cellOffline};
+                              &KlintoNode::cellOffline, &KlintoNode::cellProbe};
   cell_.init(&cfg_, &cell_host);
   if (cfg_.role == KL_ROLE_GATEWAY) {
     uint8_t channel = cfg_.wifi_channel;
@@ -416,7 +428,11 @@ bool KlintoNode::begin() {
     if (!kl_ble_name_build(cfg_.owner_ble_prefix, mac, ble_name, sizeof(ble_name))) {
       snprintf(ble_name, sizeof(ble_name), "KL-00000000-%s", cfg_.ble_mod6);
     }
+    Serial.printf("[klinto3] heap before BLE: free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
     ble_.begin(ble_name);
+    Serial.printf("[klinto3] heap after BLE: free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
     ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
   }
 #endif
@@ -603,6 +619,11 @@ void KlintoNode::cellLocked(void *ctx, uint8_t channel, uint32_t gateway_id, int
   self->router_.request_presence();
 }
 
+void KlintoNode::cellProbe(void *ctx) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  self->router_.emit_probe(kl_uptime_ms());
+}
+
 void KlintoNode::cellOffline(void *ctx, uint8_t channel) {
   KlintoNode *self = (KlintoNode *)ctx;
   Serial.printf("[klinto] no gateway, offline channel=%u\n", (unsigned)channel);
@@ -735,6 +756,7 @@ void KlintoNode::meshTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
   uint32_t last_tick = 0;
   uint32_t last_ota_tick = 0;
+  uint32_t last_stat = 0;
   for (;;) {
     const uint32_t now = kl_uptime_ms();
     if (self->cfg_.espnow_enabled) self->espnow_.poll(now);
@@ -747,6 +769,17 @@ void KlintoNode::meshTaskEntry(void *arg) {
     if (now - last_ota_tick >= 100) {
       self->ota_.tick(now);
       last_ota_tick = now;
+    }
+    /* Раз в 5 с — сводка меша: без неё не видно, слышат ли модули друг друга. */
+    if (now - last_stat >= 5000) {
+      last_stat = now;
+      const kl_router_stats_t *st = self->router_.stats();
+      Serial.printf("[mesh] t=%lus ch=%u cell=%u rx=%lu tx=%lu bcn_rx=%lu bcn_tx=%lu gw_age=%ld heap=%u\n",
+                    (unsigned long)(now / 1000), (unsigned)self->cell_.channel(),
+                    (unsigned)self->cell_.state(), (unsigned long)st->rx_packets,
+                    (unsigned long)st->tx_packets, (unsigned long)self->router_.beacons_rx(),
+                    (unsigned long)st->beacons_sent, (long)self->router_.gateway_age_ms(now),
+                    (unsigned)ESP.getFreeHeap());
     }
     /* 30 секунд стабильной работы: подтверждаем OTA-образ и фиксируем build. */
     if (self->boot_valid_ms_ && now - self->boot_valid_ms_ >= 30000u) {

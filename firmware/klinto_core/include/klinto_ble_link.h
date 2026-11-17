@@ -11,8 +11,8 @@
 #include "klinto_bridge.h"
 
 #if defined(ESP32)
-class BLEServer;
-class BLECharacteristic;
+class NimBLEServer;
+class NimBLECharacteristic;
 #endif
 
 class BleClientLink : public IClientLink {
@@ -42,6 +42,11 @@ class BleClientLink : public IClientLink {
   void onDisconnected();
   void onWrite(const uint8_t *data, size_t len);
   void onMtu(uint16_t mtu) { mtu_ = mtu; }
+  /** Подписка клиента на notify (CCCD) a5c1/a5c2. */
+  void onSubscribe(bool is_tx, uint16_t sub_value);
+#if defined(ESP32)
+  NimBLECharacteristic *txCharacteristic() const { return tx_; }
+#endif
 
  private:
   kl_rx_callback_t cb_;
@@ -54,12 +59,14 @@ class BleClientLink : public IClientLink {
   /** Отложенное переименование (нельзя делать deinit при активном клиенте). */
   bool pending_rename_ = false;
   char pending_name_[32] = {0};
+  bool tx_subscribed_ = false;
+  bool rx_subscribed_ = false;
 
 #if defined(ESP32)
-  BLEServer *server_;
-  BLECharacteristic *tx_;
-  BLECharacteristic *rx_;
-  BLECharacteristic *status_;
+  NimBLEServer *server_;
+  NimBLECharacteristic *tx_;
+  NimBLECharacteristic *rx_;
+  NimBLECharacteristic *status_;
 #endif
 };
 

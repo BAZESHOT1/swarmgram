@@ -184,6 +184,9 @@ class KlintoRouter {
   /** Gateway only: broadcast a fresh gradient beacon now. */
   void emit_gateway_beacon(uint32_t now_ms);
 
+  /** Скан соты: широковещательный GW_PROBE; шлюз отвечает маяком немедленно. */
+  void emit_probe(uint32_t now_ms);
+
   /** Сменить радиосоту: сбросить маршруты/маяки, привязанные к старому каналу. */
   void on_channel_changed(uint8_t wifi_channel);
 
@@ -228,6 +231,8 @@ class KlintoRouter {
   bool is_gateway() const { return cfg_.role == KL_ROLE_GATEWAY; }
   bool gateway_like() const;
   void emit_mobile_beacon(uint32_t now_ms);
+  void emit_gateway_beacon_locked(uint32_t now_ms);
+  uint32_t last_probe_reply_ms_ = 0;
   void maybe_presence(uint32_t now_ms);
 
   kl_config_t cfg_;

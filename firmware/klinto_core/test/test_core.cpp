@@ -849,6 +849,7 @@ struct CellHostState {
   uint8_t offline_channel;
   int locked;
   int offline;
+  int probes;
 };
 
 static bool cell_apply(void *ctx, uint8_t channel) {
@@ -865,6 +866,10 @@ static void cell_locked(void *ctx, uint8_t channel, uint32_t gateway_id, int16_t
   s->locked_gateway = gateway_id;
   s->locked++;
 }
+static void cell_probe(void *ctx) {
+  CellHostState *s = (CellHostState *)ctx;
+  s->probes++;
+}
 static void cell_offline(void *ctx, uint8_t channel) {
   CellHostState *s = (CellHostState *)ctx;
   s->offline_channel = channel;
@@ -880,7 +885,7 @@ static void test_cell_manager(void) {
 
   CellHostState host;
   memset(&host, 0, sizeof(host));
-  kl_cell_host_t callbacks = {&host, cell_apply, cell_locked, cell_offline};
+  kl_cell_host_t callbacks = {&host, cell_apply, cell_locked, cell_offline, cell_probe};
   KlintoCellManager cell;
   cell.init(&cfg, &callbacks);
 
@@ -888,30 +893,35 @@ static void test_cell_manager(void) {
   CHECK(cell.scanning());
   CHECK(cell.scan_channel() == 1);
 
-  /* Сканируем 1..13; лучший сигнал — канал 3, восьмой — хуже. */
-  for (uint8_t ch = 1; ch <= KL_CHANNEL_COUNT; ++ch) {
-    if (ch > 1) cell.tick((uint32_t)(ch - 1) * 450u);
-    const int16_t rssi = ch == 3 ? -55 : (ch == 7 ? -80 : -100);
-    cell.on_beacon(2000u + ch, 1, rssi, (uint32_t)(ch - 1) * 450u);
+  /* Шлюз сидит на канале 3: маяк слышен только там (в ответ на пробу).
+   * Модуль фиксируется сразу, не дожидаясь конца обхода всех каналов. */
+  host.probes = 0;
+  uint32_t t = 0;
+  for (int step = 0; step < 40 && cell.scanning(); ++step) {
+    t += 90;
+    cell.tick(t);
+    if (cell.scan_channel() == 3) cell.on_beacon(2003u, 1, -55, t);
   }
-  cell.tick(KL_CHANNEL_COUNT * 450u);
+  cell.tick(t + 10);
   CHECK(cell.state() == KL_CELL_LOCKED);
   CHECK(cell.channel() == 3);
   CHECK(host.locked == 1);
   CHECK(host.locked_channel == 3);
   CHECK(host.locked_gateway == 2003u);
+  CHECK(host.probes >= 2); /* на каждом канале уходят пробы GW_PROBE */
 
   /* Два слабых маяка подряд запускают хэндовер. */
   cell.on_beacon(2003u, 1, -95, 6000);
   cell.on_beacon(2003u, 1, -96, 6001);
   CHECK(cell.scanning());
 
-  for (uint8_t ch = 1; ch <= KL_CHANNEL_COUNT; ++ch) {
-    if (ch > 1) cell.tick(6001u + (uint32_t)(ch - 1) * 450u);
-    const int16_t rssi = ch == 7 ? -60 : -100;
-    cell.on_beacon(3000u + ch, 1, rssi, 6001u + (uint32_t)(ch - 1) * 450u);
+  t = 6001;
+  for (int step = 0; step < 60 && cell.scanning(); ++step) {
+    t += 90;
+    cell.tick(t);
+    if (cell.scan_channel() == 7) cell.on_beacon(3007u, 1, -60, t);
   }
-  cell.tick(6001u + KL_CHANNEL_COUNT * 450u);
+  cell.tick(t + 10);
   CHECK(cell.state() == KL_CELL_LOCKED);
   CHECK(cell.channel() == 7);
   CHECK(host.locked_channel == 7);
@@ -920,11 +930,11 @@ static void test_cell_manager(void) {
   KlintoCellManager offline;
   CellHostState off_host;
   memset(&off_host, 0, sizeof(off_host));
-  kl_cell_host_t off_cb = {&off_host, cell_apply, cell_locked, cell_offline};
+  kl_cell_host_t off_cb = {&off_host, cell_apply, cell_locked, cell_offline, cell_probe};
   offline.init(&cfg, &off_cb);
   offline.start_scan(0, KL_SCAN_BOOT);
   uint32_t now = 0;
-  for (int i = 0; i < 2 * KL_CHANNEL_COUNT + 4; ++i) {
+  for (int i = 0; i < 3 * KL_CHANNEL_COUNT + 6; ++i) {
     now += 450;
     offline.tick(now);
   }
@@ -938,7 +948,7 @@ static void test_cell_manager(void) {
   gw_cfg.role = KL_ROLE_GATEWAY;
   CellHostState gw_host;
   memset(&gw_host, 0, sizeof(gw_host));
-  kl_cell_host_t gw_cb = {&gw_host, cell_apply, cell_locked, cell_offline};
+  kl_cell_host_t gw_cb = {&gw_host, cell_apply, cell_locked, cell_offline, cell_probe};
   KlintoCellManager gw;
   gw.init(&gw_cfg, &gw_cb);
   gw.lock_gateway(9, 100);

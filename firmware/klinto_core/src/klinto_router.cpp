@@ -411,6 +411,19 @@ void KlintoRouter::handle_beacon(const kl_packet_t *pkt, uint8_t iface, int16_t 
   const uint8_t hops = pkt->hop_count;
   const bool better = !gw_.valid || hops < gw_.hops || (hops == gw_.hops && rssi > gw_.rssi + 6);
   beacons_rx_++;
+  /* Тот же шлюз через тот же узел: маяк — это keepalive. Раньше gw_ обновлялся
+   * только при «лучшем» маяке, и маршрут до шлюза протухал через 15 с, хотя
+   * маяки шли каждые 5 с (gateway=false и потеря uplink между маяками). */
+  if (!better && gw_.valid && gw_.gateway_id == gateway_id && gw_.next_hop_id == relay_id &&
+      hops <= gw_.hops) {
+    gw_.last_seen_ms = now_ms;
+    gw_.rssi = (int16_t)((gw_.rssi * 3 + rssi) / 4);
+    gw_.mobile = mobile;
+    gw_.expires_ms = now_ms + (mobile ? cfg_.mobile_gw_ttl_ms
+                                      : (uint32_t)cfg_.gw_beacon_interval_ms * 3);
+    upsert_route(gateway_id, relay_id, iface, hops + 1, rssi, now_ms, true);
+    return;
+  }
   if (better) {
     gw_.valid = true;
     gw_.gateway_id = gateway_id;
@@ -506,6 +519,15 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
   if (pkt->next_hop_id != KL_BROADCAST_ID && pkt->next_hop_id != cfg_.node_id &&
       !(gateway_like() && pkt->next_hop_id == KL_ANY_GATEWAY_ID)) {
     stats_.dropped_policy++;
+    return;
+  }
+
+  /* GW_PROBE: шлюз сразу отвечает маяком (не чаще раза в 60 мс), остальные молчат. */
+  if (pkt->type == KL_TYPE_GW_PROBE) {
+    if (is_gateway() && now_ms - last_probe_reply_ms_ >= 60) {
+      last_probe_reply_ms_ = now_ms;
+      emit_gateway_beacon_locked(now_ms);
+    }
     return;
   }
 
@@ -817,6 +839,18 @@ void KlintoRouter::on_channel_changed(uint8_t wifi_channel) {
 
 void KlintoRouter::emit_gateway_beacon(uint32_t now_ms) {
   KlintoGuard guard(lock_);
+  emit_gateway_beacon_locked(now_ms);
+}
+
+void KlintoRouter::emit_probe(uint32_t now_ms) {
+  KlintoGuard guard(lock_);
+  kl_packet_t probe;
+  kl_packet_init(&probe, KL_TYPE_GW_PROBE, cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
+  probe.ttl = 1;
+  transmit_on_all(&probe, now_ms);
+}
+
+void KlintoRouter::emit_gateway_beacon_locked(uint32_t now_ms) {
   if (!is_gateway()) return;
   last_beacon_ms_ = now_ms;
   kl_packet_t beacon;

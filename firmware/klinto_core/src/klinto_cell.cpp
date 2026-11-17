@@ -29,13 +29,13 @@ void KlintoCellManager::init(const kl_config_t *cfg, const kl_cell_host_t *host)
 
   cell_.role = cfg_.role;
   cell_.fallback_channel = KL_FALLBACK_OFFLINE_CHANNEL;
-  cell_.scan_dwell_ms = 120;
+  cell_.scan_dwell_ms = 160;
   cell_.rescan_interval_ms = 0;      /* здоровую соту не трогаем */
-  cell_.offline_rescan_ms = 15000;   /* быстрый возврат к поиску шлюза */
+  cell_.offline_rescan_ms = 6000;    /* быстрый возврат к поиску шлюза */
   cell_.handover_rssi = -85;
   cell_.beacon_miss_limit = 3;
   cell_.beacon_timeout_ms = 20000;   /* четыре пропущенных маяка по 5 с */
-  cell_.max_scan_cycles = 2;
+  cell_.max_scan_cycles = 3;
 
   state_ = cfg_.role == KL_ROLE_GATEWAY ? KL_CELL_LOCKED : KL_CELL_SCANNING;
   current_channel_ = cfg_.wifi_channel >= 1 && cfg_.wifi_channel <= KL_CHANNEL_COUNT
@@ -95,8 +95,16 @@ void KlintoCellManager::start_scan(uint32_t now_ms, uint8_t reason) {
   last_scan_ms_ = now_ms;
   reset_candidate();
   /* Первый канал применяем сразу; tick() удержит его dwell_ms. */
+  lock_now_ = false;
+  pending_channel_ = 0;
   apply(1);
   scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
+  arm_probes(now_ms);
+}
+
+void KlintoCellManager::arm_probes(uint32_t now_ms) {
+  probes_left_ = 2;
+  probe_next_ms_ = now_ms + 8;
 }
 
 void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi,
@@ -110,6 +118,8 @@ void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rss
       best_rssi_ = rssi;
       best_hops_ = hops;
     }
+    /* Маяк услышан — не ждём конца обхода всех каналов; фиксируем в tick(). */
+    lock_now_ = true;
     return;
   }
 
@@ -117,8 +127,9 @@ void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rss
     last_beacon_ms_ = now_ms;
     missed_beacons_ = 0;
     /* Шлюз сменил канал AP — переезжаем сразу, не дожидаясь таймаута. */
+    /* on_beacon идёт под блокировкой роутера, apply() возьмёт её снова: отложим в tick(). */
     if (channel_valid && advertised_channel != current_channel_) {
-      apply(advertised_channel);
+      pending_channel_ = advertised_channel;
     }
     if (rssi < cell_.handover_rssi) {
       if (weak_beacons_ < 0xFF) weak_beacons_++;
@@ -144,6 +155,7 @@ void KlintoCellManager::finish_scan(uint32_t now_ms) {
   scan_index_ = 0;
   apply(1);
   scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
+  arm_probes(now_ms);
 }
 
 void KlintoCellManager::lock_best(uint32_t now_ms, uint8_t reason) {
@@ -174,6 +186,16 @@ void KlintoCellManager::tick(uint32_t now_ms) {
   }
 
   if (state_ == KL_CELL_SCANNING) {
+    if (found_ && lock_now_) {
+      lock_now_ = false;
+      lock_best(now_ms, scan_reason_);
+      return;
+    }
+    if (probes_left_ > 0 && now_ms >= probe_next_ms_) {
+      probes_left_--;
+      probe_next_ms_ = now_ms + 70;
+      if (host_.send_probe) host_.send_probe(host_.ctx);
+    }
     if (now_ms < scan_deadline_ms_) return;
     if (scan_index_ + 1 >= KL_CHANNEL_COUNT) {
       finish_scan(now_ms);
@@ -182,10 +204,16 @@ void KlintoCellManager::tick(uint32_t now_ms) {
     scan_index_++;
     apply((uint8_t)(scan_index_ + 1));
     scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
+    arm_probes(now_ms);
     return;
   }
 
   if (state_ == KL_CELL_LOCKED) {
+    if (pending_channel_) {
+      const uint8_t ch = pending_channel_;
+      pending_channel_ = 0;
+      apply(ch);
+    }
     if (now_ms - last_beacon_ms_ > cell_.beacon_timeout_ms) {
       start_scan(now_ms, KL_SCAN_BEACON_LOST);
       return;
