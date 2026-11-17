@@ -622,7 +622,12 @@ async function compileFirmware(config, version) {
 
     log('build_start', { board, fqbn, version });
     log('build_stage', { board, stage: 'compiling' });
-    const partitionName = board === 'esp32s3' ? 'klinto_8mb_ota.csv' : 'klinto_4mb_ota.csv';
+    // Классический ESP32 + BLE (Bluedroid) не помещается в слот 1.75 МБ (103%):
+    // берём слоты по 1.875 МБ, LittleFS уменьшается до 192 КБ.
+    const bigSlot = board === 'esp32' && hasBle;
+    const partitionName = board === 'esp32s3'
+      ? 'klinto_8mb_ota.csv'
+      : bigSlot ? 'klinto_4mb_ota_big.csv' : 'klinto_4mb_ota.csv';
     /* arduino-esp32 prebuild hook копирует {build.source.path}/partitions.csv. */
     await copyFile(join(TEMPLATE_DIR, partitionName), join(sketchDir, 'partitions.csv')).catch(() => undefined);
     const radioExcludes = [
@@ -648,7 +653,7 @@ async function compileFirmware(config, version) {
       '-DCORE_DEBUG_LEVEL=0',
     ].join(' ');
     const extraFlags = [sizeFlags, bleFlags, useLora ? radioExcludes : ''].filter(Boolean).join(' ');
-    const slotBytes = board === 'esp32s3' ? 0x320000 : 0x1c0000;
+    const slotBytes = board === 'esp32s3' ? 0x320000 : bigSlot ? 0x1e0000 : 0x1c0000;
     const compileArgs = [
       'compile',
       '--fqbn', fqbn,
