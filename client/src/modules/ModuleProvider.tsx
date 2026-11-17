@@ -1011,6 +1011,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (e) {
           console.log('[ble] restore connect failed:', e instanceof Error ? e.message : String(e));
+          // Таймаут обёртки не должен выбрасывать уже установленное соединение:
+          // если GATT открыт и модуль прислал INFO — принимаем его.
+          if (transport.isOpen && transport.info) {
+            console.log('[ble] adopting after timeout', transport.info.hardwareId);
+            await adopt(transport, transport.info).catch(() => undefined);
+            return;
+          }
           await transport.close().catch(() => undefined);
           if (cancelAutoKeyRef.current !== key) {
             setAutoModule((prev) =>
