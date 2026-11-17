@@ -36,7 +36,7 @@ function ensureSecret(): string {
 export const config = {
   nodeEnv: str('NODE_ENV', 'development'),
   port: num('PORT', 8080),
-  publicUrl: str('HUB_PUBLIC_URL', 'http://localhost:8080').replace(/\/+$/, ''),
+  publicUrl: str('HUB_PUBLIC_URL', 'https://hub.kintoapp.xyz').replace(/\/+$/, ''),
   databaseUrl: str('DATABASE_URL', 'postgres://klinto:klinto@localhost:5432/klinto'),
   jwtSecret: ensureSecret(),
   adminToken: str('HUB_ADMIN_TOKEN', ''),

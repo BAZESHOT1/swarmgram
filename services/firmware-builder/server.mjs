@@ -311,7 +311,7 @@ function generateConfigHeader(config, version) {
     `#define KL_MESH_V2 ${useKmeshV1 ? 0 : (cfgBoolean(mesh.v2, true) ? 1 : 0)}`,
     // KMesh_v1: РЅРѕРІС‹Р№ dual-band СЃС‚РµРє (klinto_core). РўСЂРµР±СѓРµС‚ С€Р°Р±Р»РѕРЅР° v3.
     `#define KL_KMESH_V1 ${useKmeshV1 ? 1 : 0}`,
-    `#define KL_HUB_URL ${cString(config.hubUrl || 'http://150.251.143.212:8080')}`,
+    `#define KL_HUB_URL ${cString(config.hubUrl || 'https://hub.kintoapp.xyz')}`,
     `#define KL_MODULE_TOKEN ${cString(config.moduleToken ?? '')}`,
     // Temporary mesh key (32 bytes hex). Never the user's permanent E2EE key.
     `#define KL_TEMP_MESH_KEY ${cString(tempMeshKey)}`,

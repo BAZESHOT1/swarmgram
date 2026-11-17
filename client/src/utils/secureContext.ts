@@ -36,7 +36,8 @@ export function secureWebUrl(): string {
   if (location.protocol === 'https:') return location.origin;
   const host = location.hostname;
   if (!host) return '';
-  const secureHost = /^\d+\.\d+\.\d+\.\d+$/.test(host) ? `${host.replace(/\./g, '-')}.nip.io` : host;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return `https://${host}`;
+  const secureHost = `${host.replace(/\./g, '-')}.nip.io`;
   return `https://${secureHost}:3443`;
 }
 

@@ -40,7 +40,7 @@ services:
       NODE_ENV: production
       PORT: "8080"
       DATABASE_URL: postgres://${POSTGRES_USER:-klinto}:${POSTGRES_PASSWORD:-klinto}@postgres:5432/${POSTGRES_DB:-klinto}
-      HUB_PUBLIC_URL: ${HUB_PUBLIC_URL:-http://150.251.143.212:8080}
+      HUB_PUBLIC_URL: ${HUB_PUBLIC_URL:-https://hub.kintoapp.xyz}
       HUB_JWT_SECRET: ${HUB_JWT_SECRET}
       HUB_ADMIN_TOKEN: ${HUB_ADMIN_TOKEN}
       # КРИТИЧНО: этим ключом зашифрованы ключи всех server-чатов.

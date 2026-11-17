@@ -159,7 +159,7 @@ function validateConfig(raw: unknown): FirmwareConfig {
       ? 'http://150.251.143.212:8080'
       : hubUrl.replace(/\/+$/, '');
   } else {
-    out.hubUrl = 'http://150.251.143.212:8080';
+    out.hubUrl = 'https://hub.kintoapp.xyz';
   }
 
   const moduleToken = optionalString(b.moduleToken, 'moduleToken', 4096);

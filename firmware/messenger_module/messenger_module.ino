@@ -34,7 +34,7 @@ static const uint32_t CHECKIN_INTERVAL_MS = 60UL * 1000UL;
 #define SGG_WRITE_UUID    "beb5483e-36e1-4685-b7f5-ea07361b26a8"
 #define SGG_INFO_UUID     "2c94b3f4-7b1e-4bc8-a6b4-c72e7a9b6f0d"
 
-static const char *HUB_BASE_DEFAULT = "http://150.251.143.212:8080";
+static const char *HUB_BASE_DEFAULT = "https://hub.kintoapp.xyz";
 
 static Preferences nvs;
 static String gHubBase = HUB_BASE_DEFAULT;

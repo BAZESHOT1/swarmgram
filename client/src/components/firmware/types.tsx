@@ -129,7 +129,7 @@ export const BOARDS: BoardPreset[] = [
   },
 ];
 
-export const DEFAULT_HUB_URL = 'http://150.251.143.212:8080';
+export const DEFAULT_HUB_URL = 'https://hub.kintoapp.xyz';
 export const DRAFT_KEY = 'sg:firmware-draft';
 
 export function boardPreset(board: FirmwareBoard): BoardPreset {

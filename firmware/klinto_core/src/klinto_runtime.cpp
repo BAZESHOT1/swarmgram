@@ -260,6 +260,14 @@ bool KlintoNode::loadConfig() {
    * ключ, иначе шлюз не сможет расшифровать пакеты кластера. */
   kl_config_set_temp_key_hex(&cfg_, KL_TEMP_MESH_KEY);
 #endif
+#ifdef KL_HUB_URL
+  /* Hub URL тоже задаёт сборка: после переезда на hub.kintoapp.xyz старый
+   * адрес в NVS не должен удерживать шлюз на прежнем домене. */
+  if (strlen(KL_HUB_URL)) {
+    strncpy(cfg_.hub_url, KL_HUB_URL, sizeof(cfg_.hub_url) - 1);
+    cfg_.hub_url[sizeof(cfg_.hub_url) - 1] = '\0';
+  }
+#endif
   {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -786,7 +794,7 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
       next_ota_check = now + 300000u;
       const char *url = strncmp(self->cfg_.hub_url, "http", 4) == 0
                             ? self->cfg_.hub_url
-                            : "http://150.251.143.212:8080";
+                            : "https://hub.kintoapp.xyz";
       char token[80] = {0};
       if (self->cfg_.module_token[0]) {
         strncpy(token, self->cfg_.module_token, sizeof(token) - 1);

@@ -11,7 +11,9 @@ import { useStore } from '../state/useStore';
 export type { Session } from '../crypto/core';
 
 const NATIVE_API_CANDIDATES = [
-  // Рабочий узел с валидным сертификатом — первым, чтобы native не ждал
+  // Основной домен Hub (Cloudflare). Старые домены оставлены как fallback.
+  'https://hub.kintoapp.xyz/api',
+  // Рабочий узел с валидным сертификатом — резерв, чтобы native не ждал
   // таймауты на несуществующих доменах.
   'https://150-251-143-212.nip.io:3443/api',
   'https://api.kinto.is-a.dev/api',

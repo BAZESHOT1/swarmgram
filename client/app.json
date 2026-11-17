@@ -2,7 +2,7 @@
   "expo": {
     "name": "Klinto",
     "slug": "klinto",
-    "version": "1.10.31",
+    "version": "1.10.32",
     "orientation": "portrait",
     "scheme": "klinto",
     "userInterfaceStyle": "dark",
@@ -79,7 +79,7 @@
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 11031,
+      "versionCode": 11032,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
@@ -100,7 +100,7 @@
       ]
     },
     "extra": {
-      "apiUrl": "https://150-251-143-212.nip.io:3443/api"
+      "apiUrl": "https://hub.kintoapp.xyz/api"
     }
   }
 }
