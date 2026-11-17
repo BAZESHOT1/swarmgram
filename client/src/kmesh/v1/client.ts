@@ -376,6 +376,14 @@ export class KMeshV1Client {
           });
           break;
         }
+        case ClientFrameType.LOG: {
+          try {
+            console.log('[module]', new TextDecoder().decode(frame.payload));
+          } catch {
+            /* битый лог не критичен */
+          }
+          break;
+        }
         case ClientFrameType.RPC_DOWN: {
           const packet = decodeMeshPacket(frame.payload);
           console.log('[kmesh]', 'RPC_DOWN', {
