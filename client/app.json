@@ -2,7 +2,7 @@
   "expo": {
     "name": "Klinto",
     "slug": "klinto",
-    "version": "1.10.29",
+    "version": "1.10.30",
     "orientation": "portrait",
     "scheme": "klinto",
     "userInterfaceStyle": "dark",
@@ -79,7 +79,7 @@
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 11029,
+      "versionCode": 11030,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {

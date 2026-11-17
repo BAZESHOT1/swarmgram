@@ -856,7 +856,7 @@ export class NativeBleTransport implements ModuleConnection {
         const chunk = frame.slice(offset, offset + chunkSize);
         // Для KMesh используем write-without-response: на Android
         // write-with-response на 5-м чанке большого кадра зависает.
-        await (withoutResponse
+        const writePromise = withoutResponse
           ? manager().writeCharacteristicWithoutResponseForDevice(
               deviceId,
               BLE_UUIDS.service,
@@ -868,7 +868,14 @@ export class NativeBleTransport implements ModuleConnection {
               BLE_UUIDS.service,
               BLE_UUIDS.rx,
               bytesToBase64(chunk),
-            ));
+            );
+        // Зависший GATT-write не должен «отравлять» очередь навсегда.
+        await Promise.race([
+          writePromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error('ble_write_timeout')), 2500),
+          ),
+        ]);
         onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
         if (offset + chunkSize < frame.length) await delay(24);
       }
@@ -889,6 +896,9 @@ export class NativeBleTransport implements ModuleConnection {
       await this.writeBytes(frame, onProgress, true);
       return true;
     } catch {
+      // GATT завис (типично для MediaTek после серии reconnect): закрываем,
+      // чтобы watchdog/restore подняли чистое соединение.
+      await this.close().catch(() => undefined);
       return false;
     }
   }
@@ -905,6 +915,7 @@ export class NativeBleTransport implements ModuleConnection {
       await this.writeBytes(frame);
       return true;
     } catch {
+      await this.close().catch(() => undefined);
       return false;
     }
   }
