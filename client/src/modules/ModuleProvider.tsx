@@ -346,14 +346,25 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   (event.clientId && m.clientId === event.clientId) ||
                   m.id === `mesh-${event.msgUuid}`;
                 if (!match) return row;
+                const label =
+                  event.phase === 'preparing'
+                    ? 'Подготовка KMesh…'
+                    : event.phase === 'key'
+                      ? 'Получаем постоянный ключ чата…'
+                      : event.phase === 'sent'
+                        ? 'Передано в модуль · ожидание подтверждения'
+                        : event.phase === 'sending'
+                          ? event.total > 1
+                            ? `Отправка в модуль… ${event.sent}/${event.total} Б`
+                            : 'Отправка в модуль…'
+                          : event.sent >= event.total
+                            ? 'Передано в модуль · ожидание подтверждения'
+                            : 'Отправка в модуль…';
                 return {
                   ...(row as object),
                   kmeshSent: event.sent,
-                  kmeshTotal: event.total,
-                  kmeshLabel:
-                    event.sent >= event.total
-                      ? 'Передано в модуль · ожидание подтверждения'
-                      : 'Отправка в модуль…',
+                  kmeshTotal: event.total > 1 ? event.total : 0,
+                  kmeshLabel: label,
                 };
               });
             });

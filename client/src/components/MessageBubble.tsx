@@ -512,26 +512,29 @@ export function MessageBubble({
           ) : null}
 
           {/* KMesh: байты кадра и статус подтверждения */}
-          {item.mine && item.pending && kmeshTotal ? (
+          {item.mine && item.pending && (kmeshTotal || kmeshLabel) ? (
             <View style={{ marginTop: 5, gap: 3 }}>
-              <View
-                style={[
-                  styles.progressTrack,
-                  { backgroundColor: item.mine ? 'rgba(0,0,0,0.18)' : theme.line },
-                ]}
-              >
+              {kmeshTotal ? (
                 <View
                   style={[
-                    styles.progressFill,
-                    {
-                      width: `${Math.max(4, Math.min(100, Math.round(((kmeshSent ?? 0) / kmeshTotal) * 100)))}%`,
-                      backgroundColor: item.mine ? theme.onAccent : theme.accent,
-                    },
+                    styles.progressTrack,
+                    { backgroundColor: item.mine ? 'rgba(0,0,0,0.18)' : theme.line },
                   ]}
-                />
-              </View>
+                >
+                  <View
+                    style={[
+                      styles.progressFill,
+                      {
+                        width: `${Math.max(4, Math.min(100, Math.round(((kmeshSent ?? 0) / kmeshTotal) * 100)))}%`,
+                        backgroundColor: item.mine ? theme.onAccent : theme.accent,
+                      },
+                    ]}
+                  />
+                </View>
+              ) : null}
               <Text style={{ fontSize: 9.5, fontWeight: '600', color: item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary }}>
-                {kmeshLabel ?? 'Отправка…'} · {Math.min(kmeshSent ?? 0, kmeshTotal)}/{kmeshTotal} Б
+                {kmeshLabel ?? 'Отправка…'}
+                {kmeshTotal ? ` · ${Math.min(kmeshSent ?? 0, kmeshTotal)}/${kmeshTotal} Б` : ''}
               </Text>
             </View>
           ) : null}

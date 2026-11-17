@@ -262,7 +262,7 @@ export async function sendMessage(
   if (!skipHttp && (online || !meshAvailable)) {
     try {
       const request = api.api.getChat(chatId);
-      chat = online ? await request : await withDeadline(request, STARTUP_HTTP_BUDGET_MS).catch(() => null);
+      chat = online && !meshAvailable ? await request : await withDeadline(request, STARTUP_HTTP_BUDGET_MS).catch(() => null);
     } catch {
       chat = null;
     }
@@ -277,6 +277,31 @@ export async function sendMessage(
   try {
     encrypted = await encryptForChat({ id: chatId, encryption }, payload, keys);
   } catch {
+    // Ключа чата ещё нет (например, свежая установка на iOS без сети).
+    // Не теряем сообщение: отправляем текст через KMesh, а outbox зашифрует
+    // его постоянным ключом, когда Hub станет доступен.
+    if (meshAvailable && kind === 'text' && typeof payload.text === 'string' && payload.text) {
+      const sent = await sendTextViaMesh(chatId, payload.text, clientId);
+      if (sent) {
+        return {
+          id: clientId,
+          clientId,
+          seq: Number.MAX_SAFE_INTEGER,
+          senderUsername: myUsername,
+          mine: true,
+          createdAt: new Date().toISOString(),
+          kind,
+          text: payload.text,
+          replyTo: opts.replyTo ?? null,
+          scheme: encryption,
+          reactions: [],
+          delivered: false,
+          failed: false,
+          pending: true,
+          asChannel: opts.asChannel,
+        };
+      }
+    }
     return localFallback(chatId, payload, kind, myUsername, 'ключ чата ещё не получен', clientId);
   }
 
@@ -335,9 +360,9 @@ export async function sendMessage(
   try {
     // Нет транспорта — не ждём HTTP-таймаут, сразу mesh/outbox.
     if (skipHttp) throw timeoutError('offline_transport');
-    const uploadBudget = online
+    const uploadBudget = online && !meshAvailable
       ? MESH_UPLOAD_TIMEOUT_MS
-      : Math.max(1_000, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt));
+      : Math.max(1_500, Math.min(MESH_UPLOAD_TIMEOUT_MS, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt)));
     const uploaded = await uploadEnvelopeBounded(
       bytes,
       {
@@ -360,11 +385,11 @@ export async function sendMessage(
       // Короткий предпросмотр для push (только для текста, не для E2E-секретов).
       ...(kind === 'text' ? { pushText: String(payload.text ?? '').slice(0, 300) } : {}),
     } as never);
-    const saved = online
+    const saved = online && !meshAvailable
       ? await registerRequest
       : await withDeadline(
           registerRequest,
-          Math.max(1_000, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt)),
+          Math.max(1_500, STARTUP_HTTP_BUDGET_MS - (Date.now() - httpStartedAt)),
         );
     // Hub обязан вернуть сохранённое сообщение с id/seq. Иначе это не доставка.
     if (!saved || typeof (saved as { id?: unknown }).id !== 'string' || !Number.isFinite(Number((saved as { seq?: unknown }).seq))) {

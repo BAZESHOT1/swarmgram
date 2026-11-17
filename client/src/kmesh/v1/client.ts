@@ -107,6 +107,7 @@ export interface KMeshV1ClientOptions {
     chatId: string;
     sent: number;
     total: number;
+    phase?: 'preparing' | 'key' | 'sending' | 'sent';
   }) => void;
   /** Hub вернул постоянный ключ серверного чата через KMesh. */
   onChatKey?: (chatId: string, version: number, key: Uint8Array) => void;
@@ -305,6 +306,14 @@ export class KMeshV1Client {
     // ключ чата ещё не в кэше (офлайн после переустановки). Такое сообщение
     // уйдёт на Hub при появлении сети.
     await kmeshV1Enqueue(item);
+    this.opts.onSendProgress?.({
+      msgUuid: uuidHex,
+      clientId: input.clientId,
+      chatId: input.chatId,
+      sent: 0,
+      total: 0,
+      phase: 'preparing',
+    });
 
     const sendFrame = async (frame: Uint8Array): Promise<boolean> => {
       const sendOnce = this.link.sendProgress
@@ -315,6 +324,7 @@ export class KMeshV1Client {
               chatId: input.chatId,
               sent,
               total,
+              phase: 'sending',
             }),
           )
         : this.link.send(frame);
@@ -334,6 +344,7 @@ export class KMeshV1Client {
         chatId: input.chatId,
         sent: frame.length,
         total: frame.length,
+        phase: 'sent',
       });
       return true;
     };
@@ -344,6 +355,14 @@ export class KMeshV1Client {
      * (пакет всё равно запечатан временным ключом кластера), а после
      * подтверждения и ключа уйдёт обычным E2EE-конвертом. */
     if (!chatKey && input.toInternet) {
+      this.opts.onSendProgress?.({
+        msgUuid: uuidHex,
+        clientId: input.clientId,
+        chatId: input.chatId,
+        sent: 0,
+        total: 0,
+        phase: 'key',
+      });
       await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
       for (let i = 0; i < 6 && !chatKey; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 350));
