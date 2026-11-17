@@ -23,17 +23,34 @@ function nextReqId(): number {
   return id || 1;
 }
 
+/**
+ * Сервисный запрос с повтором: BLE-канал может быть занят или переподключаться
+ * (клиент заменяется новым). Каждый раз берём актуальный активный клиент.
+ */
+async function withRetry(run: (client: KMeshV1Client) => Promise<boolean>): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const client = active;
+    if (client) {
+      const ok = await run(client).catch(() => false);
+      if (ok) return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  return false;
+}
+
 export async function requestKmeshSearch(query: string, type = 0): Promise<boolean> {
   if (!active) return false;
-  return active.search(nextReqId(), query, type).catch(() => false);
+  const reqId = nextReqId();
+  return withRetry((client) => client.search(reqId, query, type));
 }
 
 export async function requestKmeshFeed(lastSyncTs: number): Promise<boolean> {
   if (!active) return false;
-  return active.syncFeed(lastSyncTs >>> 0).catch(() => false);
+  return withRetry((client) => client.syncFeed(lastSyncTs >>> 0));
 }
 
 export async function requestKmeshHistory(chatRef: number, limit = 8): Promise<boolean> {
   if (!active) return false;
-  return active.chatHistory(chatRef, 0n, limit).catch(() => false);
+  return withRetry((client) => client.chatHistory(chatRef, 0n, limit));
 }

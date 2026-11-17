@@ -19,7 +19,7 @@ import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
 import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
-import { emitMeshEnvelope, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
+import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
 import { storeServerChatKey } from '../data/chatkit';
 import { crc16 } from '../kmesh/v1/protocol';
@@ -162,6 +162,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
   const mountedRef = useRef(true);
+  /** adopt объявлен раньше restore: через ref планируем переподключение после разрыва. */
+  const restoreRef = useRef<(() => Promise<void>) | null>(null);
   const connectedToastRef = useRef('');
   const foundToastRef = useRef('');
 
@@ -270,6 +272,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         unsubInfoRef.current?.();
         unsubInfoRef.current = null;
         setMeshSender(null);
+        // Без активного канала KMesh-клиент не должен принимать тексты: они
+        // встанут в очередь meshLink и уйдут после переподключения.
+        v1UnsubRef.current?.();
+        v1UnsubRef.current = null;
+        v1ClientRef.current = null;
+        setActiveKMeshV1(null);
+        setMeshV1Sender(null);
         setMeshCapabilities({ connected: false, gateway: false, queue: 0, neighbors: 0 });
         useStore.getState().setMeshIncomingActive(false);
         if (mountedRef.current) {
@@ -287,6 +296,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           void api.detachModule(last.moduleId).catch(() => undefined);
         }
         refreshLists();
+        // Разрыв (в т.ч. из-за сбоя записи) — сразу пробуем поднять связь
+        // заново, не дожидаясь 30-секундного опроса.
+        setTimeout(() => void restoreRef.current?.(), 2500);
       });
 
       // Web Bluetooth/Serial отдаёт входящие конверты сюда.
@@ -1014,8 +1026,17 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
         try {
           lastTransportRef.current = transport;
-          const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 5000), 6500);
-          console.log('[ble]', 'restore openKnown', Boolean(nextInfo));
+          // Устройство уже найдено сканом выше — подключаемся к нему напрямую,
+          // без повторного скана. Прежняя связка «скан 4 с + connect + HELLO»
+          // под 6.5-секундный таймаут почти всегда давала «ble timeout», хотя
+          // подключение продолжалось и потом «адоптилось» по watchdog.
+          const nextInfo = await withConnectTimeout(
+            transport.openDevice
+              ? transport.openDevice(mine.id)
+              : transport.openKnown(last.hardwareId, 5000),
+            30_000,
+          );
+          console.log('[ble]', 'restore open', Boolean(nextInfo));
           if (cancelAutoKeyRef.current === key) {
             await transport.close().catch(() => undefined);
             setAutoModule(null);
@@ -1089,6 +1110,32 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       if (mountedRef.current) setBusy(null);
     }
   }, [adopt, setNearbyModules]);
+
+  restoreRef.current = restore;
+
+  /* Если после нескольких попыток текст так и не ушёл в модуль, снимаем
+   * «Подготовка KMesh…»: сообщение остаётся в outbox и уйдёт при появлении
+   * связи (модуль или интернет). */
+  useEffect(
+    () =>
+      onMeshTextGaveUp((item) => {
+        qc.setQueryData<unknown[]>(['messages', item.chatId], (prev) => {
+          if (!Array.isArray(prev)) return prev;
+          return prev.map((row) => {
+            const m = row as { clientId?: string; text?: string; pending?: boolean };
+            const match = item.clientId ? m.clientId === item.clientId : m.text === item.text && m.pending;
+            if (!match) return row;
+            return {
+              ...(row as object),
+              kmeshSent: 0,
+              kmeshTotal: 0,
+              kmeshLabel: 'Не удалось передать в модуль · сохранено, отправится позже',
+            };
+          });
+        });
+      }),
+    [qc],
+  );
 
   // Разрешение Bluetooth запрашиваем сами после входа, не дожидаясь, пока
   // пользователь откроет раздел модулей. Небольшая задержка нужна, чтобы

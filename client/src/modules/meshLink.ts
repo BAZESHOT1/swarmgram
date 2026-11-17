@@ -15,7 +15,29 @@ let sender: MeshSender | null = null;
 let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
 /** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
-const pendingV1: Array<{ chatId: string; text: string; clientId?: string }> = [];
+const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number }> = [];
+/** После стольких неудач перестаём долбить модуль: сообщение остаётся в outbox. */
+const MAX_V1_ATTEMPTS = 3;
+const giveUpListeners = new Set<(item: { chatId: string; text: string; clientId?: string }) => void>();
+
+/** Подписка на отказ от повторной отправки (UI снимает «Подготовка KMesh…»). */
+export function onMeshTextGaveUp(
+  listener: (item: { chatId: string; text: string; clientId?: string }) => void,
+): () => void {
+  giveUpListeners.add(listener);
+  return () => giveUpListeners.delete(listener);
+}
+
+function giveUp(item: { chatId: string; text: string; clientId?: string }): void {
+  console.warn('[kmesh]', 'text send gave up, kept in outbox', item.chatId);
+  for (const listener of giveUpListeners) {
+    try {
+      listener(item);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 let flushingV1 = false;
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -27,10 +49,24 @@ async function flushV1Queue(): Promise<void> {
       const item = pendingV1[0];
       try {
         const ok = await v1Sender(item.chatId, item.text, item.clientId);
-        if (!ok) break;
+        if (!ok) {
+          item.attempts += 1;
+          if (item.attempts >= MAX_V1_ATTEMPTS) {
+            pendingV1.shift();
+            giveUp(item);
+            continue;
+          }
+          break;
+        }
         pendingV1.shift();
         console.log('[kmesh]', 'queued text sent', item.chatId);
       } catch {
+        item.attempts += 1;
+        if (item.attempts >= MAX_V1_ATTEMPTS) {
+          pendingV1.shift();
+          giveUp(item);
+          continue;
+        }
         break;
       }
     }
@@ -90,20 +126,20 @@ export async function sendTextViaMesh(
   if (!text) return false;
   if (!v1Sender) {
     // Модуль переподключается: не теряем сообщение, отправим после connect.
-    pendingV1.push({ chatId, text, clientId });
+    pendingV1.push({ chatId, text, clientId, attempts: 0 });
     console.log('[kmesh]', 'text queued until module connects', chatId);
     return true;
   }
   try {
     const ok = await v1Sender(chatId, text, clientId);
     if (!ok) {
-      pendingV1.push({ chatId, text, clientId });
+      pendingV1.push({ chatId, text, clientId, attempts: 1 });
       return true;
     }
     return true;
   } catch (error) {
     console.warn('[kmesh]', 'sendTextViaMesh failed', String(error));
-    pendingV1.push({ chatId, text, clientId });
+    pendingV1.push({ chatId, text, clientId, attempts: 0 });
     return true;
   }
 }

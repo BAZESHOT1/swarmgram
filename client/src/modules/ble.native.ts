@@ -83,7 +83,12 @@ function manager(): BleManager {
 const BLE_READY_TIMEOUT_MS = 8000;
 const HELLO_ATTEMPTS = 4;
 const HELLO_RETRY_DELAY_MS = 700;
-const INFO_TIMEOUT_MS = 7000;
+const INFO_TIMEOUT_MS = 2500;
+/** Сколько ждём INFO после каждого HELLO, прежде чем повторить. */
+const HELLO_WAIT_MS = 1600;
+/** Ранняя остановка скана: минимум времени и ожидание имени из scan response. */
+const SCAN_EARLY_MIN_MS = 1000;
+const SCAN_EARLY_NAMELESS_MS = 2200;
 
 /**
  * Заранее запрашивает разрешения Bluetooth и создаёт BleManager.
@@ -459,7 +464,19 @@ export class NativeBleTransport implements ModuleConnection {
       );
     }
     try {
-      await delay(durationMs);
+      // Не ждём весь интервал: как только найден модуль (с именем из scan
+      // response), останавливаем скан. Раньше фаза всегда занимала 4 с, и
+      // общий таймаут подключения истекал до handshake («ble timeout»).
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < durationMs) {
+        await delay(100);
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < SCAN_EARLY_MIN_MS) continue;
+        const ready = [...found.values()].some(
+          (entry) => accept(entry.device, entry.name) && (entry.name || elapsed >= SCAN_EARLY_NAMELESS_MS),
+        );
+        if (ready) break;
+      }
     } finally {
       await ble.stopDeviceScan().catch(() => undefined);
     }
@@ -648,23 +665,16 @@ export class NativeBleTransport implements ModuleConnection {
       subscribeStatus();
     }, 20_000);
 
-    // iOS/Edge могут потерять первый HELLO при медленном старте GATT — повторяем.
-    // Android иногда подтверждает подписку на notify с задержкой, поэтому
-    // первый HELLO уходит не сразу.
+    // Первый HELLO — только KMesh_v1: прошивка отвечает на него одним INFO.
+    // Раньше уходили сразу оба (legacy + v1), модуль дважды гнал длинный INFO
+    // по 20 байт с паузой 28 мс, очередь notify забивалась и клиент ждал
+    // подтверждения дольше таймаута. Legacy HELLO добавляем со 2-й попытки
+    // (старые прошивки), и после каждой попытки ждём INFO, а не шлём вслепую.
     await delay(250);
     let helloError: Error | null = null;
     for (let attempt = 0; attempt < HELLO_ATTEMPTS; attempt += 1) {
       if (this.info || this.closing) break;
-      if (attempt > 0) await delay(HELLO_RETRY_DELAY_MS);
-      if (this.info || this.closing) break;
-      try {
-        await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
-        helloError = null;
-      } catch (error) {
-        helloError = error instanceof Error ? error : new Error(String(error));
-        if (this.closing) break;
-      }
-      // KMesh_v1 HELLO: текущие прошивки отвечают INFO в новом формате.
+      let v1Ok = false;
       try {
         const helloPayloadV1 = new TextEncoder().encode(
           JSON.stringify({ v: 3, kind: 'hello', app: 'klinto', client: 'native-ble' }),
@@ -672,10 +682,24 @@ export class NativeBleTransport implements ModuleConnection {
         await this.writeBytes(
           encodeClientFrame(ClientFrameType.HELLO, helloPayloadV1, this.v1HelloSeq++ & 0xffff),
         );
-      } catch {
-        /* v1-канал опционален: legacy HELLO уже отправлен */
+        v1Ok = true;
+      } catch (error) {
+        helloError = error instanceof Error ? error : new Error(String(error));
+        if (this.closing) break;
+      }
+      if (attempt > 0 || !v1Ok) {
+        try {
+          await this.writeFrame(FrameType.HELLO, encodeJson(helloPayload('native-ble')));
+          helloError = null;
+        } catch (error) {
+          helloError = error instanceof Error ? error : new Error(String(error));
+          if (this.closing) break;
+        }
+      } else {
+        helloError = null;
       }
       dbg(`hello attempt ${attempt + 1}`);
+      await this.waitInfoPoll(HELLO_WAIT_MS);
     }
     const info = await this.waitInfo(INFO_TIMEOUT_MS, helloError ?? undefined).catch(async (error: unknown) => {
       await this.close().catch(() => undefined);
@@ -837,6 +861,12 @@ export class NativeBleTransport implements ModuleConnection {
     this.applyInfo(next);
   }
 
+  /** Ждёт INFO до timeoutMs, выходя сразу при его получении или закрытии. */
+  private async waitInfoPoll(timeoutMs: number): Promise<void> {
+    const until = Date.now() + timeoutMs;
+    while (!this.info && !this.closing && Date.now() < until) await delay(50);
+  }
+
   private waitInfo(timeoutMs: number, cause?: Error): Promise<ModuleInfo> {
     if (this.info) return Promise.resolve(this.info);
     return new Promise<ModuleInfo>((resolve, reject) => {
@@ -870,28 +900,43 @@ export class NativeBleTransport implements ModuleConnection {
       const chunkSize = 20;
       for (let offset = 0; offset < frame.length; offset += chunkSize) {
         const chunk = frame.slice(offset, offset + chunkSize);
-        // Для KMesh используем write-without-response: на Android
-        // write-with-response на 5-м чанке большого кадра зависает.
-        const writePromise = withoutResponse
-          ? manager().writeCharacteristicWithoutResponseForDevice(
-              deviceId,
-              BLE_UUIDS.service,
-              BLE_UUIDS.rx,
-              bytesToBase64(chunk),
-            )
-          : manager().writeCharacteristicWithResponseForDevice(
-              deviceId,
-              BLE_UUIDS.service,
-              BLE_UUIDS.rx,
-              bytesToBase64(chunk),
-            );
+        const payload = bytesToBase64(chunk);
+        const writeChunk = async (): Promise<void> => {
+          // write-without-response быстрее, но не везде проходит (iOS может
+          // отказать, если очередь периферии занята) — тогда пишем с ответом.
+          if (withoutResponse) {
+            try {
+              await manager().writeCharacteristicWithoutResponseForDevice(
+                deviceId,
+                BLE_UUIDS.service,
+                BLE_UUIDS.rx,
+                payload,
+              );
+              return;
+            } catch (error) {
+              if (this.closing) throw error;
+              dbg(`write NR failed, retry with response: ${errorMessage(error)}`);
+            }
+          }
+          await manager().writeCharacteristicWithResponseForDevice(
+            deviceId,
+            BLE_UUIDS.service,
+            BLE_UUIDS.rx,
+            payload,
+          );
+        };
         // Зависший GATT-write не должен «отравлять» очередь навсегда.
-        await Promise.race([
-          writePromise,
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('ble_write_timeout')), 2500),
-          ),
-        ]);
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        try {
+          await Promise.race([
+            writeChunk(),
+            new Promise<void>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('ble_write_timeout')), 2500);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
         onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
         if (offset + chunkSize < frame.length) await delay(24);
       }
@@ -911,10 +956,11 @@ export class NativeBleTransport implements ModuleConnection {
     try {
       await this.writeBytes(frame, onProgress, true);
       return true;
-    } catch {
-      // GATT завис (типично для MediaTek после серии reconnect): закрываем,
-      // чтобы watchdog/restore подняли чистое соединение.
-      await this.close().catch(() => undefined);
+    } catch (error) {
+      // GATT завис (типично для MediaTek после серии reconnect): закрываем и
+      // сообщаем о разрыве, чтобы ModuleProvider поднял чистое соединение.
+      dbg(`sendRawProgress failed: ${errorMessage(error)}`);
+      await this.failLink();
       return false;
     }
   }
@@ -930,10 +976,22 @@ export class NativeBleTransport implements ModuleConnection {
     try {
       await this.writeBytes(frame);
       return true;
-    } catch {
-      await this.close().catch(() => undefined);
+    } catch (error) {
+      dbg(`sendRaw failed: ${errorMessage(error)}`);
+      await this.failLink();
       return false;
     }
+  }
+
+  /**
+   * Аварийное закрытие после сбоя записи. В отличие от обычного close()
+   * обязательно уведомляет подписчиков: раньше ModuleProvider не узнавал о
+   * закрытии, держал «живой» транспорт и сообщения бесконечно уходили в
+   * закрытый канал (цикл «Отправка в модуль» ↔ «Подготовка KMesh»).
+   */
+  private async failLink(): Promise<void> {
+    await this.close().catch(() => undefined);
+    this.emitDisconnect();
   }
 
   /** KMesh_v1: подписка на сырые чанки до разбора legacy-кадров. */
