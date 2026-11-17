@@ -482,7 +482,10 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
 #endif
   }
 
-  if (router_->send(&pkt, kl_uptime_ms(), 0xFF, true)) {
+  const bool sent = router_->send(&pkt, kl_uptime_ms(), 0xFF, true);
+  log_line("[TRACE 1b] send op=%u dst=%lu ok=%u len=%u flags=%02x", (unsigned)op,
+           (unsigned long)dst, sent ? 1u : 0u, (unsigned)pkt.payload_len, (unsigned)pkt.flags);
+  if (sent) {
     status(pkt.msg_uuid, pkt.packet_id, KL_STATUS_QUEUED);
   } else {
     status(pkt.msg_uuid, pkt.packet_id, KL_STATUS_FAILED);

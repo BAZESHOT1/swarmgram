@@ -245,14 +245,17 @@ async function ensureUserIdentity(userId: string): Promise<{ userId: string; net
   };
 }
 
-/** node_id модуля из hardwareId (та же FNV-1a, что в прошивке). */
+/** node_id модуля из hardwareId/MAC (та же FNV-1a, что в прошивке). */
 function nodeIdFromMac(mac: string): number {
-  // hardwareId выглядит как esp32-<12 hex MAC>; старый формат — esp32-<8 hex id>.
-  const match = /(?:^esp32-)?([0-9a-f]{8,12})$/i.exec(String(mac ?? '').trim());
-  if (!match) return 0;
-  const raw = match[1].toLowerCase();
+  // Поддержаны форматы: esp32-<12 hex>, e8:f6:0a:11:b1:1c и старый esp32-<8 hex>.
+  const raw = String(mac ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^esp32-/, '')
+    .replace(/[^0-9a-f]/g, '');
   if (raw.length === 8) return parseInt(raw, 16) >>> 0;
-  const text = raw.slice(0, 12);
+  if (raw.length < 12) return 0;
+  const text = raw.slice(-12);
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i += 1) {
     hash ^= text.charCodeAt(i);
