@@ -302,6 +302,13 @@ bool KlintoNode::begin() {
     if (strlen(ssid)) {
       WiFi.mode(WIFI_STA);
       WiFi.setSleep(false);
+      // Диагностика: какие сети реально видны ESP32 (только 2.4 ГГц).
+      const int found = WiFi.scanNetworks();
+      Serial.printf("[klinto3] wifi scan: %d networks\n", found);
+      for (int i = 0; i < found && i < 12; ++i) {
+        Serial.printf("[klinto3]   ssid=%s ch=%d rssi=%d enc=%d\n", WiFi.SSID(i).c_str(),
+                      (int)WiFi.channel(i), (int)WiFi.RSSI(i), (int)WiFi.encryptionType(i));
+      }
       WiFi.begin(ssid, pass);
       const uint32_t start = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(200);
@@ -310,7 +317,7 @@ bool KlintoNode::begin() {
         Serial.printf("[klinto3] wifi up ssid=%s channel=%u ip=%s\n", ssid,
                       (unsigned)cfg_.wifi_channel, WiFi.localIP().toString().c_str());
       } else {
-        Serial.printf("[klinto3] wifi failed ssid=%s\n", ssid);
+        Serial.printf("[klinto3] wifi failed ssid=%s status=%d\n", ssid, (int)WiFi.status());
       }
     }
   } else {
