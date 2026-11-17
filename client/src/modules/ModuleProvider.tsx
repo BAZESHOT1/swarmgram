@@ -106,6 +106,14 @@ function moduleIdOf(row: { id?: string } | null | undefined): string | undefined
   return row && typeof row.id === 'string' ? row.id : undefined;
 }
 
+/** Android BLE иногда «зависает» в connectGatt: ограничиваем ожидание. */
+function withConnectTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('ble_connect_timeout')), ms)),
+  ]);
+}
+
 export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   void pathname;
@@ -911,7 +919,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         try {
-          const nextInfo = await transport.openKnown(last.hardwareId, 5000);
+          const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 5000), 6500);
           if (cancelAutoKeyRef.current === key) {
             await transport.close().catch(() => undefined);
             setAutoModule(null);
@@ -961,7 +969,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const transport = getModuleTransport(kind);
         if (!transport.supported || !transport.openKnown) continue;
         try {
-          const nextInfo = await transport.openKnown(last.hardwareId, 3000);
+          const nextInfo = await withConnectTimeout(transport.openKnown(last.hardwareId, 3000), 4500);
           if (nextInfo) {
             await adopt(transport, nextInfo);
             return;
