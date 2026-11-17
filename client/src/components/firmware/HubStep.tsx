@@ -118,7 +118,7 @@ export function HubStep({
     try {
       const result = await pairModule({
         boardUuid: uuid,
-        kind: config.connectivity === 'wifi_lora' ? 'lora' : 'wifi',
+        kind: config.connectivity !== 'wifi' ? 'lora' : 'wifi',
         firmware: firmwareVersion || undefined,
       });
       if (result?.pendingTransfer) {

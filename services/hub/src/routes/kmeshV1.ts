@@ -158,8 +158,8 @@ async function mapEntity(entityType: string, entityUuid: string): Promise<number
   return Number(rows[0]?.entity_id ?? 0) >>> 0;
 }
 
-const CHIP_BY_ARCH: Record<number, string> = { 1: 'esp32', 2: 'esp32c3', 3: 'esp32s3', 4: 'esp32c6' };
-const ARCH_BY_CHIP: Record<string, number> = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4 };
+const CHIP_BY_ARCH: Record<number, string> = { 1: 'esp32', 2: 'esp32c3', 3: 'esp32s3', 4: 'esp32c6', 6: 'esp32c5' };
+const ARCH_BY_CHIP: Record<string, number> = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32c5: 6 };
 
 /**
  * OTA-артефакты подписаны ключом OTA, поэтому их можно отдавать шлюзу по

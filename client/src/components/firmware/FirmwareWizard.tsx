@@ -26,6 +26,7 @@ import { ErrorText, Note, WizardProgress } from './FirmwareUI';
 import { useStore } from '../../state/useStore';
 import { api } from '../../data/api';
 import {
+  BOARDS,
   DRAFT_KEY,
   boardPreset,
   buildFirmware,
@@ -39,6 +40,7 @@ import {
   pairModule,
   resolveDownloadUrl,
   validateConfig,
+  type FirmwareBoard,
   type FirmwareBuild,
   type FirmwareConfig,
 } from './types';
@@ -121,7 +123,7 @@ function readDraft(): FirmwareConfig | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<FirmwareConfig>;
     const base = defaultConfig();
-    const board = parsed.board === 'esp32' || parsed.board === 'esp32s3' || parsed.board === 'esp32c3' ? parsed.board : base.board;
+    const board = BOARDS.some((item) => item.id === parsed.board) ? (parsed.board as FirmwareBoard) : base.board;
     return {
       ...base,
       ...parsed,
@@ -179,7 +181,7 @@ function SuccessStep({
     {
       icon: 'radio-outline' as const,
       text:
-        config.connectivity === 'wifi_lora'
+        config.connectivity !== 'wifi'
           ? `Подключите антенну LoRa на ${config.lora?.frequencyMhz ?? 433} МГц — без неё передатчик может выйти из строя.`
           : 'Антенна LoRa не нужна: модуль работает только через Wi-Fi mesh.',
     },
@@ -339,7 +341,7 @@ export function FirmwareWizard() {
   };
 
   const validateStep = (value: number): string | null => {
-    if (value === 4 && config.connectivity === 'wifi_lora' && config.lora) {
+    if (value === 4 && config.connectivity !== 'wifi' && config.lora) {
       const error = checkLoraPins(config.lora, config.board, config.battery?.enabled ? config.battery.pin : undefined).find(
         (issue) => issue.kind === 'error',
       );
@@ -494,7 +496,7 @@ export function FirmwareWizard() {
               // Мягкая привязка: чужой модуль не отбираем, а создаём заявку.
               const paired = await pairModule({
                 boardUuid: hardwareId,
-                kind: config.connectivity === 'wifi_lora' ? 'lora' : 'wifi',
+                kind: config.connectivity !== 'wifi' ? 'lora' : 'wifi',
                 firmware: build?.version ?? '',
               });
               if (paired?.pendingTransfer) {

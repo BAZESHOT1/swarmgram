@@ -157,7 +157,7 @@ export function manifestCanonical(m: {
   patchSha256: string;
   targetSha256: string;
 }): string {
-  const chipId = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4 }[m.chip] || 0;
+  const chipId = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32c5: 6 }[m.chip] || 0;
   return `KLINTO-OTA1|${chipId}|${m.baseBuild}|${m.targetBuild}|${m.patchSha256}|${m.targetSha256}|${m.totalChunks}|${m.patchSize}`;
 }
 

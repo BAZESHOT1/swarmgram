@@ -30,7 +30,7 @@ export function BatteryStep({
 
   // Пин батареи не должен совпадать с пинами LoRa — иначе АЦП будет читать чужой сигнал.
   const loraConflicts =
-    config.connectivity === 'wifi_lora' && config.lora && battery.enabled
+    config.connectivity !== 'wifi' && config.lora && battery.enabled
       ? (Object.entries(config.lora.pins) as Array<[string, number | undefined]>)
           .filter(([, pin]) => pin === battery.pin)
           .map(([name]) => name.toUpperCase())

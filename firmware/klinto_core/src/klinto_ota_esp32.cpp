@@ -577,6 +577,7 @@ bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t ch
   const char *chip = chip_arch == 2 ? "esp32c3"
                      : chip_arch == 3 ? "esp32s3"
                      : chip_arch == 4 ? "esp32c6"
+                     : chip_arch == 6 ? "esp32c5"
                                       : "esp32";
   return kl_ota_esp32_sync_chip(hub_url, module_token, chip, chip_arch, current_build, out);
 }

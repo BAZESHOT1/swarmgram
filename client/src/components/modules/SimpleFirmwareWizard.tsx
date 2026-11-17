@@ -41,7 +41,7 @@ export interface SimpleFirmwareResult {
 }
 
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-type LinkChoice = 'wifi' | 'wifi_lora';
+type LinkChoice = 'wifi' | 'wifi_lora' | 'lora';
 
 /** Человекочитаемые фазы серверной сборки. */
 const BUILD_PHASE_LABEL: Record<string, string> = {
@@ -189,7 +189,7 @@ export function SimpleFirmwareWizard({
       .then((status) => {
         if (!alive) return;
         const boards = (status.boards ?? []).filter((value): value is FirmwareBoard =>
-          value === 'esp32c3' || value === 'esp32' || value === 'esp32s3',
+          BOARDS.some((item) => item.id === value),
         );
         if (boards.length) {
           setAvailableBoards(boards);
@@ -255,6 +255,7 @@ export function SimpleFirmwareWizard({
   const usbHint = (id: FirmwareBoard): string => {
     if (id === 'esp32') return 'USB: micro-USB (обычно CP210x). Для прошивки подойдёт и UART-переходник.';
     if (id === 'esp32s3') return 'USB: нативный USB-OTG — используйте USB-порт, а не UART.';
+    if (id === 'esp32c5') return 'USB: нативный USB-C. Mesh работает в диапазоне 2.4 ГГц.';
     return 'USB: нативный USB-C, драйвер не нужен.';
   };
 
@@ -315,7 +316,7 @@ export function SimpleFirmwareWizard({
     wifi: role === 'gateway' ? { ssid: ssid.trim(), password } : undefined,
     // Глобальные mesh-параметры и Hub URL подставляет сервер.
     lora:
-      link === 'wifi_lora'
+      link !== 'wifi'
         ? {
             chip: loraChip,
             frequencyMhz: 868,
@@ -557,10 +558,10 @@ export function SimpleFirmwareWizard({
             <ChoiceCard
               icon="radio-outline"
               title="Только LoRa"
-              subtitle="пока недоступно"
-              description="Серверная сборка ещё не поддерживает режим без Wi-Fi. Выберите Wi-Fi mesh или Wi-Fi + LoRa."
-              selected={false}
-              onPress={() => setStepError('Режим «только LoRa» пока не поддерживается сборщиком.')}
+              subtitle="максимальная дальность · нужен LoRa-модуль"
+              description="Без Wi-Fi mesh: узел связывается с кластером только по LoRa (BLE для телефона остаётся)."
+              selected={link === 'lora'}
+              onPress={() => setLink('lora')}
             />
           </View>
         );
@@ -633,7 +634,7 @@ export function SimpleFirmwareWizard({
                 maxLength={2}
               />
             </StepCard>
-            {link === 'wifi_lora' ? (
+            {link !== 'wifi' ? (
               <>
                 <View style={{ height: 10 }} />
                 <StepCard>

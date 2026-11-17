@@ -849,9 +849,9 @@ export interface MeshNeighbor {
 
 /* ---- сборка прошивок ESP32 (визард) ---- */
 
-export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3';
+export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32c5';
 export type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
-export type FirmwareConnectivity = 'wifi' | 'wifi_lora';
+export type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
 export type FirmwareLoraChip = 'sx1278' | 'sx1276' | 'sx1262';
 
 /** Пины LoRa-модуля (рекомендуемые значения подставляет визард). */

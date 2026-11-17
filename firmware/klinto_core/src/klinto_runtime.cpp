@@ -860,6 +860,7 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
             const uint8_t arch = !strcmp(chip, "esp32c3") ? 2
                                  : !strcmp(chip, "esp32s3") ? 3
                                  : !strcmp(chip, "esp32c6") ? 4
+                                 : !strcmp(chip, "esp32c5") ? 6
                                  : !strcmp(chip, "esp32")    ? 1
                                                              : 0;
             if (!arch || base <= 0) continue;

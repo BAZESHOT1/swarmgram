@@ -62,11 +62,12 @@ const FQBN = {
  * CSV передаётся в arduino-cli через build.partitions и живёт в templates/.
  */
 const FQBN_KMESH = {
-  esp32c3: 'esp32:esp32:esp32c3',
+  // CDCOnBoot: Serial идёт в USB, чтобы логи C3/C5/C6/S3 были видны с ПК.
+  esp32c3: 'esp32:esp32:esp32c3:CDCOnBoot=cdc',
   esp32: 'esp32:esp32:esp32',
-  esp32s2: 'esp32:esp32:esp32s2',
-  esp32s3: 'esp32:esp32:esp32s3',
-  esp32c6: 'esp32:esp32:esp32c6',
+  esp32s3: 'esp32:esp32:esp32s3:CDCOnBoot=cdc',
+  esp32c6: 'esp32:esp32:esp32c6:CDCOnBoot=cdc',
+  esp32c5: 'esp32:esp32:esp32c5:CDCOnBoot=cdc',
 };
 
 /**
@@ -242,6 +243,7 @@ function generateConfigHeader(config, version) {
     esp32: { sck: 18, miso: 19, mosi: 23, cs: 5, rst: 14, dio0: 26, busy: 27, chip: 'sx1278' },
     esp32s3: { sck: 12, miso: 13, mosi: 11, cs: 10, rst: 9, dio0: 8, busy: 7, chip: 'sx1262' },
     esp32c6: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
+    esp32c5: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
   };
   const defaults = LORA_DEFAULTS[board] || LORA_DEFAULTS.esp32c3;
 
@@ -256,7 +258,7 @@ function generateConfigHeader(config, version) {
   const useKmeshV1 = cfgBoolean(kmesh.v1, true);
   // BLE-мост: wearable/repeater по умолчанию, шлюзу — только по запросу.
   // ESP32-S2 физически без Bluetooth, для него BLE отключаем.
-  const BLE_BOARDS = new Set(['esp32', 'esp32c3', 'esp32s3', 'esp32c6']);
+  const BLE_BOARDS = new Set(['esp32', 'esp32c3', 'esp32s3', 'esp32c6', 'esp32c5']);
   const bleRequested = config.ble === true || role === 'wearable' || role === 'repeater';
   const bleSupported = BLE_BOARDS.has(board);
   if (bleRequested && board === 'esp32s2') {
@@ -427,8 +429,8 @@ async function findBinary(outDir, sketchName) {
   return anyBin.length ? join(outDir, anyBin[0]) : null;
 }
 
-const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3', esp32c6: 'esp32c6', esp32s2: 'esp32s2' };
-const CHIP_ARCH = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32s2: 5 };
+const CHIP_NAME = { esp32c3: 'esp32c3', esp32: 'esp32', esp32s3: 'esp32s3', esp32c6: 'esp32c6', esp32c5: 'esp32c5', esp32s2: 'esp32s2' };
+const CHIP_ARCH = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32s2: 5, esp32c5: 6 };
 
 /** Р РµРєСѓСЂСЃРёРІРЅС‹Р№ РїРѕРёСЃРє С„Р°Р№Р»Р° (flash_args Р»РµР¶РёС‚ РІРЅСѓС‚СЂРё build-path). */
 async function findFileRecursive(dir, name, depth = 0) {
@@ -624,7 +626,7 @@ async function compileFirmware(config, version) {
     log('build_stage', { board, stage: 'compiling' });
     // Классический ESP32 + BLE (Bluedroid) не помещается в слот 1.75 МБ (103%):
     // берём слоты по 1.875 МБ, LittleFS уменьшается до 192 КБ.
-    const bigSlot = board === 'esp32' && hasBle;
+    const bigSlot = board === 'esp32' && role !== 'gateway';
     const partitionName = board === 'esp32s3'
       ? 'klinto_8mb_ota.csv'
       : bigSlot ? 'klinto_4mb_ota_big.csv' : 'klinto_4mb_ota.csv';

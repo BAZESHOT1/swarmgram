@@ -87,10 +87,10 @@ export function ReviewStep({
         <SummaryRow label="Роль" value={ROLE_LABEL[config.role]} onPress={() => onEditStep(2)} />
         <SummaryRow
           label="Связь"
-          value={config.connectivity === 'wifi_lora' ? 'Wi-Fi mesh + LoRa mesh' : 'Только Wi-Fi mesh'}
+          value={config.connectivity === 'wifi_lora' ? 'Wi-Fi mesh + LoRa mesh' : config.connectivity === 'lora' ? 'Только LoRa mesh' : 'Только Wi-Fi mesh'}
           onPress={() => onEditStep(3)}
         />
-        {config.connectivity === 'wifi_lora' && config.lora ? (
+        {config.connectivity !== 'wifi' && config.lora ? (
           <SummaryRow
             label="LoRa"
             value={`${config.lora.chip.toUpperCase()} · ${config.lora.frequencyMhz} МГц · SF${config.lora.spreadingFactor} · BW${config.lora.bandwidthKhz}`}

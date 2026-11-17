@@ -5,9 +5,10 @@
  */
 import { api, apiBase, ApiError, getSession, type FirmwareBuilderStatus } from '../../data/api';
 
-export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3';
+export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32c5';
 export type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
-export type FirmwareConnectivity = 'wifi' | 'wifi_lora';
+/** wifi — Wi-Fi mesh (ESP-NOW); lora — только LoRa; wifi_lora — оба канала с мостом между ними. */
+export type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
 export type LoraChip = 'sx1278' | 'sx1276' | 'sx1262';
 export type LoraFrequency = 433 | 868 | 915;
 export type LoraBandwidth = 125 | 250 | 500;
@@ -125,6 +126,30 @@ export const BOARDS: BoardPreset[] = [
     batteryPin: 1,
     usbPins: [19, 20],
     strappingPins: [0, 3, 45, 46],
+    inputOnlyPins: [],
+  },
+  {
+    id: 'esp32c6',
+    title: 'ESP32-C6',
+    short: 'C6 · Wi-Fi 6 + BLE 5 · USB-C',
+    description: 'Wi-Fi 6 и BLE 5 с нативным USB. Подходит для носимых модулей, ретрансляторов и шлюзов.',
+    icon: 'hardware-chip-outline',
+    pins: { sck: 6, miso: 5, mosi: 4, cs: 7, rst: 3, dio0: 2, busy: 10 },
+    batteryPin: 0,
+    usbPins: [12, 13],
+    strappingPins: [8, 9, 15],
+    inputOnlyPins: [],
+  },
+  {
+    id: 'esp32c5',
+    title: 'ESP32-C5',
+    short: 'C5 · Wi-Fi 6 (2.4/5 ГГц) + BLE 5',
+    description: 'Двухдиапазонный Wi-Fi 6 и BLE 5. Mesh работает в диапазоне 2.4 ГГц.',
+    icon: 'hardware-chip-outline',
+    pins: { sck: 6, miso: 5, mosi: 4, cs: 7, rst: 3, dio0: 2, busy: 10 },
+    batteryPin: 1,
+    usbPins: [13, 14],
+    strappingPins: [2, 7, 25, 27, 28],
     inputOnlyPins: [],
   },
 ];
@@ -248,7 +273,7 @@ export function checkLoraPins(lora: LoraConfig, board: FirmwareBoard, batteryPin
 }
 
 export function validateConfig(cfg: FirmwareConfig): string | null {
-  if (cfg.connectivity === 'wifi_lora' && cfg.lora) {
+  if (cfg.connectivity !== 'wifi' && cfg.lora) {
     const errors = checkLoraPins(cfg.lora, cfg.board, cfg.battery?.enabled ? cfg.battery.pin : undefined).filter(
       (issue) => issue.kind === 'error',
     );

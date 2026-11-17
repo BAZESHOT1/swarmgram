@@ -19,7 +19,7 @@ import { getMeshConfig } from './network.js';
 
 /* ------------------------------------------------------------- конфиг ----- */
 
-type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3';
+type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32c5';
 type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
 type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
 type LoraChip = 'sx1278' | 'sx1276' | 'sx1262';
@@ -76,7 +76,7 @@ interface FirmwareConfig {
   ota?: boolean;
 }
 
-const BOARDS: FirmwareBoard[] = ['esp32c3', 'esp32', 'esp32s3'];
+const BOARDS: FirmwareBoard[] = ['esp32c3', 'esp32', 'esp32s3', 'esp32c6', 'esp32c5'];
 const ROLES: FirmwareRole[] = ['gateway', 'repeater', 'wearable'];
 const CONNECTIVITY: FirmwareConnectivity[] = ['wifi', 'wifi_lora', 'lora'];
 const LORA_CHIPS: LoraChip[] = ['sx1278', 'sx1276', 'sx1262'];
@@ -84,6 +84,8 @@ const LORA_DEFAULT_PINS: Record<FirmwareBoard, LoraPins & { chip: LoraChip }> = 
   esp32c3: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
   esp32: { sck: 18, miso: 19, mosi: 23, cs: 5, rst: 14, dio0: 26, busy: 27, chip: 'sx1278' },
   esp32s3: { sck: 12, miso: 13, mosi: 11, cs: 10, rst: 9, dio0: 8, busy: 7, chip: 'sx1262' },
+  esp32c6: { sck: 6, miso: 5, mosi: 4, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
+  esp32c5: { sck: 6, miso: 5, mosi: 4, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
 };
 // 869.525 — глобальная частота Klinto; остальные оставлены для
 // совместимости со старым визардом (значение всё равно перезапишет сервер).

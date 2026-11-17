@@ -44,7 +44,8 @@ enum kl_chip_arch_t : uint8_t {
   KL_CHIP_ESP32 = 1,
   KL_CHIP_ESP32C3 = 2,
   KL_CHIP_ESP32S3 = 3,
-  KL_CHIP_ESP32C6 = 4
+  KL_CHIP_ESP32C6 = 4,
+  KL_CHIP_ESP32C5 = 6
 };
 
 /* Битовая маска радио-возможностей в NODE_PRESENCE. */
