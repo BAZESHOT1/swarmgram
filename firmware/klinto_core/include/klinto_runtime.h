@@ -94,6 +94,7 @@ class KlintoNode {
   char hardware_id_[24];
   volatile bool started_;
   uint32_t boot_valid_ms_;
+  bool ota_config_saved_ = false;
 };
 
 #endif  // ESP32

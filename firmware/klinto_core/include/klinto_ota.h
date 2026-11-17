@@ -20,6 +20,8 @@
 #define KL_OTA_NACK_INTERVAL_MS 2000u
 #define KL_OTA_ANNOUNCE_INTERVAL_MS 60000u
 #define KL_OTA_SOURCE_WINDOW_DELAY_MS 1500u
+/** Смена чипа/базы при массовой раздаче: один патч раздаётся 6 минут. */
+#define KL_OTA_SOURCE_ROTATE_MS 360000u
 
 struct kl_ota_manifest_t {
   uint16_t patch_id;
@@ -100,7 +102,11 @@ class KlintoOta {
   void mark_boot_valid();
   /** Источник: начать раздачу (патч уже записан в /ota/patch.bin). */
   bool start_source(const kl_ota_manifest_t &m);
-  void stop_source() { source_ = false; }
+  void stop_source() {
+    source_ = false;
+    has_manifest_ = false;
+    if (has_platform_ && platform_.patch_erase) platform_.patch_erase(platform_.ctx);
+  }
 
  private:
   void set_state(uint8_t s);

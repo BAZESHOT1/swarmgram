@@ -19,6 +19,13 @@ void kl_ota_esp32_mark_valid();
 /** Шлюз: скачать манифест и дельта-патч с Hub в /ota/patch.bin. */
 bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t chip_arch,
                        uint16_t current_build, kl_ota_manifest_t *out);
+/** То же для конкретной платформы (массовый OTA: патчи для C3/S3/C6). */
+bool kl_ota_esp32_sync_chip(const char *hub_url, const char *module_token, const char *chip_name,
+                            uint8_t chip_arch, uint16_t base_build, kl_ota_manifest_t *out);
+/** План OTA для кластера: строки "chip:base_build\n". */
+int kl_ota_esp32_plan(const char *hub_url, const char *module_token, char *out, size_t cap);
+/** Ручной откат: если новая прошивка не подтвердилась за один цикл — вернуть прошлый слот. */
+bool kl_ota_esp32_check_rollback();
 /** Проверка подписи публичным ключом разработчика (ECDSA P-256). */
 bool kl_ota_esp32_verify_pubkey(const uint8_t digest[32], const uint8_t *sig, size_t sig_len);
 #endif

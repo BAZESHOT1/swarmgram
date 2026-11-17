@@ -127,6 +127,19 @@ bool commit_target(void *, const uint8_t sha[32], const kl_ota_manifest_t *m) {
     return false;
   }
   g_ota = 0;
+  /* Ручной откат: запоминаем прошлый слот. Новый образ должен подтвердиться
+   * (mark_valid) в течение первого цикла, иначе следующая загрузка вернёт prev. */
+  {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    Preferences prefs;
+    if (prefs.begin("klinto_ota", false)) {
+      prefs.putUInt("prev", running ? running->address : 0);
+      prefs.putUInt("target", g_target->address);
+      prefs.putUChar("pend", 1);
+      prefs.putUChar("boots", 0);
+      prefs.end();
+    }
+  }
   return esp_ota_set_boot_partition(g_target) == ESP_OK;
 }
 
@@ -139,7 +152,15 @@ void abort_target(void *) {
 
 void reboot(void *) { esp_restart(); }
 
-void mark_valid(void *) { esp_ota_mark_app_valid_cancel_rollback(); }
+void mark_valid(void *) {
+  esp_ota_mark_app_valid_cancel_rollback();
+  Preferences prefs;
+  if (prefs.begin("klinto_ota", false)) {
+    prefs.putUChar("pend", 0);
+    prefs.putUChar("boots", 0);
+    prefs.end();
+  }
+}
 
 }  // namespace
 
@@ -148,6 +169,7 @@ bool kl_ota_esp32_verify_pubkey(const uint8_t digest[32], const uint8_t *sig, si
 }
 
 bool kl_ota_esp32_begin() {
+  kl_ota_esp32_check_rollback();
   if (!LittleFS.begin(true)) return false;
   if (!LittleFS.exists("/ota")) LittleFS.mkdir("/ota");
   return true;
@@ -177,6 +199,47 @@ void kl_ota_esp32_store_build(uint16_t build) {
 }
 
 void kl_ota_esp32_mark_valid() { esp_ota_mark_app_valid_cancel_rollback(); }
+
+bool kl_ota_esp32_check_rollback() {
+  Preferences prefs;
+  if (!prefs.begin("klinto_ota", false)) return false;
+  if (!prefs.getUChar("pend", 0)) {
+    prefs.end();
+    return false;
+  }
+  const uint32_t prev = prefs.getUInt("prev", 0);
+  const uint32_t target = prefs.getUInt("target", 0);
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const uint32_t runAddr = running ? running->address : 0;
+  if (!target || runAddr != target) {
+    /* Мы уже на прошлом слоте (или разметка изменилась) — подтверждение не нужно. */
+    prefs.putUChar("pend", 0);
+    prefs.putUChar("boots", 0);
+    prefs.end();
+    return false;
+  }
+  uint8_t boots = (uint8_t)(prefs.getUChar("boots", 0) + 1);
+  if (boots >= 2 && prev) {
+    const esp_partition_t *candidates[3] = {
+        esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr),
+        esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr),
+        esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr),
+    };
+    for (const esp_partition_t *p : candidates) {
+      if (!p || p->address != prev) continue;
+      if (esp_ota_set_boot_partition(p) == ESP_OK) {
+        prefs.putUChar("pend", 0);
+        prefs.putUChar("boots", 0);
+        prefs.end();
+        esp_restart();
+        return true;
+      }
+    }
+  }
+  prefs.putUChar("boots", boots);
+  prefs.end();
+  return false;
+}
 
 #if KL_HAS_MQTT
 
@@ -238,8 +301,9 @@ int httpGet(const HttpUrl &url, const char *token, char *body, size_t cap) {
   char request[384];
   const int n = snprintf(request, sizeof(request),
                          "GET %s HTTP/1.0\r\nHost: %s\r\nAuthorization: Bearer %s\r\n"
+                         "x-kmesh-key: %s\r\n"
                          "Accept: application/json\r\nConnection: close\r\n\r\n",
-                         url.path, url.host, token ? token : "");
+                         url.path, url.host, token ? token : "", token ? token : "");
   if (n <= 0 || (size_t)n >= sizeof(request)) {
     client->stop();
     return -1;
@@ -430,26 +494,22 @@ bool downloadFull(const HttpUrl &base, const char *token, const char *path, uint
 
 }  // namespace
 
-bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t chip_arch,
-                       uint16_t current_build, kl_ota_manifest_t *out) {
-  if (!hub_url || !module_token || !out) return false;
+bool kl_ota_esp32_sync_chip(const char *hub_url, const char *module_token, const char *chip_name,
+                            uint8_t chip_arch, uint16_t base_build,
+                            kl_ota_manifest_t *out) {
+  if (!hub_url || !module_token || !chip_name || !out) return false;
   HttpUrl url;
   if (!parseHttpUrl(hub_url, &url)) return false;
-  const char *chip_name = chip_arch == 2 ? "esp32c3"
-                          : chip_arch == 3 ? "esp32s3"
-                          : chip_arch == 4 ? "esp32c6"
-                                           : "esp32";
   char path[160];
   snprintf(path, sizeof(path), "/v1/kmesh/v1/ota/latest?chip=%s&base_build=%u", chip_name,
-           (unsigned)current_build);
+           (unsigned)base_build);
   strncpy(url.path, path, sizeof(url.path) - 1);
   char body[1024];
   if (httpGet(url, module_token, body, sizeof(body)) <= 0) return false;
   bool is_full = false;
   (void)kl_json_get_bool(body, "full", &is_full);
-  uint32_t base_build = 0, target_build = 0, total_chunks = 0, patch_size = 0, patch_id = 0;
-  if (!kl_json_get_uint(body, "base_build", &base_build) ||
-      !kl_json_get_uint(body, "target_build", &target_build) ||
+  uint32_t target_build = 0, total_chunks = 0, patch_size = 0, patch_id = 0;
+  if (!kl_json_get_uint(body, "target_build", &target_build) ||
       !kl_json_get_uint(body, "total_chunks", &total_chunks)) {
     return false;
   }
@@ -512,11 +572,33 @@ bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t ch
   return true;
 }
 
+bool kl_ota_esp32_sync(const char *hub_url, const char *module_token, uint8_t chip_arch,
+                       uint16_t current_build, kl_ota_manifest_t *out) {
+  const char *chip = chip_arch == 2 ? "esp32c3"
+                     : chip_arch == 3 ? "esp32s3"
+                     : chip_arch == 4 ? "esp32c6"
+                                      : "esp32";
+  return kl_ota_esp32_sync_chip(hub_url, module_token, chip, chip_arch, current_build, out);
+}
+
+int kl_ota_esp32_plan(const char *hub_url, const char *module_token, char *out, size_t cap) {
+  if (!hub_url || !module_token || !out || cap < 8) return -1;
+  HttpUrl url;
+  if (!parseHttpUrl(hub_url, &url)) return -1;
+  strncpy(url.path, "/v1/kmesh/v1/ota/plan", sizeof(url.path) - 1);
+  return httpGet(url, module_token, out, cap);
+}
+
 #else
 
 bool kl_ota_esp32_sync(const char *, const char *, uint8_t, uint16_t, kl_ota_manifest_t *) {
   return false;
 }
+bool kl_ota_esp32_sync_chip(const char *, const char *, const char *, uint8_t, uint16_t,
+                            kl_ota_manifest_t *) {
+  return false;
+}
+int kl_ota_esp32_plan(const char *, const char *, char *, size_t) { return -1; }
 
 #endif  // KL_HAS_MQTT
 

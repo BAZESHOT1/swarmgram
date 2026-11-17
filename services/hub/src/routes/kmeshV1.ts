@@ -157,6 +157,17 @@ async function mapEntity(entityType: string, entityUuid: string): Promise<number
 
 const CHIP_BY_ARCH: Record<number, string> = { 1: 'esp32', 2: 'esp32c3', 3: 'esp32s3', 4: 'esp32c6' };
 const ARCH_BY_CHIP: Record<string, number> = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4 };
+
+/**
+ * OTA-артефакты подписаны ключом OTA, поэтому их можно отдавать шлюзу по
+ * общему KMesh-ключу (x-kmesh-key) — без module token. Токен модуля тоже
+ * принимается для старых прошивок.
+ */
+async function requireOta(req: FastifyRequest): Promise<void> {
+  const key = String(req.headers['x-kmesh-key'] ?? '').toLowerCase();
+  if (config.tempMeshKey && key === config.tempMeshKey.toLowerCase()) return;
+  await requireModule()(req);
+}
 const ROLE_NAME: Record<number, string> = { 0: 'client', 1: 'hybrid', 2: 'router', 3: 'gateway' };
 const ROLE_BY_NAME: Record<string, number> = { client: 0, hybrid: 1, router: 2, gateway: 3 };
 
@@ -775,6 +786,22 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
            version = COALESCE(NULLIF(EXCLUDED.version, ''), kmesh_v1_gateways.version)`,
         [gatewayId, String(body.version ?? '')],
       );
+      // Телеметрия нужна для OTA-плана: chip_arch/fw_build каждого узла.
+      if (num(body.fw_build) > 0 || num(body.chip_arch) > 0) {
+        await upsertTelemetry({
+          nodeId,
+          gatewayId,
+          chipArch: num(body.chip_arch),
+          nodeRole: num(body.node_role),
+          radioCaps: num(body.radio_caps),
+          fwBuild: num(body.fw_build),
+          otaState: num(body.ota_state),
+          batteryPct: num(body.battery_pct),
+          hops: num(body.hops),
+          rssi: num(body.rssi),
+          ownerNetId: num(body.owner_net_id),
+        });
+      }
       // Узел вернулся: отдаём ему не доставленные ранее пакеты.
       await query(
         `UPDATE kmesh_v1_downlink
@@ -1564,7 +1591,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, id: contractId, status: 'cancelled' });
   });
 
-  /* --------------------------------------------- OTA для шлюзов ---------- */  app.get('/kmesh/v1/ota/latest', { onRequest: [requireModule()] }, async (req, reply) => {
+  /* --------------------------------------------- OTA для шлюзов ---------- */  app.get('/kmesh/v1/ota/latest', { onRequest: [requireOta] }, async (req, reply) => {
     const q = req.query as { chip?: string; base_build?: string; current_build?: string };
     const chip = String(q.chip ?? '').toLowerCase();
     if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');
@@ -1642,7 +1669,23 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.get('/kmesh/v1/ota/patch/:id', { onRequest: [requireModule()] }, async (req, reply) => {
+  /** Какие пары (chip, base_build) сейчас реально нужны кластеру — для OTA-плана. */
+  app.get('/kmesh/v1/ota/plan', { onRequest: [requireOta] }, async (_req, reply) => {
+    const rows = await query<{ chip_arch: number; fw_build: number }>(
+      `SELECT DISTINCT t.chip_arch::int AS chip_arch, t.fw_build::int AS fw_build
+         FROM kmesh_nodes_telemetry t
+         JOIN kmesh_v1_presence p ON p.node_id = t.node_id AND p.expires_at > now()
+        WHERE t.chip_arch BETWEEN 1 AND 4 AND t.fw_build > 0
+        ORDER BY 1, 2
+        LIMIT 16`,
+    );
+    const lines = rows
+      .map((r) => `${CHIP_BY_ARCH[r.chip_arch] ?? ''}:${r.fw_build}`)
+      .filter((line) => !line.startsWith(':'));
+    return reply.header('content-type', 'text/plain').send(lines.join('\n'));
+  });
+
+  app.get('/kmesh/v1/ota/patch/:id', { onRequest: [requireOta] }, async (req, reply) => {
     const id = Number((req.params as { id?: string }).id);
     if (!Number.isInteger(id) || id <= 0) throw badRequest('invalid_patch_id');
     const row = await one<{ patch: Buffer; patch_sha256: string; patch_size: number }>(
@@ -1657,7 +1700,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       .send(Buffer.from(row.patch));
   });
 
-  app.get('/kmesh/v1/ota/full/:chip/:build', { onRequest: [requireModule()] }, async (req, reply) => {
+  app.get('/kmesh/v1/ota/full/:chip/:build', { onRequest: [requireOta] }, async (req, reply) => {
     const chip = String((req.params as { chip?: string }).chip ?? '').toLowerCase();
     const build = Number((req.params as { build?: string }).build);
     if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');

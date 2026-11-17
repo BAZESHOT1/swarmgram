@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "klinto_codec.h"
 #include "klinto_platform_esp32.h"
@@ -745,6 +746,12 @@ void KlintoNode::meshTaskEntry(void *arg) {
       self->ota_.mark_boot_valid();
       kl_ota_esp32_store_build((uint16_t)KL_FIRMWARE_BUILD);
     }
+    /* Перед перезагрузкой после OTA сохраняем конфиг (Wi-Fi, владелец,
+     * распиновка/тип) в NVS: OTA пишет только app-раздел, но фиксируем явно. */
+    if (self->ota_.state() == KL_OTA_PENDING_REBOOT && !self->ota_config_saved_) {
+      self->ota_config_saved_ = true;
+      kl_config_save_nvs(&self->cfg_);
+    }
     vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
@@ -763,20 +770,71 @@ void KlintoNode::clientTaskEntry(void *arg) {
 void KlintoNode::gatewayTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
   uint32_t next_ota_check = 0;
+  uint32_t source_started = 0;
   for (;;) {
     const uint32_t now = kl_uptime_ms();
     self->gateway_.loop(now);
+
+    /* Раздача одного патча не должна длиться вечно: ротация по кластерам. */
+    if (self->ota_.source_active() && source_started && now - source_started > KL_OTA_SOURCE_ROTATE_MS) {
+      self->ota_.stop_source();
+      source_started = 0;
+      next_ota_check = 0;
+    }
+
     if (!self->ota_.source_active() && (next_ota_check == 0 || now >= next_ota_check)) {
       next_ota_check = now + 300000u;
       const char *url = strncmp(self->cfg_.hub_url, "http", 4) == 0
                             ? self->cfg_.hub_url
                             : "http://150.251.143.212:8080";
-      kl_ota_manifest_t manifest;
-      if (kl_ota_esp32_sync(url, self->cfg_.module_token, (uint8_t)KL_CHIP_ARCH,
-                            (uint16_t)KL_FIRMWARE_BUILD, &manifest)) {
-        self->ota_.start_source(manifest);
-        Serial.printf("[klinto] ota source build=%u patch=%lu\n",
-                      (unsigned)manifest.target_build, (unsigned long)manifest.patch_size);
+      char token[80] = {0};
+      if (self->cfg_.module_token[0]) {
+        strncpy(token, self->cfg_.module_token, sizeof(token) - 1);
+      } else if (self->cfg_.has_temp_key) {
+        kl_hex_encode(self->cfg_.temp_mesh_key, 32, token, sizeof(token), false);
+      }
+      if (token[0]) {
+        kl_ota_manifest_t manifest;
+        bool started = false;
+        if (kl_ota_esp32_sync(url, token, (uint8_t)KL_CHIP_ARCH, (uint16_t)KL_FIRMWARE_BUILD,
+                              &manifest) &&
+            self->ota_.start_source(manifest)) {
+          source_started = now;
+          started = true;
+          Serial.printf("[klinto] ota source chip=%u build=%u patch=%lu\n",
+                        (unsigned)KL_CHIP_ARCH, (unsigned)manifest.target_build,
+                        (unsigned long)manifest.patch_size);
+        }
+        /* Массовый OTA: патчи для других чипов кластера (C3/S3/C6). */
+        char plan[512];
+        if (!started && kl_ota_esp32_plan(url, token, plan, sizeof(plan)) > 0) {
+          char *save = nullptr;
+          for (char *line = strtok_r(plan, "\r\n", &save); line;
+               line = strtok_r(nullptr, "\r\n", &save)) {
+            char *colon = strchr(line, ':');
+            if (!colon) continue;
+            *colon = '\0';
+            const char *chip = line;
+            const int base = atoi(colon + 1);
+            const uint8_t arch = !strcmp(chip, "esp32c3") ? 2
+                                 : !strcmp(chip, "esp32s3") ? 3
+                                 : !strcmp(chip, "esp32c6") ? 4
+                                 : !strcmp(chip, "esp32")    ? 1
+                                                             : 0;
+            if (!arch || base <= 0) continue;
+            if (arch == (uint8_t)KL_CHIP_ARCH && (uint16_t)base == (uint16_t)KL_FIRMWARE_BUILD) {
+              continue;
+            }
+            kl_ota_manifest_t other;
+            if (kl_ota_esp32_sync_chip(url, token, chip, arch, (uint16_t)base, &other) &&
+                self->ota_.start_source(other)) {
+              source_started = now;
+              Serial.printf("[klinto] ota source chip=%s base=%d build=%u patch=%lu\n", chip,
+                            base, (unsigned)other.target_build, (unsigned long)other.patch_size);
+              break;
+            }
+          }
+        }
       }
     }
     vTaskDelay(pdMS_TO_TICKS(100));
