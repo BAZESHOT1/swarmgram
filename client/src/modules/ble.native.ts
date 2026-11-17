@@ -844,6 +844,7 @@ export class NativeBleTransport implements ModuleConnection {
   private writeBytes(
     frame: Uint8Array,
     onProgress?: (sent: number, total: number) => void,
+    withoutResponse = false,
   ): Promise<void> {
     const run = async (): Promise<void> => {
       const deviceId = this.deviceId;
@@ -853,15 +854,22 @@ export class NativeBleTransport implements ModuleConnection {
       const chunkSize = 20;
       for (let offset = 0; offset < frame.length; offset += chunkSize) {
         const chunk = frame.slice(offset, offset + chunkSize);
-        await manager().writeCharacteristicWithResponseForDevice(
-          deviceId,
-          BLE_UUIDS.service,
-          BLE_UUIDS.rx,
-          bytesToBase64(chunk),
-        );
+        // Для KMesh используем write-without-response: на Android
+        // write-with-response на 5-м чанке большого кадра зависает.
+        await (withoutResponse
+          ? manager().writeCharacteristicWithoutResponseForDevice(
+              deviceId,
+              BLE_UUIDS.service,
+              BLE_UUIDS.rx,
+              bytesToBase64(chunk),
+            )
+          : manager().writeCharacteristicWithResponseForDevice(
+              deviceId,
+              BLE_UUIDS.service,
+              BLE_UUIDS.rx,
+              bytesToBase64(chunk),
+            ));
         onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
-        // Модуль обрабатывает write в GATT-колбэке; без паузы 5-й чанк
-        // большого кадра зависает (service RPC из 2 чанков проходят).
         if (offset + chunkSize < frame.length) await delay(24);
       }
     };
@@ -878,7 +886,7 @@ export class NativeBleTransport implements ModuleConnection {
   ): Promise<boolean> {
     if (!this.isOpen) return false;
     try {
-      await this.writeBytes(frame, onProgress);
+      await this.writeBytes(frame, onProgress, true);
       return true;
     } catch {
       return false;
