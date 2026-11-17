@@ -58,6 +58,19 @@ void KlintoClientBridge::log_line(const char *fmt, ...) {
   sink_.log(sink_.ctx, line);
 }
 
+void KlintoClientBridge::dbg_line(const char *fmt, ...) {
+  char line[sizeof(dbg_text_)];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(line, sizeof(line), fmt, ap);
+  va_end(ap);
+  if (sink_.log) sink_.log(sink_.ctx, line);
+  if (!link_ || !link_->connected() || dbg_pending_) return;
+  strncpy(dbg_text_, line, sizeof(dbg_text_) - 1);
+  dbg_text_[sizeof(dbg_text_) - 1] = '\0';
+  dbg_pending_ = true;
+}
+
 bool KlintoClientBridge::send_frame(uint8_t type, const uint8_t *payload, size_t len, uint8_t flags) {
   if (!link_ || !link_->connected()) return false;
   KlintoGuard guard(tx_lock_);
@@ -402,9 +415,11 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
   const uint8_t *rpc = payload + KL_CLIENT_UP_HEADER;
   const size_t rpc_len = len - KL_CLIENT_UP_HEADER;
   if (!rpc_len || rpc_len > KL_MAX_TEXT + 8) {
+    dbg_line("[rpc] reject len=%u", (unsigned)rpc_len);
     status(uuid, 0, KL_STATUS_FAILED);
     return;
   }
+  dbg_line("[rpc] rx len=%u op=%u", (unsigned)rpc_len, (unsigned)rpc[0]);
 
   /* Re-encode text through Unishox2 (compression always precedes crypto). */
   uint8_t plain[KL_MAX_PAYLOAD];
@@ -412,6 +427,7 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
   uint8_t op = 0, rflags = 0;
   uint16_t chat_ref = KL_CODEC_NO_CHAT;
   if (!kl_codec_peek(rpc, rpc_len, &op, &rflags, &chat_ref)) {
+    dbg_line("[rpc] peek fail");
     status(uuid, 0, KL_STATUS_FAILED);
     return;
   }
@@ -470,14 +486,15 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
     pkt.flags = (uint8_t)(pkt.flags & ~KL_FLAG_TEMP_MESH_KEY);
 #else
     log_line("mesh temp key is not provisioned; refusing to send");
+    dbg_line("[rpc] no temp key");
     status(pkt.msg_uuid, pkt.packet_id, KL_STATUS_FAILED);
     return;
 #endif
   }
 
   const bool sent = router_->send(&pkt, kl_uptime_ms(), 0xFF, true);
-  log_line("[TRACE 1b] send op=%u dst=%lu ok=%u len=%u flags=%02x", (unsigned)op,
-           (unsigned long)dst, sent ? 1u : 0u, (unsigned)pkt.payload_len, (unsigned)pkt.flags);
+  dbg_line("[rpc] send ok=%u plen=%u dst=%lu", sent ? 1u : 0u, (unsigned)pkt.payload_len,
+           (unsigned long)dst);
   if (sent) {
     status(pkt.msg_uuid, pkt.packet_id, KL_STATUS_QUEUED);
   } else {
@@ -665,6 +682,11 @@ void KlintoClientBridge::loop(uint32_t now_ms) {
     last_flush_ms_ = now_ms;
     flush_statuses();
     flush_outbox();
+    if (dbg_pending_) {
+      if (send_frame(KL_CF_LOG, (const uint8_t *)dbg_text_, strlen(dbg_text_))) {
+        dbg_pending_ = false;
+      }
+    }
   }
   for (int i = 0; i < 2; ++i) {
     if (frags_[i].used && now_ms - frags_[i].started_ms > 15000) frags_[i].used = false;

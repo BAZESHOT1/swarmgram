@@ -14,6 +14,23 @@ type MeshListener = (envelope: Envelope) => void;
 let sender: MeshSender | null = null;
 let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
+/** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
+const pendingV1: Array<{ chatId: string; text: string; clientId?: string }> = [];
+
+async function flushV1Queue(): Promise<void> {
+  if (!v1Sender) return;
+  while (pendingV1.length) {
+    const item = pendingV1[0];
+    try {
+      const ok = await v1Sender(item.chatId, item.text, item.clientId);
+      if (!ok) break;
+      pendingV1.shift();
+      console.log('[kmesh]', 'queued text sent', item.chatId);
+    } catch {
+      break;
+    }
+  }
+}
 
 /** Возможности mesh на текущем подключении (для политики трафика). */
 let capabilities = { connected: false, gateway: false, queue: 0, neighbors: 0 };
@@ -39,10 +56,11 @@ export function setMeshSender(next: MeshSender | null): void {
 /** Бинарный KMesh_v1: приоритетнее legacy-конвертов. */
 export function setMeshV1Sender(next: MeshV1Sender | null): void {
   v1Sender = next;
+  if (next) void flushV1Queue();
 }
 
 export function canSendViaMesh(): boolean {
-  return sender !== null || v1Sender !== null;
+  return sender !== null || v1Sender !== null || pendingV1.length > 0;
 }
 
 /** Отправка текста только через KMesh_v1 (без legacy-конверта). */
@@ -51,11 +69,24 @@ export async function sendTextViaMesh(
   text: string,
   clientId?: string,
 ): Promise<boolean> {
-  if (!v1Sender || !text) return false;
+  if (!text) return false;
+  if (!v1Sender) {
+    // Модуль переподключается: не теряем сообщение, отправим после connect.
+    pendingV1.push({ chatId, text, clientId });
+    console.log('[kmesh]', 'text queued until module connects', chatId);
+    return true;
+  }
   try {
-    return await v1Sender(chatId, text, clientId);
-  } catch {
-    return false;
+    const ok = await v1Sender(chatId, text, clientId);
+    if (!ok) {
+      pendingV1.push({ chatId, text, clientId });
+      return true;
+    }
+    return true;
+  } catch (error) {
+    console.warn('[kmesh]', 'sendTextViaMesh failed', String(error));
+    pendingV1.push({ chatId, text, clientId });
+    return true;
   }
 }
 
@@ -64,12 +95,9 @@ export async function sendViaMesh(chatId: string, envelope: unknown): Promise<bo
   const item = (envelope ?? {}) as { text?: unknown; kind?: unknown; clientId?: unknown };
   const text = typeof item.text === 'string' ? item.text : '';
   const clientId = typeof item.clientId === 'string' ? item.clientId : undefined;
-  if (v1Sender && text) {
-    try {
-      if (await v1Sender(chatId, text, clientId)) return true;
-    } catch {
-      /* падаем в legacy-путь ниже */
-    }
+  if (text) {
+    // Тексты всегда идут бинарным KMesh_v1; при отсутствии модуля — в очередь.
+    return sendTextViaMesh(chatId, text, clientId);
   }
   if (!sender) return false;
   try {

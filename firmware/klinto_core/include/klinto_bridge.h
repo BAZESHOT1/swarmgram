@@ -120,6 +120,10 @@ class KlintoClientBridge {
   uint32_t last_info_ms_ = 0;
   void flush_outbox();
   void log_line(const char *fmt, ...);
+  /** Точечная диагностика RPC: несколько строк на сообщение, без потока логов. */
+  void dbg_line(const char *fmt, ...);
+  char dbg_text_[160] = {0};
+  volatile bool dbg_pending_ = false;
 
   struct FragSlot {
     bool used;

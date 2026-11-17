@@ -221,6 +221,7 @@ export async function sendMessage(
   const transportState = useStore.getState();
   const online = transportState.transportOnline === true;
   const meshAvailable = canSendViaMesh();
+  console.log('[msg]', 'send', { chatId, kind, online, meshAvailable, known: transportState.transportKnown, text: typeof payload.text === 'string' && payload.text.length });
   // Транспорт уже точно офлайн — HTTP не пробуем вовсе, сразу mesh/outbox.
   const skipHttp = transportState.transportKnown === true && !online;
   const httpStartedAt = Date.now();
@@ -230,6 +231,7 @@ export async function sendMessage(
   if (skipHttp && meshAvailable && kind === 'text' && typeof payload.text === 'string' && payload.text) {
     const createdAt = new Date().toISOString();
     const sent = await sendTextViaMesh(chatId, payload.text, clientId);
+    console.log('[msg]', 'offline fast path', { sent, chatId });
     if (sent) {
       return {
         id: clientId,
@@ -384,6 +386,7 @@ export async function sendMessage(
     void e;
     // Нет интернета, но подключён модуль — отдаём шифротекст в USB/BLE mesh.
     const viaMesh = await sendViaMesh(chatId, item);
+    console.log('[msg]', 'http failed, via mesh', { viaMesh, chatId });
     if (viaMesh) {
       // Оставляем сообщение в очереди: получатель уже увидел его через mesh,
       // но Hub ещё не знает о нём. При появлении интернета оно уйдёт на сервер
