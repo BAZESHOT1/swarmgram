@@ -3,6 +3,9 @@
  * РїРµСЂСЃРёСЃС‚ С‚РµРјС‹ Рё СЃРµСЃСЃРёРё.
  */
 import 'react-native-get-random-values';
+import { installAppLog } from '../src/debug/appLog';
+
+installAppLog();
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';

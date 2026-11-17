@@ -59,6 +59,7 @@ export default function AppLayout() {
         <Stack.Screen name="settings/security" />
         <Stack.Screen name="settings/privacy" />
         <Stack.Screen name="settings/about" />
+        <Stack.Screen name="settings/logs" />
         <Stack.Screen name="modules" />
         <Stack.Screen name="firmware" />
         <Stack.Screen name="nodes" />

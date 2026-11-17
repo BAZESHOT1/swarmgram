@@ -1,6 +1,6 @@
 /**
  * Главный экран настроек: только карточка профиля, поиск и строки-разделы.
- * Порядок: Профиль → Уведомления и звук → Внешний вид → Приватность →
+ * Порядок: Профиль → Модули → Уведомления и звук → Внешний вид → Приватность →
  * Безопасность → Сеть → О приложении → Выйти из аккаунта.
  */
 import React from 'react';
@@ -39,6 +39,15 @@ interface SectionRow {
   keywords: string[];
 }
 
+const MODULES_ROW: SectionRow = {
+  key: 'modules',
+  icon: 'hardware-chip-outline',
+  title: 'Модули',
+  subtitle: 'Карта сети, подключение, прошивка',
+  route: '/modules',
+  keywords: ['модули', 'esp32', 'ble', 'bluetooth', 'usb', 'прошивка', 'карта', 'mesh', 'носимый', 'шлюз'],
+};
+
 const SECTION_ROWS: SectionRow[] = [
   {
     key: 'notifications',
@@ -73,14 +82,6 @@ const SECTION_ROWS: SectionRow[] = [
     keywords: ['безопасность', 'пароль', 'сессии', 'устройства', 'удаление', 'аккаунт'],
   },
   {
-    key: 'modules',
-    icon: 'hardware-chip-outline',
-    title: 'Модули',
-    subtitle: 'Карта сети, подключение, прошивка',
-    route: '/modules',
-    keywords: ['модули', 'esp32', 'ble', 'bluetooth', 'usb', 'прошивка', 'карта', 'mesh', 'носимый', 'шлюз'],
-  },
-  {
     key: 'network',
     icon: 'server-outline',
     title: 'Сеть',
@@ -92,9 +93,9 @@ const SECTION_ROWS: SectionRow[] = [
     key: 'about',
     icon: 'information-circle-outline',
     title: 'О приложении',
-    subtitle: 'Версия, лицензии, политика, шифрование',
+    subtitle: 'Версия, лицензии, политика, журнал',
     route: '/settings/about',
-    keywords: ['о приложении', 'версия', 'лицензии', 'политика', 'конфиденциальность', 'о проекте', 'шифрование'],
+    keywords: ['о приложении', 'версия', 'лицензии', 'политика', 'конфиденциальность', 'о проекте', 'журнал', 'логи', 'лог'],
   },
 ];
 
@@ -136,8 +137,11 @@ export default function SettingsScreen() {
     (row) => match(row.title, row.subtitle, ...row.keywords) && (row.key !== 'network' || hasNetworkAccess(me.data)),
   );
 
+  const modulesVisible = match(MODULES_ROW.title, MODULES_ROW.subtitle, ...MODULES_ROW.keywords);
+
   const anyVisible =
     profileVisible ||
+    modulesVisible ||
     adminVisible ||
     logoutVisible ||
     visibleRows.length > 0;
@@ -238,6 +242,20 @@ export default function SettingsScreen() {
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={theme.textDisabled} />
                   </PressableScale>
+                </GlassCard>
+              </SettingsSection>
+            ) : null}
+
+            {/* ----------------------------------- модули под профилем ---- */}
+            {modulesVisible ? (
+              <SettingsSection title="Модули" delay={20}>
+                <GlassCard>
+                  <SettingsRow
+                    icon={MODULES_ROW.icon}
+                    title={MODULES_ROW.title}
+                    subtitle={MODULES_ROW.subtitle}
+                    onPress={() => go(MODULES_ROW.route)}
+                  />
                 </GlassCard>
               </SettingsSection>
             ) : null}

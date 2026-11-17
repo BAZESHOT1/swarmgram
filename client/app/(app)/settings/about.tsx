@@ -1,5 +1,5 @@
 /**
- * «О приложении»: версия, лицензии, политика и сведения о шифровании.
+ * «О приложении»: версия, лицензии, политика и журнал приложения.
  * Выход из аккаунта живёт на главной странице настроек.
  */
 import React from 'react';
@@ -49,7 +49,7 @@ export default function AboutScreen() {
   const infoData = info ? INFO[info] : null;
 
   return (
-    <SettingsPage title="О приложении" subtitle="Версия, правовая информация и шифрование">
+    <SettingsPage title="О приложении" subtitle="Версия, правовая информация и журнал">
       <SettingsSection title="Klinto" delay={0}>
         <GlassCard>
           <SettingsRow icon="layers-outline" title="Версия" subtitle="Beta-сборка" right={<Text style={[styles.mono, { color: theme.textSecondary }]}>{VERSION}</Text>} />
@@ -71,6 +71,12 @@ export default function AboutScreen() {
             subtitle="Зачем нужен Klinto"
             onPress={() => setInfo('project')}
           />
+          <SettingsRow
+            icon="bug-outline"
+            title="Журнал приложения"
+            subtitle="Логи BLE, KMesh и модуля для диагностики"
+            onPress={() => router.push('/settings/logs' as never)}
+          />
           {isAdmin ? (
             <SettingsRow
               icon="shield-checkmark-outline"
@@ -79,27 +85,6 @@ export default function AboutScreen() {
               onPress={() => router.push('/admin' as never)}
             />
           ) : null}
-        </GlassCard>
-      </SettingsSection>
-
-      <SettingsSection title="Шифрование" delay={60}>
-        <GlassCard>
-          <SettingsRow
-            icon="chatbubble-ellipses-outline"
-            title="Обычные чаты"
-            subtitle="Серверный ключ: история синхронизируется между устройствами"
-          />
-          <SettingsRow
-            icon="key-outline"
-            title="Секретные чаты"
-            subtitle="E2E: ключ только на устройствах участников, сервер не расшифровывает"
-          />
-          <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
-            <Text style={{ color: theme.textDisabled, fontSize: 11.5, lineHeight: 17 }}>
-              Резерв ключей шифруется паролем на устройстве (PBKDF2 + AES-GCM) и хранится на Hub только в виде
-              зашифрованного блоба.
-            </Text>
-          </View>
         </GlassCard>
       </SettingsSection>
 
