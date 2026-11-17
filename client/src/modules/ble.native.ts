@@ -231,6 +231,8 @@ export class NativeBleTransport implements ModuleConnection {
   /** KMesh_v1 использует тот же GATT, но собственный бинарный протокол. */
   readonly rawLink = {
     send: (bytes: Uint8Array) => this.sendRaw(bytes),
+    sendProgress: (bytes: Uint8Array, onProgress: (sent: number, total: number) => void) =>
+      this.sendRawProgress(bytes, onProgress),
     onData: (callback: (chunk: Uint8Array) => void) => this.onRaw(callback),
   };
 
@@ -839,7 +841,10 @@ export class NativeBleTransport implements ModuleConnection {
   }
 
   /** Сырая запись байтов в RX-характеристику (без A5 5A-конверта). */
-  private writeBytes(frame: Uint8Array): Promise<void> {
+  private writeBytes(
+    frame: Uint8Array,
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<void> {
     const run = async (): Promise<void> => {
       const deviceId = this.deviceId;
       if (!deviceId || this.closing) {
@@ -854,12 +859,27 @@ export class NativeBleTransport implements ModuleConnection {
           BLE_UUIDS.rx,
           bytesToBase64(chunk),
         );
+        onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
       }
     };
     const next = this.writeChain.then(run, run);
     // Ошибку одного кадра не тащим в очередь следующих запросов.
     this.writeChain = next.catch(() => undefined);
     return next;
+  }
+
+  /** KMesh_v1 с прогрессом: отправлено байт из общего размера кадра. */
+  async sendRawProgress(
+    frame: Uint8Array,
+    onProgress: (sent: number, total: number) => void,
+  ): Promise<boolean> {
+    if (!this.isOpen) return false;
+    try {
+      await this.writeBytes(frame, onProgress);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Чанк ровно 20 байт — как в web, чтобы не упираться в длинные write на iOS. */

@@ -98,6 +98,8 @@ export interface ModuleConnection {
   /** Сырой бинарный канал того же GATT: используется KMesh_v1. */
   rawLink?: {
     send(bytes: Uint8Array): Promise<boolean>;
+    /** Запись с прогрессом: отправлено байт из общего размера кадра. */
+    sendProgress?(bytes: Uint8Array, onProgress: (sent: number, total: number) => void): Promise<boolean>;
     onData(callback: (chunk: Uint8Array) => void): () => void;
   };
   /** Подписка на разрыв связи; возвращает функцию отписки. */

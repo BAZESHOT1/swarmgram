@@ -25,6 +25,7 @@ import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { requireAdmin } from '../auth.js';
 import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, type OtaManifest } from '../ota.js';
 import { moduleMod6, normalizeModuleMac, userNetIdentityFromUuid, fnv1a32 } from '../meshId.js';
+import { getOrCreateServerKey } from './chats.js';
 import {
   buildPacket,
   crc16,
@@ -33,6 +34,8 @@ import {
   decodeSearchRequest,
   decodeTextRpc,
   decodeEnvelopeRpc,
+  decodeChatKeyRequest,
+  encodeChatKeyResponse,
   encodeFeedResponse,
   encodeHistoryResponse,
   encodeSearchResponse,
@@ -424,6 +427,35 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!userId) return false;
     const target = await nodeForUser(userId);
     if (!target) return false;
+
+    if (prefix.op === RpcOp.CHAT_KEY_REQ) {
+      const req = decodeChatKeyRequest(plain);
+      if (!req) return false;
+      const chat = await one<{ encryption: string }>(
+        'SELECT encryption FROM chats WHERE id = $1',
+        [req.chatId],
+      );
+      if (!chat || chat.encryption === 'e2e') return false;
+      const member = await one(
+        'SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
+        [req.chatId, userId],
+      );
+      if (!member) return false;
+      const serverKey = await getOrCreateServerKey(req.chatId);
+      if (!serverKey) return false;
+      const resp = encodeChatKeyResponse(
+        req.chatRef,
+        serverKey.version,
+        Buffer.from(serverKey.key, 'base64'),
+      );
+      return queuePacket({
+        gatewayId: target.gatewayId || gatewayId,
+        dstNodeId: target.nodeId,
+        srcNodeId: gatewayId,
+        msgUuid: randomU64(),
+        rpc: resp,
+      });
+    }
 
     if (prefix.op === RpcOp.SEARCH_REQ) {
       const req = decodeSearchRequest(plain);

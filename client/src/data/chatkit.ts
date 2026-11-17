@@ -213,6 +213,18 @@ export async function getServerChatKey(chatId: string, version?: number): Promis
   return { key: raw, version: res.version };
 }
 
+/** Сохранить постоянный ключ серверного чата, полученный по KMesh. */
+export async function storeServerChatKey(
+  chatId: string,
+  version: number,
+  key: Uint8Array,
+): Promise<void> {
+  serverKeyCache.set(`${chatId}:${version}`, key);
+  currentVersionCache.set(chatId, { version, fetchedAt: Date.now() });
+  await kv.set(`sg:chat-key:${chatId}:${version}`, toB64u(key)).catch(() => undefined);
+  await kv.set(`sg:chat-key-current:${chatId}`, String(version)).catch(() => undefined);
+}
+
 /** Ключ серверного чата только из локального кэша (без сети). */
 export async function peekServerChatKey(chatId: string): Promise<Uint8Array | null> {
   try {

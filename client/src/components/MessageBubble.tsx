@@ -320,6 +320,9 @@ export function MessageBubble({
   }, [item.mine, item.delivered, reduced, confirmAnim]);
 
   const previewUri = localPreview ?? cachedPreview;
+  const kmeshTotal = (item as { kmeshTotal?: number }).kmeshTotal;
+  const kmeshSent = (item as { kmeshSent?: number }).kmeshSent;
+  const kmeshLabel = (item as { kmeshLabel?: string }).kmeshLabel;
   const uploading = item.mine && item.pending && (uploadStage != null || (uploadProgress != null && uploadProgress < 1));
   const progressPct = Math.round(Math.max(0, Math.min(1, uploadProgress ?? 0)) * 100);
   const asChannel = Boolean(ext.asChannel || asChannelTitle);
@@ -505,6 +508,31 @@ export function MessageBubble({
                   { width: `${Math.max(4, progressPct)}%`, backgroundColor: item.mine ? theme.onAccent : theme.accent },
                 ]}
               />
+            </View>
+          ) : null}
+
+          {/* KMesh: байты кадра и статус подтверждения */}
+          {item.mine && item.pending && kmeshTotal ? (
+            <View style={{ marginTop: 5, gap: 3 }}>
+              <View
+                style={[
+                  styles.progressTrack,
+                  { backgroundColor: item.mine ? 'rgba(0,0,0,0.18)' : theme.line },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.max(4, Math.min(100, Math.round(((kmeshSent ?? 0) / kmeshTotal) * 100)))}%`,
+                      backgroundColor: item.mine ? theme.onAccent : theme.accent,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={{ fontSize: 9.5, fontWeight: '600', color: item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary }}>
+                {kmeshLabel ?? 'Отправка…'} · {Math.min(kmeshSent ?? 0, kmeshTotal)}/{kmeshTotal} Б
+              </Text>
             </View>
           ) : null}
 

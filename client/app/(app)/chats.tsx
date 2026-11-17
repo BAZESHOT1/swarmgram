@@ -1693,7 +1693,7 @@ export default function ChatsScreen() {
     [],
   );
   return (
-    <View style={{ flex: 1, backgroundColor: '#000000' }} onTouchStart={onScreenTouch}>
+    <View style={{ flex: 1, backgroundColor: theme.background }} onTouchStart={onScreenTouch}>
       <View style={styles.header}>
         {/* Пока список вверху и есть закреплённые чаты — шапка лежит
             на той же серой подложке, что и блок «Закреплённые». */}
@@ -1707,7 +1707,7 @@ export default function ChatsScreen() {
           />
         ) : null}
         <Reanimated.View style={[styles.headerTitle, headerTitleStyle]}>
-          <Text style={styles.headerTitleText}>Чаты</Text>
+          <Text style={[styles.headerTitleText, { color: theme.textPrimary }]}>Чаты</Text>
         </Reanimated.View>
         <View
           ref={searchHostRef}
@@ -1823,7 +1823,7 @@ export default function ChatsScreen() {
           from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -10, scale: 0.99 }}
           animate={{ opacity: 1, translateY: 0, scale: 1 }}
           transition={reduced ? { type: 'timing', duration: 0 } : motion.quick}
-          style={styles.searchOverlay}
+          style={[styles.searchOverlay, { backgroundColor: theme.background }]}
         >
         <SearchResults
           theme={theme}
@@ -2958,7 +2958,6 @@ const styles = StyleSheet.create({
     top: 56,
     bottom: -160,
     zIndex: 60,
-    backgroundColor: '#000000',
     paddingHorizontal: 16,
     paddingTop: 2,
   },

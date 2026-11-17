@@ -17,27 +17,32 @@ export function ModuleAutoBanner() {
   const insets = useSafeAreaInsets();
   const connection = useModuleConnection();
   const auto = connection.autoModule;
+  const last = React.useRef(auto);
+  if (auto) last.current = auto;
+  const data = auto ?? last.current;
+  const [render, setRender] = React.useState(Boolean(auto));
+  React.useEffect(() => {
+    if (auto) {
+      setRender(true);
+      return undefined;
+    }
+    const timer = setTimeout(() => setRender(false), 240);
+    return () => clearTimeout(timer);
+  }, [auto]);
 
-  if (!auto) return null;
+  if (!render || !data) return null;
 
-  const connecting = auto.phase === 'connecting';
-  const connected = auto.phase === 'connected';
-  const failed = auto.phase === 'failed';
-
-  const title = connected
-    ? 'Модуль подключён'
-    : failed
-      ? 'Не удалось подключить'
-      : connecting
-        ? 'Подключение модуля'
-        : 'Найден модуль Klinto';
+  const connected = data.phase === 'connected';
+  const connecting = data.phase === 'connecting';
+  const failed = data.phase === 'failed';
+  const title = connected ? 'Модуль подключён' : failed ? 'Не удалось подключить' : connecting ? 'Подключение модуля' : 'Найден модуль Klinto';
 
   return (
     <MotiView
       pointerEvents="box-none"
-      from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -16 }}
-      animate={{ opacity: 1, translateY: 0 }}
-      transition={reduced ? { type: 'timing', duration: 0 } : { type: 'timing', duration: 180 }}
+      from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -34 }}
+      animate={{ opacity: auto ? 1 : 0, translateY: auto ? 0 : -34 }}
+      transition={reduced ? { type: 'timing', duration: 0 } : { type: 'timing', duration: 220 }}
       style={{
         position: 'absolute',
         top: insets.top + 8,
@@ -89,8 +94,8 @@ export function ModuleAutoBanner() {
               {title}
             </Text>
             <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 1 }} numberOfLines={1}>
-              {auto.name}
-              {auto.isMine ? ' · ваш модуль' : ' · не привязан к аккаунту'}
+              {data.name}
+              {data.isMine ? ' · ваш модуль' : ' · не привязан к аккаунту'}
             </Text>
           </View>
         </View>
@@ -112,7 +117,7 @@ export function ModuleAutoBanner() {
 
         {failed ? (
           <Text style={{ color: theme.danger, fontSize: 11.5, lineHeight: 16 }} numberOfLines={3}>
-            {auto.error ?? 'Проверьте, что модуль включён и находится рядом.'}
+            {data.error ?? 'Проверьте, что модуль включён и находится рядом.'}
           </Text>
         ) : null}
 

@@ -23,11 +23,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const wide = useIsWide();
   const theme = useTheme();
   const pathname = usePathname();
+  void pathname;
   useBodyBackground();
-  // «Чаты» — тёмный экран; светлая рамка каркаса вокруг него выглядела как
-  // второй, дублирующий фон.
-  const chatsRoute = pathname === '/' || pathname.startsWith('/chats');
-  const shellBackground = chatsRoute ? '#000000' : theme.background;
+  const shellBackground = theme.background;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

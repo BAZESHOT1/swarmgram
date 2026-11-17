@@ -50,6 +50,8 @@ export const RpcOp = {
   CHAT_HISTORY_REQ: 0x0c,
   CHAT_HISTORY_RESP: 0x0d,
   SEND_ENVELOPE: 0x0e,
+  CHAT_KEY_REQ: 0x0f,
+  CHAT_KEY_RESP: 0x10,
 } as const;
 
 export const SearchType = {
@@ -234,6 +236,50 @@ export function encodeEnvelopeRpc(input: {
   out.set(input.ciphertext, 8 + nonce.length);
   out.set(uuidToBytes(input.chatId), 8 + nonce.length + input.ciphertext.length);
   return out;
+}
+
+/** Запрос постоянного ключа серверного чата (bootstrap нового чата). */
+export function encodeChatKeyRequest(chatRef: number, chatId: string): Uint8Array {
+  const out = new Uint8Array(4 + 16);
+  out[0] = RpcOp.CHAT_KEY_REQ;
+  out[1] = 0;
+  new DataView(out.buffer).setUint16(2, chatRef & 0xffff, true);
+  out.set(uuidToBytes(chatId), 4);
+  return out;
+}
+
+export function decodeChatKeyRequest(
+  payload: Uint8Array,
+): { chatRef: number; chatId: string } | null {
+  if (payload.length < 20 || payload[0] !== RpcOp.CHAT_KEY_REQ) return null;
+  return {
+    chatRef: payload[2] | (payload[3] << 8),
+    chatId: bytesToUuid(payload.subarray(4, 20)),
+  };
+}
+
+export function encodeChatKeyResponse(chatRef: number, version: number, key: Uint8Array): Uint8Array {
+  const out = new Uint8Array(9 + key.length);
+  out[0] = RpcOp.CHAT_KEY_RESP;
+  out[1] = 0;
+  new DataView(out.buffer).setUint16(2, chatRef & 0xffff, true);
+  new DataView(out.buffer).setUint32(4, version >>> 0, true);
+  out[8] = key.length;
+  out.set(key.subarray(0, 32), 9);
+  return out;
+}
+
+export function decodeChatKeyResponse(
+  payload: Uint8Array,
+): { chatRef: number; version: number; key: Uint8Array } | null {
+  if (payload.length < 10 || payload[0] !== RpcOp.CHAT_KEY_RESP) return null;
+  const len = payload[8];
+  if (len < 16 || len > 32 || payload.length < 9 + len) return null;
+  return {
+    chatRef: payload[2] | (payload[3] << 8),
+    version: new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(4, true),
+    key: payload.subarray(9, 9 + len),
+  };
 }
 
 export function decodeEnvelopeRpc(payload: Uint8Array): {

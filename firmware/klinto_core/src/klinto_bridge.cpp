@@ -194,35 +194,38 @@ void KlintoClientBridge::on_link_data(const uint8_t *data, size_t len) {  if (!d
   while (rx_len_ - consumed >= KL_CLIENT_HEADER_SIZE + 2) {
     const uint8_t *p = rx_buf_ + consumed;
     /* Совместимость: текущая мобильная сборка ещё шлёт кадры A5 5A. */
-    if (rx_len_ - consumed >= 8 && p[0] == 0xA5 && p[1] == 0x5A) {
-      const uint16_t legacy_len = (uint16_t)(p[4] | ((uint16_t)p[5] << 8));
-      if (legacy_len <= 1024) {
-        const size_t legacy_total = 6u + legacy_len + 2u;
-        if (rx_len_ - consumed < legacy_total) break;
-        const uint16_t legacy_crc =
-            (uint16_t)(p[6 + legacy_len] | ((uint16_t)p[6 + legacy_len + 1] << 8));
-        if (crc16(p + 2, 4u + legacy_len) == legacy_crc) {
-          handle_legacy_frame(p[3], p + 6, legacy_len);
-          consumed += legacy_total;
-          continue;
-        }
+    const bool v1_magic = p[0] == KL_CLIENT_MAGIC0 && p[1] == KL_CLIENT_MAGIC1 &&
+                          p[2] == KL_CLIENT_VERSION;
+    uint16_t plen = 0;
+    size_t total = 0;
+    bool v1_ok = false;
+    if (v1_magic) {
+      plen = (uint16_t)(p[7] | ((uint16_t)p[8] << 8));
+      if (plen <= KL_CLIENT_MAX_FRAME) {
+        total = KL_CLIENT_HEADER_SIZE + plen + 2;
+        if (rx_len_ - consumed < total) break;
+        const uint16_t expected = (uint16_t)(p[KL_CLIENT_HEADER_SIZE + plen] |
+                                             ((uint16_t)p[KL_CLIENT_HEADER_SIZE + plen + 1] << 8));
+        v1_ok = crc16(p + 2, KL_CLIENT_HEADER_SIZE - 2 + plen) == expected;
       }
     }
-    if (p[0] != KL_CLIENT_MAGIC0 || p[1] != KL_CLIENT_MAGIC1 ||
-        p[2] != KL_CLIENT_VERSION) {
-      consumed++;
-      continue;
-    }
-    const uint16_t plen = (uint16_t)(p[7] | ((uint16_t)p[8] << 8));
-    if (plen > KL_CLIENT_MAX_FRAME) {
-      consumed++;
-      continue;
-    }
-    const size_t total = KL_CLIENT_HEADER_SIZE + plen + 2;
-    if (rx_len_ - consumed < total) break;
-    const uint16_t expected = (uint16_t)(p[KL_CLIENT_HEADER_SIZE + plen] |
-                                         ((uint16_t)p[KL_CLIENT_HEADER_SIZE + plen + 1] << 8));
-    if (crc16(p + 2, KL_CLIENT_HEADER_SIZE - 2 + plen) != expected) {
+    if (!v1_ok) {
+      /* Совместимость: старые мобильные сборки шлют кадры A5 5A с другой
+       * раскладкой заголовка. Пробуем legacy только если v1 не сошёлся. */
+      if (rx_len_ - consumed >= 8 && p[0] == 0xA5 && p[1] == 0x5A) {
+        const uint16_t legacy_len = (uint16_t)(p[4] | ((uint16_t)p[5] << 8));
+        if (legacy_len <= 1024) {
+          const size_t legacy_total = 6u + legacy_len + 2u;
+          if (rx_len_ - consumed < legacy_total) break;
+          const uint16_t legacy_crc =
+              (uint16_t)(p[6 + legacy_len] | ((uint16_t)p[6 + legacy_len + 1] << 8));
+          if (crc16(p + 2, 4u + legacy_len) == legacy_crc) {
+            handle_legacy_frame(p[3], p + 6, legacy_len);
+            consumed += legacy_total;
+            continue;
+          }
+        }
+      }
       consumed++;
       continue;
     }

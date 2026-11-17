@@ -21,6 +21,7 @@ import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { emitMeshEnvelope, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
+import { storeServerChatKey } from '../data/chatkit';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
@@ -307,7 +308,33 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           return undefined;
         };
         const v1 = new KMeshV1Client({
-          link: { send: (frame) => raw.send(frame) },
+          link: {
+            send: (frame) => raw.send(frame),
+            ...(raw.sendProgress
+              ? { sendProgress: (frame, onProgress) => raw.sendProgress!(frame, onProgress) }
+              : {}),
+          },
+          onSendProgress: (event) => {
+            qc.setQueryData<unknown[]>(['messages', event.chatId], (prev) => {
+              if (!Array.isArray(prev)) return prev;
+              return prev.map((row) => {
+                const m = row as { clientId?: string; id?: string };
+                const match =
+                  (event.clientId && m.clientId === event.clientId) ||
+                  m.id === `mesh-${event.msgUuid}`;
+                if (!match) return row;
+                return {
+                  ...(row as object),
+                  kmeshSent: event.sent,
+                  kmeshTotal: event.total,
+                  kmeshLabel:
+                    event.sent >= event.total
+                      ? 'Передано в модуль · ожидание подтверждения'
+                      : 'Отправка в модуль…',
+                };
+              });
+            });
+          },
           resolveChatByRef: resolveChat,
           onInfo: (info) => {
             setMeshCapabilities({ queue: info.queue });
@@ -315,6 +342,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             if (info.nodeId) void api.kmeshV1NodeBind(info.nodeId).catch(() => undefined);
           },
           onSearch: (reqId, results, more) => emitKmeshSearch({ reqId, results, more }),
+          onChatKey: (chatId, version, key) => {
+            console.log('[kmesh]', 'chat key received', { chatId, version, bytes: key.length });
+            void storeServerChatKey(chatId, version, key).catch(() => undefined);
+          },
           onFeed: (entries, more) => emitKmeshFeed({ entries, more }),
           onHistory: (chatRef, messages, more) => emitKmeshHistory({ chatRef, messages, more }),
           onStatus: (event) => {
@@ -338,13 +369,27 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               // Оптимистичное сообщение в ленте: снимаем «часики» по ACK/доставке.
               const delivered = event.status === 2 || event.status === 4;
               const failed = event.status === 5;
+              const label =
+                event.status === 0
+                  ? 'В очереди модуля…'
+                  : event.status === 1
+                    ? 'Передано в mesh…'
+                    : event.status === 2
+                      ? 'Доставлено устройству'
+                      : event.status === 3
+                        ? 'Шлюз принял · ждём подтверждения Hub…'
+                        : event.status === 4
+                          ? 'Сохранено в Hub'
+                          : event.status === 5
+                            ? 'Ошибка отправки'
+                            : 'Отправка…';
               qc.setQueryData<unknown[]>(['messages', item.chatId], (prev) => {
                 const rows = Array.isArray(prev) ? [...prev] : [];
-                const index = rows.findIndex(
-                  (row) =>
-                    (row as { text?: string })?.text === item.text &&
-                    Boolean((row as { pending?: boolean })?.pending),
-                );
+                const index = rows.findIndex((row) => {
+                  const m = row as { text?: string; clientId?: string; pending?: boolean };
+                  if (item.clientId && m.clientId === item.clientId) return true;
+                  return m.text === item.text && Boolean(m.pending);
+                });
                 if (index < 0) return prev;
                 rows[index] = {
                   ...(rows[index] as object),
@@ -352,6 +397,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   delivered,
                   failed,
                   storedOnGateway: event.status === 3,
+                  kmeshLabel: label,
                 };
                 return rows;
               });

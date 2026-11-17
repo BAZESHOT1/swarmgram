@@ -1497,6 +1497,18 @@ function keyResponse(row: KeyVersionRow) {
 }
 
 /** Создать новую версию серверного ключа (32 случайных байта, base64). */
+export async function getOrCreateServerKey(
+  chatId: string,
+): Promise<{ key: string; version: number } | null> {
+  let row = await one<KeyVersionRow>(
+    'SELECT version, key_enc, created_at FROM chat_key_versions WHERE chat_id = $1 ORDER BY version DESC LIMIT 1',
+    [chatId],
+  );
+  if (!row) row = await createKeyVersion(chatId, 1);
+  if (!row) return null;
+  return { key: keyResponse(row).key, version: row.version };
+}
+
 async function createKeyVersion(chatId: string, version: number): Promise<KeyVersionRow | null> {
   const raw = randomBytes(32);
   const keyEnc = encryptSecret(raw.toString('base64'));

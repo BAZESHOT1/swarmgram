@@ -42,6 +42,8 @@ import {
   encodeRpcText,
   encodeEnvelopeRpc,
   decodeEnvelopeRpc,
+  encodeChatKeyRequest,
+  decodeChatKeyResponse,
   encodeRpcUp,
   encodeSearchRequest,
   msgUuidHex,
@@ -56,6 +58,10 @@ import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
 
 export interface KMeshV1Link {
   send(frame: Uint8Array): Promise<boolean>;
+  sendProgress?: (
+    frame: Uint8Array,
+    onProgress: (sent: number, total: number) => void,
+  ) => Promise<boolean>;
 }
 
 export interface KMeshV1ReceivedMessage {
@@ -94,6 +100,16 @@ export interface KMeshV1ClientOptions {
   onSearch?: (reqId: number, results: SearchResult[], more: boolean) => void;
   onFeed?: (entries: FeedEntry[], more: boolean) => void;
   onHistory?: (chatRef: number, messages: HistoryEntry[], more: boolean) => void;
+  /** Прогресс записи кадра в BLE: байты и привязка к сообщению. */
+  onSendProgress?: (event: {
+    msgUuid: string;
+    clientId?: string;
+    chatId: string;
+    sent: number;
+    total: number;
+  }) => void;
+  /** Hub вернул постоянный ключ серверного чата через KMesh. */
+  onChatKey?: (chatId: string, version: number, key: Uint8Array) => void;
   /** Мобильный шлюз: пакет для отправки на Hub (тело зашифровано). */
   onProxyUplink?: (packet: MeshPacket, raw: Uint8Array) => void;
   allowRelayTraffic?: boolean;
@@ -111,6 +127,7 @@ export class KMeshV1Client {
   private proxyBytesToday = 0;
   private proxyDay = '';
   private dailyProxyLimit = 10 * 1024 * 1024;
+  private pendingKeyRefs = new Map<number, string>();
 
   constructor(options: KMeshV1ClientOptions) {
     this.opts = options;
@@ -203,6 +220,12 @@ export class KMeshV1Client {
     return this.sendServiceRpc(encodeHistoryRequest(chatRef, beforeUuid, limit));
   }
 
+  /** Запросить постоянный ключ серверного чата у Hub через KMesh. */
+  async requestChatKey(chatId: string, chatRef: number): Promise<boolean> {
+    this.pendingKeyRefs.set(chatRef & 0xffff, chatId);
+    return this.sendServiceRpc(encodeChatKeyRequest(chatRef, chatId));
+  }
+
   /** Мобильный шлюз: отправить серверный пакет в mesh. */
   async proxyDownlink(packet: MeshPacket): Promise<boolean> {
     return this.link.send(encodeClientFrame(ClientFrameType.PROXY_DOWN, encodeProxyDown(packet), this.seq++));
@@ -283,9 +306,67 @@ export class KMeshV1Client {
     // уйдёт на Hub при появлении сети.
     await kmeshV1Enqueue(item);
 
-    const chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+    const sendFrame = async (frame: Uint8Array): Promise<boolean> => {
+      const ok = this.link.sendProgress
+        ? await this.link
+            .sendProgress(frame, (sent, total) =>
+              this.opts.onSendProgress?.({
+                msgUuid: uuidHex,
+                clientId: input.clientId,
+                chatId: input.chatId,
+                sent,
+                total,
+              }),
+            )
+            .catch(() => false)
+        : await this.link.send(frame).catch(() => false);
+      if (ok) {
+        this.opts.onSendProgress?.({
+          msgUuid: uuidHex,
+          clientId: input.clientId,
+          chatId: input.chatId,
+          sent: frame.length,
+          total: frame.length,
+        });
+      }
+      return ok;
+    };
+
+    let chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+    /* Новый чат без ключа: просим Hub выдать постоянный ключ через KMesh.
+     * Пока ответа нет — первое сообщение уходит открытым внутри mesh
+     * (пакет всё равно запечатан временным ключом кластера), а после
+     * подтверждения и ключа уйдёт обычным E2EE-конвертом. */
+    if (!chatKey && input.toInternet) {
+      await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
+      for (let i = 0; i < 6 && !chatKey; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+      }
+    }
+
     if (!chatKey) {
-      console.warn('[kmesh]', 'sendText: chat key missing, message queued', input.chatId);
+      const textRpc = encodeRpcText(input.chatRef, input.text);
+      const textFlags =
+        (input.toInternet || isGroup ? PacketFlag.TO_INTERNET : 0) |
+        PacketFlag.NEED_CLOUD_ARCHIVE |
+        (isGroup ? 0 : PacketFlag.NEED_ACK);
+      const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, textFlags, msgUuid, textRpc);
+      const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
+      item.state = 'LOCAL_MESH_ONLY';
+      await kmeshV1Update(item);
+      const ok = await sendFrame(frame);
+      console.log('[kmesh]', 'sendText plaintext', {
+        chatId: input.chatId,
+        chatRef: input.chatRef,
+        frameLen: frame.length,
+        ok,
+      });
+      if (!ok) {
+        item.state = 'FAILED';
+        item.attempts += 1;
+        await kmeshV1Update(item);
+      }
       return { msgUuid: uuidHex, state: item.state };
     }
     const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
@@ -312,12 +393,13 @@ export class KMeshV1Client {
     item.state = 'LOCAL_MESH_ONLY';
     await kmeshV1Update(item);
 
-    const ok = await this.link.send(frame).catch(() => false);
+    const ok = await sendFrame(frame);
     console.log('[kmesh]', 'sendText', {
       chatId: input.chatId,
       chatRef: input.chatRef,
       nodeId: this.nodeId,
       rpcLen: rpc.length,
+      frameLen: frame.length,
       ok,
     });
     if (!ok) {
@@ -399,6 +481,18 @@ export class KMeshV1Client {
             break;
           }
           const op = packet.payload[0];
+          if (op === RpcOp.CHAT_KEY_RESP) {
+            const resp = decodeChatKeyResponse(packet.payload);
+            if (resp) {
+              const chatId =
+                this.opts.resolveChatByRef?.(resp.chatRef) ?? this.pendingKeyRefs.get(resp.chatRef);
+              if (chatId) {
+                this.pendingKeyRefs.delete(resp.chatRef);
+                this.opts.onChatKey?.(chatId, resp.version, resp.key);
+              }
+            }
+            break;
+          }
           if (op === RpcOp.SEND_ENVELOPE) {
             const envelope = decodeEnvelopeRpc(packet.payload);
             if (envelope) {

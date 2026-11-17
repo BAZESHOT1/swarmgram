@@ -196,6 +196,8 @@ export const RpcOp = {
   CHAT_HISTORY_REQ: 0x0c,
   CHAT_HISTORY_RESP: 0x0d,
   SEND_ENVELOPE: 0x0e,
+  CHAT_KEY_REQ: 0x0f,
+  CHAT_KEY_RESP: 0x10,
 } as const;
 
 export const RPC_FLAG_MORE = 0x40;
@@ -330,6 +332,31 @@ export function encodeEnvelopeRpc(input: {
   out.writeUInt16LE(input.ciphertext.length, 6 + nonce.length);
   input.ciphertext.copy(out, 8 + nonce.length);
   uuid.copy(out, 8 + nonce.length + input.ciphertext.length);
+  return out;
+}
+
+export interface ChatKeyRequest {
+  chatRef: number;
+  chatId: string;
+}
+
+export function decodeChatKeyRequest(payload: Buffer): ChatKeyRequest | null {
+  if (payload.length < 20 || payload[0] !== RpcOp.CHAT_KEY_REQ) return null;
+  const hex = payload.subarray(4, 20).toString('hex');
+  return {
+    chatRef: payload.readUInt16LE(2),
+    chatId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+  };
+}
+
+export function encodeChatKeyResponse(chatRef: number, version: number, key: Buffer): Buffer {
+  const out = Buffer.alloc(9 + key.length);
+  out[0] = RpcOp.CHAT_KEY_RESP;
+  out[1] = 0;
+  out.writeUInt16LE(chatRef & 0xffff, 2);
+  out.writeUInt32LE(version >>> 0, 4);
+  out[8] = key.length;
+  key.subarray(0, 32).copy(out, 9);
   return out;
 }
 
