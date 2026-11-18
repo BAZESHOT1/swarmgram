@@ -1739,6 +1739,13 @@ export const api = {
       body: JSON.stringify({ module_mac: moduleMac, custom_name: customName }),
     }),
 
+  /** Удалить модуль из аккаунта по MAC (работает и для модулей без данных на сервере). */
+  kmeshV1DeleteModule: (moduleMac: string) =>
+    req<{ ok: true; deleted: boolean }>(`/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}`, { method: 'DELETE' }),
+
+  adminDocs: () => req<Array<{ name: string; title: string; size: number; updatedAt: string }>>('/v1/admin/docs'),
+  adminDoc: (name: string) => req<{ name: string; content: string }>(`/v1/admin/docs/${encodeURIComponent(name)}`),
+
   kmeshV1RenameModule: (moduleMac: string, customName: string) =>
     req<{ ok: true; moduleMac: string; customName: string }>(
       `/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}`,

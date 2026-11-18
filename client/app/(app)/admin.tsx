@@ -41,8 +41,9 @@ import {
 import { downloadObject, decryptPayload } from '../../src/data/chatkit';
 import { fromB64, toB64 } from '../../src/crypto/core';
 import { ModuleDebugPanel } from '../../src/components/admin/ModuleDebugPanel';
+import { DocsPanel } from '../../src/components/admin/DocsPanel';
 
-type Tab = 'users' | 'nodes' | 'modules' | 'chats' | 'reports' | 'debug';
+type Tab = 'users' | 'nodes' | 'modules' | 'chats' | 'reports' | 'debug' | 'docs';
 
 type PendingAction = {
   title: string;
@@ -59,6 +60,7 @@ const TABS: { id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[] =
   { id: 'chats', label: 'Чаты', icon: 'chatbubbles-outline' },
   { id: 'reports', label: 'Жалобы', icon: 'flag-outline' },
   { id: 'debug', label: 'Отладка', icon: 'terminal-outline' },
+  { id: 'docs', label: 'База данных', icon: 'library-outline' },
 ];
 
 function userStatusLabel(status: string): string {
@@ -633,6 +635,8 @@ export default function AdminScreen() {
       {tab === 'reports' ? <ReportsTab /> : null}
 
       {tab === 'debug' ? <ModuleDebugPanel /> : null}
+
+      {tab === 'docs' ? <DocsPanel /> : null}
 
       <Text style={{ color: theme.textDisabled, fontSize: 11.5, paddingHorizontal: 4, marginBottom: 4 }}>
         {tabTitle}: действия применяются сразу и записываются в журнал модерации.

@@ -17,6 +17,7 @@ RUN apk add --no-cache curl
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY sql ./sql
+COPY docs ./docs
 COPY --from=builder /app/dist ./dist
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

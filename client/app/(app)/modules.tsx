@@ -58,6 +58,7 @@ import {
   moduleEnvironmentLabel,
   moduleRoleLabel,
   moduleStatusView,
+  firmwareUpdateAvailable,
 } from '../../src/components/modules/moduleUi';
 import { useModuleConnection } from '../../src/modules/ModuleProvider';
 import { ClusterMap, nodeIdFromMac, type MapLink, type MapNode } from '../../src/components/modules/ClusterMap';
@@ -489,7 +490,7 @@ export default function ModulesScreen() {
   const online = realModules.filter((module) => module.online === true && !module.blocked).length;
   const updateCount = realModules.filter((module) => {
     const latest = releases[module.board || 'esp32'];
-    return Boolean(latest && module.firmware && latest !== module.firmware);
+    return firmwareUpdateAvailable(latest, module.firmware);
   }).length;
   const gateways = realModules.filter((module) => (module.role ?? 'gateway') === 'gateway').length;
   const loading = modules.isLoading;
@@ -544,6 +545,25 @@ export default function ModulesScreen() {
       /* ошибка отобразится в тосте */
     } finally {
       setUnbindTarget(null);
+    }
+  };
+
+  /** Удаление модуля из аккаунта: и записи сервера, и привязки по MAC (в том числе без данных о модуле). */
+  const confirmDelete = async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    try {
+      if (target.legacy && !String(target.legacy.id).startsWith('local:')) {
+        await unbind.mutateAsync(target.legacy.id).catch(() => undefined);
+      }
+      if (target.mesh) await api.kmeshV1DeleteModule(target.mesh.moduleMac).catch(() => undefined);
+      await reloadMeshModules();
+      void modules.refetch();
+      useStore.getState().pushToast({ kind: 'success', message: 'Модуль удалён' });
+    } catch (error) {
+      useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
+    } finally {
+      setDeleteTarget(null);
     }
   };
 
@@ -663,7 +683,7 @@ export default function ModulesScreen() {
       : null;
 
   /* ------------------------------------------------ карта и список -- */
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ key: string; name: string; mac: string; mesh?: { moduleMac: string }; legacy?: ModuleRow } | null>(null);
   const [topology, setTopology] = useState<Awaited<ReturnType<typeof api.kmeshV1Topology>> | null>(null);
   const [rootId, setRootId] = useState<number>(0);
 
@@ -953,22 +973,50 @@ export default function ModulesScreen() {
             </Text>
           ) : (
             rows.map((r, i) => {
-              const open = expanded === r.key;
+              const fw = r.legacy?.firmware ?? '';
+              const latest = r.legacy ? releases[r.legacy.board || 'esp32'] ?? releases.esp32 : undefined;
+              const hasUpdate = firmwareUpdateAvailable(latest, fw);
+              const isGw = (r.legacy?.role ?? '') === 'gateway';
+              const lastSeen = r.legacy?.lastSeenAt ?? r.legacy?.last_seen_at;
+              const iconBtn = (
+                icon: keyof typeof Ionicons.glyphMap,
+                label: string,
+                onPress: () => void,
+                color: string = theme.textSecondary,
+              ) => (
+                <Pressable
+                  key={label}
+                  onPress={onPress}
+                  accessibilityRole="button"
+                  accessibilityLabel={label}
+                  hitSlop={6}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                    paddingHorizontal: 8,
+                    height: 26,
+                    borderRadius: 8,
+                    backgroundColor: theme.surfacePressed,
+                    opacity: pressed ? 0.6 : 1,
+                  })}
+                >
+                  <Ionicons name={icon} size={13} color={color} />
+                  <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{label}</Text>
+                </Pressable>
+              );
               return (
-                <View key={r.key} style={{ borderTopWidth: i ? 1 : 0, borderTopColor: theme.line }}>
-                  <Pressable
-                    onPress={() => setExpanded(open ? null : r.key)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Модуль ${r.name}`}
-                    style={({ pressed }) => ({
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 9,
-                      paddingHorizontal: 12,
-                      paddingVertical: 9,
-                      opacity: pressed ? 0.7 : 1,
-                    })}
-                  >
+                <View
+                  key={r.key}
+                  style={{
+                    borderTopWidth: i ? 1 : 0,
+                    borderTopColor: theme.line,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    gap: 5,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <View
                       style={{
                         width: 8,
@@ -977,67 +1025,69 @@ export default function ModulesScreen() {
                         backgroundColor: r.online ? theme.success : theme.textDisabled,
                       }}
                     />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }} numberOfLines={1}>
-                        {r.name}
-                      </Text>
-                      <Text style={{ color: theme.textDisabled, fontSize: 10.5 }} numberOfLines={1}>
-                        {r.mac || '—'}
-                        {r.role ? ` · ${r.role}` : ''}
-                      </Text>
-                    </View>
                     <Text
-                      style={{
-                        color: r.rssi != null ? theme.textSecondary : theme.textDisabled,
-                        fontSize: 11,
-                        fontVariant: ['tabular-nums'] as never,
-                      }}
+                      style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700', flexShrink: 1 }}
+                      numberOfLines={1}
                     >
-                      {r.rssi != null ? `${r.rssi} dBm` : '— dBm'}
+                      {r.name}
                     </Text>
+                    {r.role ? <StatusBadge text={r.role} tone="neutral" /> : null}
+                    {hasUpdate ? <StatusBadge text="обновление" tone="accent" /> : null}
+                    <View style={{ flex: 1 }} />
                     <Text
-                      style={{
-                        color: theme.textSecondary,
-                        fontSize: 11,
-                        width: 38,
-                        textAlign: 'right',
-                        fontVariant: ['tabular-nums'] as never,
-                      }}
+                      style={{ color: theme.textSecondary, fontSize: 11, fontVariant: ['tabular-nums'] as never }}
                     >
-                      {r.battery != null ? `${r.battery}%` : '—'}
+                      {r.rssi != null ? `${r.rssi} dBm` : ''}
+                      {r.rssi != null && r.battery != null ? ' · ' : ''}
+                      {r.battery != null ? `${r.battery}%` : ''}
                     </Text>
-                    <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={theme.textDisabled} />
-                  </Pressable>
-                  {open ? (
-                    <View style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 8 }}>
-                      {r.mesh ? (
-                        <TextInput
-                          defaultValue={r.mesh.customName}
-                          placeholder="Название: Брелок, Рюкзак…"
-                          placeholderTextColor={theme.textDisabled}
-                          onEndEditing={(event) => {
-                            const name = event.nativeEvent.text.trim();
-                            if (!r.mesh || name === r.mesh.customName) return;
-                            void api
-                              .kmeshV1RenameModule(r.mesh.moduleMac, name)
-                              .then(() => reloadMeshModules())
-                              .catch(() => undefined);
-                          }}
-                          style={{
-                            color: theme.textPrimary,
-                            fontSize: 12.5,
-                            paddingVertical: 4,
-                            borderBottomWidth: 1,
-                            borderBottomColor: theme.line,
-                          }}
-                        />
-                      ) : null}
-                      {r.mesh ? (
-                        <Text style={{ color: theme.textDisabled, fontSize: 11 }}>BLE: {r.mesh.bleName}</Text>
-                      ) : null}
-                      {r.legacy ? renderCard(r.legacy, 0) : null}
-                    </View>
-                  ) : null}
+                  </View>
+                  <Text style={{ color: theme.textDisabled, fontSize: 10.5 }} numberOfLines={1}>
+                    {r.mac || '—'}
+                    {fw ? ` · прошивка ${fw}` : ''}
+                    {!r.online && lastSeen ? ` · был(а) ${formatRelative(lastSeen)}` : ''}
+                    {r.mesh ? ` · ${r.mesh.bleName}` : ''}
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    {r.mesh ? (
+                      <TextInput
+                        defaultValue={r.mesh.customName}
+                        placeholder="название"
+                        placeholderTextColor={theme.textDisabled}
+                        onEndEditing={(event) => {
+                          const name = event.nativeEvent.text.trim();
+                          if (!r.mesh || name === r.mesh.customName) return;
+                          void api
+                            .kmeshV1RenameModule(r.mesh.moduleMac, name)
+                            .then(() => reloadMeshModules())
+                            .catch(() => undefined);
+                        }}
+                        style={{
+                          color: theme.textPrimary,
+                          fontSize: 11.5,
+                          minWidth: 90,
+                          flexGrow: 1,
+                          flexBasis: 90,
+                          height: 26,
+                          paddingVertical: 0,
+                          paddingHorizontal: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: theme.line,
+                        }}
+                      />
+                    ) : null}
+                    {r.legacy && !String(r.legacy.id).startsWith('local:')
+                      ? iconBtn(
+                          'cloud-download-outline',
+                          hasUpdate ? 'Обновить' : 'Прошивка',
+                          () => setOtaTarget(r.legacy!),
+                          hasUpdate ? theme.accent : theme.textSecondary,
+                        )
+                      : null}
+                    {r.legacy && isGw ? iconBtn('wifi-outline', 'Wi-Fi', () => setGatewayTarget(r.legacy!)) : null}
+                    {iconBtn('trash-outline', 'Удалить', () => setDeleteTarget(r), theme.danger)}
+                  </View>
                 </View>
               );
             })
@@ -1341,6 +1391,15 @@ export default function ModulesScreen() {
           />
         </View>
       </SettingsModal>
+
+      <SettingsConfirm
+        visible={deleteTarget !== null}
+        title="Удалить модуль?"
+        message={`«${deleteTarget?.name ?? ''}» будет отвязан от аккаунта. Плату можно будет добавить снова.`}
+        confirmLabel="Удалить"
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDelete()}
+      />
 
       {/* Подтверждение отвязки */}
       <SettingsConfirm

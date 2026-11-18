@@ -76,3 +76,15 @@ export function qualityFromRssi(rssi: number | undefined | null): number | null 
   return Math.max(0, Math.min(100, Math.round(2 * (value + 100))));
 }
 
+
+/**
+ * Есть ли новая прошивка. Модуль сообщает «<версия>/<сборка>» (например 1.4/176), релиз на сервере
+ * хранится в том же формате; старые записи без сборки сравниваем только по версии.
+ */
+export function firmwareUpdateAvailable(latest: string | undefined | null, current: string | undefined | null): boolean {
+  if (!latest || !current) return false;
+  const [lv, lb] = latest.split('/');
+  const [cv, cb] = current.split('/');
+  if (lb && cb) return Number(lb) > Number(cb);
+  return lv !== cv;
+}

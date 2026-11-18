@@ -1680,6 +1680,18 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, moduleMac: mac, customName: name });
   });
 
+  /** Удаление модуля из аккаунта (в том числе без данных о нём): снимает привязку по MAC. */
+  app.delete('/kmesh/v1/modules/:mac', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const mac = macFromBody((req.params as { mac?: string }).mac);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const existing = await ownedModule(mac);
+    if (!existing) return reply.send({ ok: true, deleted: false });
+    if (existing.owner_user_id !== auth.userId) throw forbidden('not_module_owner');
+    await query('DELETE FROM user_modules WHERE module_mac = $1 AND owner_user_id = $2', [mac, auth.userId]);
+    return reply.send({ ok: true, deleted: true });
+  });
+
   /* ------------------------------- контракт передачи модуля ------------- */
 
   app.post('/kmesh/v1/modules/transfer/request', { onRequest: [requireAuth()] }, async (req, reply) => {

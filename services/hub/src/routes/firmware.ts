@@ -296,6 +296,7 @@ interface BuilderResponse {
   appBase64?: string;
   appSize?: number;
   appSha256?: string;
+  firmwareBuild?: number;
   version?: string;
   log?: string;
   merged?: boolean;
@@ -468,7 +469,8 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
       `INSERT INTO firmware_releases (board, version, updated_at)
        VALUES ($1,$2,now())
        ON CONFLICT (board) DO UPDATE SET version = EXCLUDED.version, updated_at = now()`,
-      [cfg.board, String(data.version ?? '')],
+      // Модуль сообщает прошивку как «<версия>/<номер сборки>» — релиз пишем в том же формате.
+      [cfg.board, data.firmwareBuild ? `${String(data.version ?? '')}/${data.firmwareBuild}` : String(data.version ?? '')],
     ).catch(() => undefined);
   } catch (e) {
     const err = e as Error & { buildLog?: string };

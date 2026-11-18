@@ -6,6 +6,8 @@ import { one, query } from '../db.js';
 import { nodeEvent, resolveSubnet } from '../nodes.js';
 import { decryptSecret } from '../secrets.js';
 import { badRequest, forbidden, notFound, str } from '../util.js';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { publish, publishMany } from '../realtime.js';
 
@@ -497,6 +499,36 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
     const { id } = req.params as { id: string };
     await query('UPDATE blocked_nodes SET active = false WHERE id = $1', [id]);
     return reply.send({ ok: true });
+  });
+
+  /* ----------------------------------------- «База данных»: документация -- */
+  const DOCS_DIR = resolve(process.env.DOCS_DIR ?? join(process.cwd(), 'docs'));
+  const docTitle = (text: string, fallback: string) => /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? fallback;
+
+  /** Список документов проекта (.md). Только для администраторов. */
+  app.get('/admin/docs', { onRequest: [requireAdmin()] }, async (_req, reply) => {
+    let names: string[] = [];
+    try {
+      names = readdirSync(DOCS_DIR).filter((n) => /^[\w.-]+\.md$/i.test(n)).sort();
+    } catch {
+      /* каталога нет */
+    }
+    return reply.send(
+      names.map((name) => {
+        const text = readFileSync(join(DOCS_DIR, name), 'utf8');
+        return { name, title: docTitle(text, name), size: text.length, updatedAt: statSync(join(DOCS_DIR, name)).mtime };
+      }),
+    );
+  });
+
+  app.get('/admin/docs/:name', { onRequest: [requireAdmin()] }, async (req, reply) => {
+    const name = String((req.params as { name?: string }).name ?? '');
+    if (!/^[\w.-]+\.md$/i.test(name)) throw badRequest('invalid_doc_name');
+    try {
+      return reply.send({ name, content: readFileSync(join(DOCS_DIR, name), 'utf8') });
+    } catch {
+      throw notFound('doc');
+    }
   });
 
   /* --------------------------------------------------------------- audit -- */

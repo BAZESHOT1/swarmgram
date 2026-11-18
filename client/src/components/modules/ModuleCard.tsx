@@ -22,6 +22,7 @@ import {
   moduleRoleLabel,
   moduleStatusView,
   moduleTransportLabel,
+  firmwareUpdateAvailable,
 } from './moduleUi';
 
 function hardwareIdOf(module: ModuleRow): string {
@@ -190,7 +191,7 @@ export function ModuleCard({
   const canConfigureGateway =
     isGateway && localConnected && Boolean(localInfo && localInfo.hardwareId.toLowerCase() === hardwareId);
   const moduleError = errorTextOf(module);
-  const updateAvailable = Boolean(latestVersion && module.firmware && latestVersion !== module.firmware);
+  const updateAvailable = firmwareUpdateAvailable(latestVersion, module.firmware);
 
   const neighbors = useQuery({
     queryKey: ['module-neighbors', module.id],
