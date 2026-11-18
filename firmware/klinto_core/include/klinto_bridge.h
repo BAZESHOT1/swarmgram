@@ -72,6 +72,8 @@ struct kl_bridge_sink_t {
                              size_t sig_len);
   /** Владелец подтверждён и сохранён: обновить BLE-имя и NODE_PRESENCE. */
   void (*owner_changed)(void *ctx, const char *prefix, uint32_t net_id, uint32_t epoch);
+  /** Подписанная настройка железа, пришедшая по mesh (RPC 0x30). */
+  void (*remote_config)(void *ctx, const uint8_t *body, size_t len);
 };
 
 class KlintoClientBridge {

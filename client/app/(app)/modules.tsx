@@ -61,6 +61,7 @@ import {
   firmwareUpdateAvailable,
 } from '../../src/components/modules/moduleUi';
 import { useModuleConnection } from '../../src/modules/ModuleProvider';
+import { ModuleConfigSheet } from '../../src/components/modules/ModuleConfigSheet';
 import { ClusterMap, nodeIdFromMac, type MapLink, type MapNode } from '../../src/components/modules/ClusterMap';
 import { kv } from '../../src/crypto/storage';
 import { router } from 'expo-router';
@@ -683,6 +684,7 @@ export default function ModulesScreen() {
       : null;
 
   /* ------------------------------------------------ карта и список -- */
+  const [configTarget, setConfigTarget] = useState<{ name: string; mac: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ key: string; name: string; mac: string; mesh?: { moduleMac: string }; legacy?: ModuleRow } | null>(null);
   const [topology, setTopology] = useState<Awaited<ReturnType<typeof api.kmeshV1Topology>> | null>(null);
   const [rootId, setRootId] = useState<number>(0);
@@ -1086,6 +1088,7 @@ export default function ModulesScreen() {
                         )
                       : null}
                     {r.legacy && isGw ? iconBtn('wifi-outline', 'Wi-Fi', () => setGatewayTarget(r.legacy!)) : null}
+                    {r.mac ? iconBtn('settings-outline', 'Настроить', () => setConfigTarget({ name: r.name, mac: r.mac })) : null}
                     {iconBtn('trash-outline', 'Удалить', () => setDeleteTarget(r), theme.danger)}
                   </View>
                 </View>
@@ -1391,6 +1394,8 @@ export default function ModulesScreen() {
           />
         </View>
       </SettingsModal>
+
+      <ModuleConfigSheet target={configTarget} onClose={() => setConfigTarget(null)} />
 
       <SettingsConfirm
         visible={deleteTarget !== null}

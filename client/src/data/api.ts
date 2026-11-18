@@ -1739,6 +1739,13 @@ export const api = {
       body: JSON.stringify({ module_mac: moduleMac, custom_name: customName }),
     }),
 
+  /** Подпись Hub на настройку железа модуля (владелец). p — строка параметров, см. docs/06. */
+  kmeshV1ModuleConfigToken: (moduleMac: string, p: string) =>
+    req<{ ok: true; moduleMac: string; mod6: string; epoch: number; p: string; sig: string }>(
+      `/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}/config`,
+      { method: 'POST', body: JSON.stringify({ p }) },
+    ),
+
   /** Удалить модуль из аккаунта по MAC (работает и для модулей без данных на сервере). */
   kmeshV1DeleteModule: (moduleMac: string) =>
     req<{ ok: true; deleted: boolean }>(`/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}`, { method: 'DELETE' }),

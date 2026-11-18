@@ -800,7 +800,7 @@ async function handleBuild(config) {
       (useKmeshV1 ? await coreSourceHash() : ''),
   ).slice(0, 16);
   const version = FIRMWARE_VERSION;
-  const key = sha256(`merged4:v13-os-noexcept-ota:${templateHash}:${version}:${stableStringify(config)}`);
+  const key = sha256(`merged4:v14-hwcfg:${templateHash}:${version}:${stableStringify(config)}`);
   // Версия прошивки понятная (1.1, 1.2, ...) и общая для всех модулей,
   // собранных из текущего шаблона. Это нужно для OTA-бейджа и UI.
 

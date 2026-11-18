@@ -337,7 +337,7 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
 
 void KlintoClientBridge::handle_config(const uint8_t *payload, size_t len) {
   if (!payload || !len) return;
-  char json[512];
+  char json[704];
   const size_t copy = len < sizeof(json) - 1 ? len : sizeof(json) - 1;
   memcpy(json, payload, copy);
   json[copy] = '\0';
@@ -534,6 +534,12 @@ void KlintoClientBridge::deliver_mesh(const kl_packet_t *pkt) {
     uint8_t op = 0, rflags = 0;
     uint16_t chat = KL_CODEC_NO_CHAT;
     if (!kl_codec_peek(plain, plain_len, &op, &rflags, &chat)) return;
+    if (op == KL_RPC_NODE_CONFIG) {
+      if (sink_.remote_config && plain_len > KL_RPC_HEADER_SIZE) {
+        sink_.remote_config(sink_.ctx, plain + KL_RPC_HEADER_SIZE, plain_len - KL_RPC_HEADER_SIZE);
+      }
+      return;
+    }
     if (op == KL_RPC_SEND_TEXT) {
       kl_rpc_text_t text;
       char decoded[KL_MAX_TEXT + 1];
@@ -632,7 +638,7 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[900];
+  char info[1200];
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
                        (router_ && router_->gateway_route()->valid) ||
                        (router_ && router_->mobile_gateway_active());
@@ -663,7 +669,14 @@ bool KlintoClientBridge::send_info() {
     esc[e++] = *p;
   }
   esc[e] = '\0';
-  int w = snprintf(info + used, sizeof(info) - used, ",\"name\":\"%s\",\"nb\":[", esc);
+  int w = snprintf(info + used, sizeof(info) - used,
+                   ",\"name\":\"%s\",\"hw\":{\"b\":%d,\"r\":%u,\"c\":%u,\"l\":[%d,%d,%d,%d,%d,%d,%d],"
+                   "\"e\":%d,\"w\":%d,\"lb\":%u,\"he\":%lu},\"nb\":[",
+                   esc, (int)cfg_.batt_pin, (unsigned)cfg_.batt_ratio_x100, (unsigned)cfg_.lora.chip,
+                   (int)cfg_.lora.sck, (int)cfg_.lora.miso, (int)cfg_.lora.mosi, (int)cfg_.lora.cs,
+                   (int)cfg_.lora.rst, (int)cfg_.lora.dio0, (int)cfg_.lora.busy, (int)cfg_.espnow_dbm,
+                   (int)cfg_.lora.power_dbm, (unsigned)(cfg_.lora_present ? 1 : 0),
+                   (unsigned long)cfg_.hw_epoch);
   if (w <= 0) return false;
   used += (size_t)w;
   if (router_) {

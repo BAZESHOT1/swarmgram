@@ -25,6 +25,7 @@ import {
   type ConnectionKind,
   type ModuleConnection,
   type ModuleEnvelope,
+  type ModuleHw,
   type ModuleInfo,
   type ModuleWifiConfig,
 } from './types';
@@ -776,6 +777,7 @@ export class NativeBleTransport implements ModuleConnection {
         bleMod6: typeof raw.bleMod6 === 'string' ? raw.bleMod6.toLowerCase() : undefined,
         name: typeof raw.name === 'string' ? raw.name : undefined,
         nb: Array.isArray(raw.nb) ? (raw.nb as Array<[number, number, number]>).slice(0, 16) : undefined,
+        hw: raw.hw && typeof raw.hw === 'object' ? (raw.hw as ModuleHw) : undefined,
       });
     } catch {
       return null;

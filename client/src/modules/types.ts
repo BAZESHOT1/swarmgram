@@ -47,6 +47,8 @@ export interface ModuleInfo {
   /** Отображаемое имя модуля (задаётся при прошивке/в настройках). */
   name?: string;
   /** Кого модуль слышит напрямую: [nodeId, rssi, flags(1 шлюз, 2 LoRa)]. */
+  /** Удалённо настраиваемое железо (прошивка 177+): b — пин батареи (-1 нет), r — коэф×100, c — чип LoRa, l — пины, e/w — мощность ESP-NOW/LoRa, lb — LoRa есть в сборке. */
+  hw?: ModuleHw;
   nb?: Array<[number, number, number]>;
 }
 
@@ -122,6 +124,18 @@ export class ModuleTransportError extends Error {
   }
 }
 
+/** Железо модуля из INFO (см. ModuleInfo.hw). */
+export interface ModuleHw {
+  b: number;
+  r: number;
+  c: number;
+  l: number[];
+  e: number;
+  w: number;
+  lb: number;
+  he: number;
+}
+
 /** Приводит произвольный info-ответ к строгому ModuleInfo. */
 export function normalizeInfo(raw: {
   hardwareId: string;
@@ -146,6 +160,7 @@ export function normalizeInfo(raw: {
   ownerPrefix?: string;
   bleMod6?: string;
   name?: string;
+  hw?: ModuleHw;
   nb?: Array<[number, number, number]>;
 }): ModuleInfo {
   const role = raw.role === 'wearable' || raw.role === 'repeater' || raw.role === 'gateway' ? raw.role : 'gateway';
@@ -173,6 +188,9 @@ export function normalizeInfo(raw: {
     ownerNetId: raw.ownerNetId != null ? Number(raw.ownerNetId) >>> 0 : undefined,
     ownerPrefix: raw.ownerPrefix != null ? String(raw.ownerPrefix).toLowerCase() : undefined,
     bleMod6: raw.bleMod6 != null ? String(raw.bleMod6).toLowerCase() : undefined,
+    name: raw.name,
+    hw: raw.hw,
+    nb: raw.nb,
   };
 }
 

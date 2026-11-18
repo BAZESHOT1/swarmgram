@@ -24,7 +24,7 @@ import { verifyEcdsaP256 } from '../crypto.js';
 import { one, query, tx } from '../db.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { requireAdmin } from '../auth.js';
-import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, type OtaManifest } from '../ota.js';
+import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, signModuleConfig, type OtaManifest } from '../ota.js';
 import { moduleMod6, normalizeModuleMac, userNetIdentityFromUuid, fnv1a32 } from '../meshId.js';
 import { getOrCreateServerKey } from './chats.js';
 import {
@@ -1678,6 +1678,27 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const name = String((req.body as Record<string, unknown>)?.custom_name ?? '').trim().slice(0, 64);
     await query(`UPDATE user_modules SET custom_name = $2 WHERE module_mac = $1`, [mac, name]);
     return reply.send({ ok: true, moduleMac: mac, customName: name });
+  });
+
+  /**
+   * Подписанная владельцем настройка железа модуля (тип, пины, мощность). Модуль принимает команду
+   * только с подписью Hub: sha256("KLINTO-CFG1|<mod6>|<epoch>|<p>"); эпоха строго растёт, поэтому
+   * старую команду повторить нельзя. Формат p: b=<пин>,<коэф×100>;c=<чип 0-3>;l=<sck>,<miso>,<mosi>,<cs>,<rst>,<irq>,<busy>;e=<дБм>;w=<дБм>;r=<c|r>
+   */
+  app.post('/kmesh/v1/modules/:mac/config', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    rateLimit(`kmesh-v1-modcfg:${auth.userId}`, 30, 60_000);
+    const mac = macFromBody((req.params as { mac?: string }).mac);
+    if (!mac) throw badRequest('invalid_module_mac');
+    const existing = await ownedModule(mac);
+    if (!existing) throw notFound('module');
+    if (existing.owner_user_id !== auth.userId) throw forbidden('not_module_owner');
+    const p = String((req.body as Record<string, unknown>)?.p ?? '');
+    if (!p || p.length > 90 || !/^([bcleswr]=[-0-9,cr]+)(;[bcleswr]=[-0-9,cr]+)*$/.test(p)) throw badRequest('invalid_config');
+    const epoch = Math.floor(Date.now() / 1000);
+    const sig = signModuleConfig(moduleMod6(mac), epoch, p);
+    if (!sig) throw badRequest('signing_unavailable');
+    return reply.send({ ok: true, moduleMac: mac, mod6: moduleMod6(mac), epoch, p, sig });
   });
 
   /** Удаление модуля из аккаунта (в том числе без данных о нём): снимает привязку по MAC. */

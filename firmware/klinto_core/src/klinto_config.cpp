@@ -17,6 +17,10 @@ void kl_config_defaults(kl_config_t *cfg) {
   cfg->allow_transit_for_client = true;
   cfg->hybrid_portable = true;
   cfg->relay_allowed = true;
+  cfg->batt_pin = -1;
+  cfg->batt_ratio_x100 = 200;
+  cfg->espnow_dbm = 0;
+  cfg->hw_epoch = 0;
   cfg->relay_battery_min = 20;
   cfg->relay_battery_resume = 25;
   cfg->mobile_gw_beacon_ms = 25000;

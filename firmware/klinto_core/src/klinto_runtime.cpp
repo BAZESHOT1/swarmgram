@@ -288,6 +288,11 @@ bool KlintoNode::loadConfig() {
     cfg_.owner_net_id = kl_nvs_get_uint("klinto3", "owner_net", cfg_.owner_net_id);
     cfg_.owner_epoch = kl_nvs_get_uint("klinto3", "owner_epoch", cfg_.owner_epoch);
   }
+#if defined(KL_BATT_ENABLED) && KL_BATT_ENABLED
+  cfg_.batt_pin = (int8_t)KL_BATT_PIN;
+  cfg_.batt_ratio_x100 = (uint16_t)(KL_BATT_RATIO * 100.0f + 0.5f);
+#endif
+  loadHw();
   if (cfg_.role == KL_ROLE_GATEWAY) cfg_.gateway_id = cfg_.node_id;
   kl_config_validate(&cfg_);
   return true;
@@ -375,6 +380,7 @@ bool KlintoNode::begin() {
 
   if (cfg_.espnow_enabled) {
     if (!espnow_.init(cfg_)) Serial.println("[klinto3] ESP-NOW init failed");
+    if (cfg_.espnow_dbm >= 2) esp_wifi_set_max_tx_power((int8_t)(cfg_.espnow_dbm * 4));
     espnow_.setReceiveCallback(&KlintoNode::onRadioFrame, this);
   }
   if (cfg_.lora_present) {
@@ -467,7 +473,7 @@ bool KlintoNode::begin() {
 
   kl_bridge_sink_t bridge_sink = {this, &KlintoNode::onConfig, &KlintoNode::onLog,
                                   &KlintoNode::onInetStatus, &KlintoNode::onVerifyOwnerClaim,
-                                  &KlintoNode::onOwnerChanged};
+                                  &KlintoNode::onOwnerChanged, &KlintoNode::onRemoteConfig};
   bridge_.init(&router_, &cfg_, client_link_, &down_queue_, &bridge_sink);
 
   if (cfg_.role == KL_ROLE_GATEWAY) {
@@ -501,7 +507,10 @@ void KlintoNode::startTasks() {
   }
 }
 
-void KlintoNode::loop() { vTaskDelay(pdMS_TO_TICKS(1000)); }
+void KlintoNode::loop() {
+  if (restart_at_ms_ && (int32_t)(millis() - restart_at_ms_) >= 0) ESP.restart();
+  vTaskDelay(pdMS_TO_TICKS(200));
+}
 
 void KlintoNode::onRadioFrame(void *ctx, const uint8_t *data, size_t len, int16_t rssi,
                              uint8_t iface) {
@@ -759,8 +768,174 @@ void KlintoNode::onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, 
                 (unsigned long)epoch);
 }
 
+/* ---- удалённая настройка железа ------------------------------------------------
+ * p = "b=<пин>,<коэф×100>;c=<чип>;l=<sck>,<miso>,<mosi>,<cs>,<rst>,<irq>,<busy>;e=<дБм>;w=<дБм>;r=<c|r>"
+ * Подписывает Hub (ключ OTA/владельца): sha256("KLINTO-CFG1|<mod6>|<epoch>|<p>"). Эпоха строго растёт. */
+struct HwParsed {
+  bool has_b = false, has_c = false, has_l = false, has_e = false, has_w = false, has_r = false;
+  int b_pin = -1;
+  int b_ratio = 200;
+  int chip = 1;
+  int l[7] = {0};
+  int e = 0, w = 0;
+  int role = 0;
+};
+
+static bool hw_parse_ints(const char *s, int *out, int n) {
+  for (int i = 0; i < n; ++i) {
+    char *end = nullptr;
+    const long v = strtol(s, &end, 10);
+    if (end == s) return false;
+    out[i] = (int)v;
+    s = end;
+    if (i < n - 1) {
+      if (*s != ',') return false;
+      ++s;
+    }
+  }
+  return *s == '\0';
+}
+
+static bool hw_parse(const char *p, HwParsed *o) {
+  char buf[128];
+  if (!p || strlen(p) >= sizeof(buf)) return false;
+  strcpy(buf, p);
+  char *save = nullptr;
+  for (char *tok = strtok_r(buf, ";", &save); tok; tok = strtok_r(nullptr, ";", &save)) {
+    if (tok[1] != '=') return false;
+    const char key = tok[0];
+    const char *val = tok + 2;
+    int v[7];
+    switch (key) {
+      case 'b':
+        if (!hw_parse_ints(val, v, 2) || v[0] < -1 || v[0] > 48 || v[1] < 100 || v[1] > 1000) return false;
+        o->has_b = true; o->b_pin = v[0]; o->b_ratio = v[1];
+        break;
+      case 'c':
+        if (!hw_parse_ints(val, v, 1) || v[0] < 0 || v[0] > 3) return false;
+        o->has_c = true; o->chip = v[0];
+        break;
+      case 'l':
+        if (!hw_parse_ints(val, v, 7)) return false;
+        for (int i = 0; i < 7; ++i) if (v[i] < -1 || v[i] > 48) return false;
+        o->has_l = true; memcpy(o->l, v, sizeof(v));
+        break;
+      case 'e':
+        if (!hw_parse_ints(val, v, 1) || v[0] < 2 || v[0] > 21) return false;
+        o->has_e = true; o->e = v[0];
+        break;
+      case 'w':
+        if (!hw_parse_ints(val, v, 1) || v[0] < 2 || v[0] > 22) return false;
+        o->has_w = true; o->w = v[0];
+        break;
+      case 'r':
+        if (val[0] != 'c' && val[0] != 'r') return false;
+        o->has_r = true; o->role = val[0] == 'r' ? 1 : 0;
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+void KlintoNode::loadHw() {
+  const uint32_t bp = kl_nvs_get_uint("hw", "bp", 0);
+  if (bp) {
+    cfg_.batt_pin = (int8_t)((int)bp - 1);
+    cfg_.batt_ratio_x100 = (uint16_t)kl_nvs_get_uint("hw", "br", cfg_.batt_ratio_x100);
+  }
+  cfg_.espnow_dbm = (int8_t)kl_nvs_get_uint("hw", "ep", 0);
+  cfg_.hw_epoch = kl_nvs_get_uint("hw", "ev", 0);
+  if (cfg_.lora_present) {
+    const uint32_t lc = kl_nvs_get_uint("hw", "lc", 0);
+    if (lc) cfg_.lora.chip = (uint8_t)(lc - 1);
+    char ls[48] = {0};
+    int v[7];
+    if (kl_nvs_get_str("hw", "ls", ls, sizeof(ls)) && hw_parse_ints(ls, v, 7)) {
+      cfg_.lora.sck = (int8_t)v[0]; cfg_.lora.miso = (int8_t)v[1]; cfg_.lora.mosi = (int8_t)v[2];
+      cfg_.lora.cs = (int8_t)v[3]; cfg_.lora.rst = (int8_t)v[4];
+      cfg_.lora.dio0 = (int8_t)v[5]; cfg_.lora.dio1 = (int8_t)v[5]; cfg_.lora.busy = (int8_t)v[6];
+    }
+    const uint32_t lw = kl_nvs_get_uint("hw", "lw", 0);
+    if (lw) cfg_.lora.power_dbm = (int8_t)lw;
+  }
+  const uint32_t rl = kl_nvs_get_uint("hw", "rl", 0);
+  if (rl && cfg_.role != KL_ROLE_GATEWAY) cfg_.role = rl == 2 ? KL_ROLE_ROUTER : KL_ROLE_CLIENT;
+}
+
+bool KlintoNode::applySignedHw(const char *p, uint32_t epoch, const uint8_t *sig, size_t sig_len) {
+  if (!p || !sig || !sig_len || epoch <= cfg_.hw_epoch) {
+    Serial.printf("[klinto] hw: rejected (epoch %lu <= %lu or empty)\n", (unsigned long)epoch,
+                  (unsigned long)cfg_.hw_epoch);
+    return false;
+  }
+  char canonical[192];
+  const int n = snprintf(canonical, sizeof(canonical), "KLINTO-CFG1|%s|%lu|%s", cfg_.ble_mod6,
+                         (unsigned long)epoch, p);
+  if (n <= 0 || (size_t)n >= sizeof(canonical)) return false;
+  uint8_t digest[32];
+  kl_sha256(canonical, (size_t)n, digest);
+  if (!kl_ota_esp32_verify_pubkey(digest, sig, sig_len)) {
+    Serial.println("[klinto] hw: signature rejected");
+    return false;
+  }
+  HwParsed hp;
+  if (!hw_parse(p, &hp)) {
+    Serial.println("[klinto] hw: bad parameters");
+    return false;
+  }
+  if (hp.has_b) {
+    kl_nvs_set_uint("hw", "bp", (uint32_t)(hp.b_pin + 1));
+    kl_nvs_set_uint("hw", "br", (uint32_t)hp.b_ratio);
+  }
+  if (hp.has_c) kl_nvs_set_uint("hw", "lc", (uint32_t)(hp.chip + 1));
+  if (hp.has_l) {
+    char ls[48];
+    snprintf(ls, sizeof(ls), "%d,%d,%d,%d,%d,%d,%d", hp.l[0], hp.l[1], hp.l[2], hp.l[3], hp.l[4],
+             hp.l[5], hp.l[6]);
+    kl_nvs_set_str("hw", "ls", ls);
+  }
+  if (hp.has_e) kl_nvs_set_uint("hw", "ep", (uint32_t)hp.e);
+  if (hp.has_w) kl_nvs_set_uint("hw", "lw", (uint32_t)hp.w);
+  if (hp.has_r) kl_nvs_set_uint("hw", "rl", hp.role ? 2u : 1u);
+  kl_nvs_set_uint("hw", "ev", epoch);
+  cfg_.hw_epoch = epoch;
+  Serial.printf("[klinto] hw config applied (epoch %lu): %s — restart\n", (unsigned long)epoch, p);
+  restart_at_ms_ = millis() + 1500;
+  if (!restart_at_ms_) restart_at_ms_ = 1;
+  return true;
+}
+
+/* mesh: body = [epoch u32][sig_len u8][sig][p] */
+void KlintoNode::onRemoteConfig(void *ctx, const uint8_t *body, size_t len) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  if (!body || len < 6) return;
+  const uint32_t epoch = kl_read_le32(body);
+  const size_t sl = body[4];
+  if (sl == 0 || sl > 72 || 5 + sl >= len) return;
+  char p[128];
+  const size_t pl = len - 5 - sl;
+  if (pl >= sizeof(p)) return;
+  memcpy(p, body + 5 + sl, pl);
+  p[pl] = '\0';
+  self->applySignedHw(p, epoch, body + 5, sl);
+}
+
 void KlintoNode::onConfigJson(const char *json, size_t len) {
   (void)len;
+  {
+    char p[128] = {0};
+    char sighex[160] = {0};
+    uint32_t epoch = 0;
+    if (kl_json_get_string(json, "hw", p, sizeof(p)) && kl_json_get_string(json, "s", sighex, sizeof(sighex)) &&
+        kl_json_get_uint(json, "e", &epoch)) {
+      uint8_t sig[80];
+      const size_t sl = kl_hex_decode(sighex, strlen(sighex), sig, sizeof(sig));
+      if (sl) applySignedHw(p, epoch, sig, sl);
+      return;
+    }
+  }
   char ssid[64] = {0};
   char pass[64] = {0};
   bool changed = false;

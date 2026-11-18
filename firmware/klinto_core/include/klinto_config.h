@@ -173,6 +173,11 @@ struct kl_config_t {
   /* Владелец модуля: постоянный user_net_id и 8 hex BLE-префикса UUID. */
   uint32_t owner_net_id;
   uint32_t owner_epoch;
+  /* Удалённо настраиваемое железо (NVS «hw», только по подписи владельца). */
+  int8_t batt_pin;          /* -1 — батареи нет */
+  uint16_t batt_ratio_x100; /* коэффициент делителя ×100 */
+  int8_t espnow_dbm;        /* 0 — значение по умолчанию */
+  uint32_t hw_epoch;        /* последняя применённая эпоха настройки */
   char owner_ble_prefix[9];
   /* Последние 6 hex MAC — для имени KL-<USER8>-<MOD6>. */
   char ble_mod6[7];

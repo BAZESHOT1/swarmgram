@@ -66,6 +66,15 @@ class KlintoNode {
   static void onConfig(void *ctx, const char *json, size_t len);
   static void onLog(void *ctx, const char *text);
   static void onInetStatus(void *ctx, bool has_internet, uint16_t rtt_ms, bool allow_relay);
+  /** Подписанная настройка железа (BLE/USB JSON и mesh RPC 0x30). */
+  bool applySignedHw(const char *p, uint32_t epoch, const uint8_t *sig, size_t sig_len);
+  static void onRemoteConfig(void *ctx, const uint8_t *body, size_t len);
+  void loadHw();
+  uint32_t restart_at_ms_ = 0;
+ public:
+  int hwBattPin() const { return cfg_.batt_pin; }
+  float hwBattRatio() const { return cfg_.batt_ratio_x100 / 100.0f; }
+ private:
   static bool onVerifyOwnerClaim(void *ctx, const uint8_t digest[32], const uint8_t *sig,
                                  size_t sig_len);
   static void onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, uint32_t epoch);

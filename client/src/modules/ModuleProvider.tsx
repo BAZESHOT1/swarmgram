@@ -84,6 +84,11 @@ interface ModuleContextValue {
   disconnect: () => Promise<void>;
   /** Отправить SSID/пароль Wi-Fi активному шлюзу (USB/BLE). Пароль не логируется. */
   configureGateway: (ssid: string, password: string) => Promise<boolean>;
+  /**
+   * Удалённая настройка железа модуля (тип, пины, мощность). Подпись выдаёт Hub только владельцу;
+   * команда уходит в подключённый модуль (BLE/USB) или через него по mesh другому узлу.
+   */
+  applyHardware: (target: { mac: string; nodeId?: number }, p: string) => Promise<boolean>;
   clearError: () => void;
   /** Последняя ошибка подключения синхронно (контекст может быть ещё не обновлён). */
   getLastError: () => string | null;
@@ -931,6 +936,41 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const applyHardware = useCallback(
+    async (target: { mac: string; nodeId?: number }, p: string): Promise<boolean> => {
+      const fail = (message: string) => {
+        useStore.getState().pushToast({ kind: 'error', message });
+        return false;
+      };
+      const v1 = v1ClientRef.current;
+      const current = infoRef.current;
+      if (!v1 || !connectionRef.current?.isOpen || !current) {
+        return fail('Подключите носимый модуль по BLE/USB: команда уходит через него.');
+      }
+      const mac12 = (value: string) => value.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+      let token: { epoch: number; sig: string };
+      try {
+        token = await api.kmeshV1ModuleConfigToken(target.mac, p);
+      } catch {
+        return fail('Hub не выдал подпись: нужен интернет и права владельца модуля.');
+      }
+      const direct = mac12(current.hardwareId) === mac12(target.mac);
+      if (!direct && !target.nodeId) return fail('Не удалось определить узел модуля.');
+      const ok = direct
+        ? await v1.sendHwConfig(p, token.epoch, token.sig)
+        : await v1.sendNodeConfig(target.nodeId as number, p, token.epoch, token.sig);
+      if (!ok) return fail('Команда не ушла в модуль. Проверьте подключение.');
+      useStore.getState().pushToast({
+        kind: 'success',
+        message: direct
+          ? 'Настройки отправлены. Модуль перезагрузится.'
+          : 'Настройки отправлены по mesh. Модуль применит их и перезагрузится.',
+      });
+      return true;
+    },
+    [],
+  );
+
   /** Автовосстановление последнего модуля без запроса нового порта/устройства. */
   const restore = useCallback(async () => {
     if (!useStore.getState().session) return;
@@ -1341,6 +1381,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       connectBle,
       disconnect,
       configureGateway,
+      applyHardware,
       clearError,
       getLastError: () => lastErrorRef.current,
       autoModule,
@@ -1348,7 +1389,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       dismissAutoModule,
       restore,
     }),
-    [connection, info, busy, configuring, error, connectUsb, connectBle, disconnect, configureGateway, clearError, autoModule, acceptAutoModule, dismissAutoModule, restore],
+    [connection, info, busy, configuring, error, connectUsb, connectBle, disconnect, configureGateway, applyHardware, clearError, autoModule, acceptAutoModule, dismissAutoModule, restore],
   );
 
   return <ModuleContext.Provider value={value}>{children}</ModuleContext.Provider>;

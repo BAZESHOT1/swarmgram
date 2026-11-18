@@ -256,6 +256,27 @@ export class KMeshV1Client {
     return this.link.send(encodeClientFrame(ClientFrameType.CONFIG, payload, this.seq++));
   }
 
+  /** Настройка железа, подписанная Hub (владельцем): по BLE/USB напрямую в подключённый модуль. */
+  async sendHwConfig(p: string, epoch: number, sigHex: string): Promise<boolean> {
+    const payload = new TextEncoder().encode(JSON.stringify({ hw: p, e: epoch, s: sigHex }));
+    return this.link.send(encodeClientFrame(ClientFrameType.CONFIG, payload, this.seq++));
+  }
+
+  /** То же, но другому узлу через mesh (RPC 0x30): [epoch u32][sig_len u8][sig][p]. */
+  async sendNodeConfig(dstNodeId: number, p: string, epoch: number, sigHex: string): Promise<boolean> {
+    const sig: number[] = [];
+    for (let i = 0; i + 1 < sigHex.length; i += 2) sig.push(parseInt(sigHex.slice(i, i + 2), 16));
+    const pb = new TextEncoder().encode(p);
+    const body = new Uint8Array(4 + 4 + 1 + sig.length + pb.length);
+    body.set([0x30, 0, 0xff, 0xff], 0);
+    new DataView(body.buffer).setUint32(4, epoch >>> 0, true);
+    body[8] = sig.length;
+    body.set(sig, 9);
+    body.set(pb, 9 + sig.length);
+    const up = encodeRpcUp(dstNodeId >>> 0, PacketFlag.NEED_ACK, 0n, body);
+    return this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+  }
+
   /** Первичная локальная привязка (без подписи), только для модуля без владельца. */
   async assignOwnerLocal(claim: { prefix: string; netId: number; epoch?: number }): Promise<boolean> {
     if (!/^[0-9a-f]{8}$/i.test(claim.prefix)) return false;

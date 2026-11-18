@@ -213,6 +213,16 @@ export function ownerClaimCanonical(mod6: string, prefix: string, netId: number,
   return `KLINTO-OWNER1|${mod6.toLowerCase()}|${prefix.toLowerCase()}|${netId >>> 0}|${epoch >>> 0}`;
 }
 
+/** Подпись настройки железа модуля: sha256("KLINTO-CFG1|<mod6>|<epoch>|<p>"), ECDSA P-256 (DER, hex). */
+export function signModuleConfig(mod6: string, epoch: number, p: string): string | null {
+  const key = signingKey();
+  if (!key) return null;
+  return sign('sha256', Buffer.from(`KLINTO-CFG1|${mod6.toLowerCase()}|${epoch >>> 0}|${p}`, 'utf8'), {
+    key,
+    dsaEncoding: 'der',
+  }).toString('hex');
+}
+
 /** Подписанный токен смены владельца для BLE-команды SET_OWNER. */
 export function issueOwnerClaim(mod6: string, prefix: string, netId: number, epoch: number): string | null {
   const key = signingKey();
