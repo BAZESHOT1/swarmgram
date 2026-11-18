@@ -31,6 +31,13 @@ class EspNowInterface : public INetInterface {
                   uint8_t priority) override;
   void poll(uint32_t now_ms) override;
   bool isBusy() const override;
+  /** Диагностика радио: сколько кадров принято/отброшено/отправлено/не отправлено. */
+  uint32_t rxRaw() const { return rx_raw_; }
+  uint32_t rxMagicBad() const { return rx_bad_; }
+  uint32_t rxNotForUs() const { return rx_not_us_; }
+  uint32_t txOk() const { return tx_ok_; }
+  uint32_t txErr() const { return tx_err_; }
+  int lastTxErr() const { return last_tx_err_; }
   uint16_t getMTU() const override { return 240; }
   int8_t getLinkQuality() const override;
   uint8_t id() const override { return KL_IFACE_ESPNOW; }
@@ -60,6 +67,12 @@ class EspNowInterface : public INetInterface {
   bool self_gateway_;
   volatile int16_t last_rssi_;
   uint32_t last_tx_ms_;
+  volatile uint32_t rx_raw_ = 0;
+  volatile uint32_t rx_bad_ = 0;
+  volatile uint32_t rx_not_us_ = 0;
+  uint32_t tx_ok_ = 0;
+  uint32_t tx_err_ = 0;
+  int last_tx_err_ = 0;
 
   static EspNowInterface *s_instance;
   static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len);

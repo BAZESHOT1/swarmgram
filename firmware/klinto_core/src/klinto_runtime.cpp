@@ -780,6 +780,12 @@ void KlintoNode::meshTaskEntry(void *arg) {
                     (unsigned long)st->tx_packets, (unsigned long)self->router_.beacons_rx(),
                     (unsigned long)st->beacons_sent, (long)self->router_.gateway_age_ms(now),
                     (unsigned)ESP.getFreeHeap());
+      if (self->cfg_.espnow_enabled) {
+        Serial.printf("[radio] espnow rx_raw=%lu bad=%lu not_us=%lu tx_ok=%lu tx_err=%lu last_err=%d\n",
+                      (unsigned long)self->espnow_.rxRaw(), (unsigned long)self->espnow_.rxMagicBad(),
+                      (unsigned long)self->espnow_.rxNotForUs(), (unsigned long)self->espnow_.txOk(),
+                      (unsigned long)self->espnow_.txErr(), self->espnow_.lastTxErr());
+      }
     }
     /* 30 секунд стабильной работы: подтверждаем OTA-образ и фиксируем build. */
     if (self->boot_valid_ms_ && now - self->boot_valid_ms_ >= 30000u) {

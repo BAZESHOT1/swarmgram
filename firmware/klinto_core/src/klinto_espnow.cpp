@@ -31,10 +31,17 @@ bool EspNowInterface::init(const kl_config_t &cfg) {
   self_id_ = cfg.node_id;
   self_gateway_ = cfg.role == KL_ROLE_GATEWAY;
   s_instance = this;
+  /* Шлюз к этому моменту уже подключён к роутеру: disconnect() рвал связь
+   * (reason=8), STA начинал переподключаться и обходить каналы, а вместе с
+   * ним уходил с рабочего канала и ESP-NOW (маяки пропадали, носимые теряли
+   * соту). Если STA подключён — канал определяет AP, ничего не трогаем. */
+  const bool sta_up = WiFi.status() == WL_CONNECTED;
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(false, false);
-  delay(50);
-  esp_wifi_set_channel(cfg.wifi_channel, WIFI_SECOND_CHAN_NONE);
+  if (!sta_up) {
+    WiFi.disconnect(false, false);
+    delay(50);
+    esp_wifi_set_channel(cfg.wifi_channel, WIFI_SECOND_CHAN_NONE);
+  }
 
   if (esp_now_init() != ESP_OK) {
     inited_ = false;
@@ -69,14 +76,17 @@ void EspNowInterface::shutdown() {
 
 void EspNowInterface::on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   EspNowInterface *self = s_instance;
-  if (!self || !data || len < (int)(KL_PACKET_HEADER_SIZE + 2)) return;
-  if (data[0] != KL_PACKET_MAGIC || data[1] != KL_PACKET_VERSION) return;
+  if (!self || !data) return;
+  self->rx_raw_++;
+  if (len < (int)(KL_PACKET_HEADER_SIZE + 2)) { self->rx_bad_++; return; }
+  if (data[0] != KL_PACKET_MAGIC || data[1] != KL_PACKET_VERSION) { self->rx_bad_++; return; }
   const uint8_t payload_len = data[34];
   if (len < (int)(KL_PACKET_HEADER_SIZE + payload_len + 2)) return;
 
   const uint32_t next_hop = kl_read_le32(data + 22);
   if (next_hop != KL_BROADCAST_ID && next_hop != self->self_id_ &&
       !(self->self_gateway_ && next_hop == KL_ANY_GATEWAY_ID)) {
+    self->rx_not_us_++;
     return; /* not our hop: zero further work */
   }
   int16_t rssi = -90;
@@ -109,8 +119,11 @@ bool EspNowInterface::transmit(const uint8_t *data, size_t len) {
   const esp_err_t err = esp_now_send(kBroadcastMac, data, len); /* nullptr = broadcast peer */
   if (err == ESP_OK) {
     last_tx_ms_ = millis();
+    tx_ok_++;
     return true;
   }
+  tx_err_++;
+  last_tx_err_ = (int)err;
   return false;
 }
 
@@ -158,6 +171,8 @@ bool EspNowInterface::isBusy() const { return tx_tail_ != tx_head_; }
 
 bool EspNowInterface::setChannel(uint8_t wifi_channel) {
   if (wifi_channel < 1 || wifi_channel > 13) return false;
+  /* Подключённый к роутеру STA сидит на канале AP — переключать его нельзя. */
+  if (WiFi.status() == WL_CONNECTED) return (uint8_t)WiFi.channel() == wifi_channel;
   return esp_wifi_set_channel(wifi_channel, WIFI_SECOND_CHAN_NONE) == ESP_OK;
 }
 

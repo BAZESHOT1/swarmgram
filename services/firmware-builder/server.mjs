@@ -598,6 +598,9 @@ async function compileFirmware(config, version) {
     await mkdir(sketchDir, { recursive: true });
     await mkdir(outDir, { recursive: true });
     await mkdir(buildDir, { recursive: true });
+    // Объекты скетча в build-path не пересобираются после правки заголовков (новая рабочая
+    // папка на каждую сборку) — получался бинарь со смешанными layout. Ядро/библиотеки кэшируются.
+    await rm(join(buildDir, 'sketch'), { recursive: true, force: true }).catch(() => undefined);
     await writeFile(join(sketchDir, `${sketchName}.ino`), template, 'utf8');
     await writeFile(join(sketchDir, 'config.h'), generateConfigHeader(config, version), 'utf8');
     // mesh v2 core (cluster/border/РјР°СЂС€СЂСѓС‚РёР·Р°С†РёСЏ/РєР»Р°СЃСЃРёС„РёРєР°С‚РѕСЂ) РєР»Р°РґС‘Рј СЂСЏРґРѕРј

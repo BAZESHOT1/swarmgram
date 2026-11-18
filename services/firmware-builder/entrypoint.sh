@@ -144,6 +144,8 @@ install_lib() {
 
 install_lib LoRa 0.8.0
 install_lib ArduinoJson 7.4.3
+# BLE-мост модуля: NimBLE вместо Bluedroid (на классическом ESP32 Bluedroid оставлял 4 КБ кучи).
+install_lib NimBLE-Arduino 2.5.2
 install_lib RadioLib 6.6.0
 
 start_server
