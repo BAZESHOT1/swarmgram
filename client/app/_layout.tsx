@@ -328,9 +328,25 @@ function RealtimeBridge() {
     const connect = async (fallbackToken?: string) => {
       if (disposed) return;
       // Р•СЃР»Рё access-token РёСЃС‚С‘Рє вЂ” РѕР±РЅРѕРІР»СЏРµРј РґРѕ РѕС‚РєСЂС‹С‚РёСЏ СЃРѕРєРµС‚Р°, РёРЅР°С‡Рµ 401.
-      const token = (await ensureAccessToken()) || fallbackToken;
-      if (!token) return;
-      const ws = new WebSocket(wsUrl(token));
+      // Сбой обновления токена (Hub перезапускается, сеть моргнула) не должен навсегда
+      // останавливать переподключение: пока сессия жива, пробуем снова с backoff.
+      let token: string | null | undefined;
+      try {
+        token = (await ensureAccessToken()) || fallbackToken;
+      } catch {
+        token = fallbackToken;
+      }
+      if (!token) {
+        if (getSession()) scheduleReconnect();
+        return;
+      }
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl(token));
+      } catch {
+        scheduleReconnect();
+        return;
+      }
       socket = ws;
       ws.onopen = () => {
         reconnectAttempt = 0;
