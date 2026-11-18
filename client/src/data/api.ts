@@ -172,6 +172,16 @@ export function nodeUrl(url: string): string {
   return `${location.origin}/node/${match[2]}${match[3] || '/'}`;
 }
 
+/**
+ * Запасной адрес WebSocket в обход Cloudflare (если сеть пользователя сбрасывает соединения до него):
+ * тот же Hub напрямую по HTTPS с валидным сертификатом. Только для web-клиента на домене проекта.
+ */
+export function wsFallbackUrl(token: string): string | null {
+  if (typeof location === 'undefined' || !location.protocol.startsWith('https')) return null;
+  if (location.hostname.endsWith('.nip.io') || !/kintoapp\.xyz$/i.test(location.hostname)) return null;
+  return `wss://150-251-143-212.nip.io:3443/ws?token=${encodeURIComponent(token)}`;
+}
+
 export function wsUrl(token: string): string {
   const q = `token=${encodeURIComponent(token)}`;
   const base = apiBase;

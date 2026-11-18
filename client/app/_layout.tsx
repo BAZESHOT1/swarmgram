@@ -31,7 +31,7 @@ import { decryptEnvelopeAuto, flushOutbox } from '../src/data/messaging';
 import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
-import { api, ensureAccessToken, getSession, setSession, initSession, wsUrl, type Envelope } from '../src/data/api';
+import { api, apiBase, ensureAccessToken, getSession, setSession, initSession, wsUrl, wsFallbackUrl, type Envelope } from '../src/data/api';
 import { applyServerPreferences, initPreferenceSync } from '../src/data/preferences';
 import { loadCaches, loadProfileCaches, preloadMessageCaches, getCachedMe, getCachedChatPreviews, findCachedChat } from '../src/data/cache';
 import { ensureWebPushPermission, initPush } from '../src/push';
@@ -325,6 +325,37 @@ function RealtimeBridge() {
       }, delay);
     };
 
+    /**
+     * Режим HTTP-опроса: пока WebSocket не поднимается (сеть режет соединения, прокси без upgrade),
+     * приложение остаётся рабочим — раз в 5 с проверяет Hub и подтягивает свежие данные.
+     */
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const stopPolling = () => {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    };
+    const startPolling = () => {
+      if (pollTimer || disposed) return;
+      const tick = async () => {
+        try {
+          const res = await fetch(`${apiBase}/health`, { cache: 'no-store' });
+          if (!res.ok) throw new Error(String(res.status));
+          const wasOffline = !useStore.getState().transportOnline;
+          useStore.getState().setTransportKnown(true);
+          useStore.getState().setTransportOnline(true);
+          if (wasOffline) {
+            void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '').catch(() => undefined);
+          }
+          catchUp();
+        } catch {
+          useStore.getState().setTransportKnown(true);
+          useStore.getState().setTransportOnline(false);
+        }
+      };
+      void tick();
+      pollTimer = setInterval(() => void tick(), 5000);
+    };
+
     const connect = async (fallbackToken?: string) => {
       if (disposed) return;
       // Р•СЃР»Рё access-token РёСЃС‚С‘Рє вЂ” РѕР±РЅРѕРІР»СЏРµРј РґРѕ РѕС‚РєСЂС‹С‚РёСЏ СЃРѕРєРµС‚Р°, РёРЅР°С‡Рµ 401.
@@ -342,7 +373,9 @@ function RealtimeBridge() {
       }
       let ws: WebSocket;
       try {
-        ws = new WebSocket(wsUrl(token));
+        // Нечётные попытки после сбоя идут напрямую к серверу (web): так обходим блокировки Cloudflare.
+        const alt = reconnectAttempt > 0 && reconnectAttempt % 2 === 1 ? wsFallbackUrl(token) : null;
+        ws = new WebSocket(alt ?? wsUrl(token));
       } catch {
         scheduleReconnect();
         return;
@@ -350,6 +383,7 @@ function RealtimeBridge() {
       socket = ws;
       ws.onopen = () => {
         reconnectAttempt = 0;
+        stopPolling();
         useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(true);
         // Р”РѕРіРѕРЅ РїРѕСЃР»Рµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёСЏ: РїРѕРєР° СЃРІСЏР·Рё РЅРµ Р±С‹Р»Рѕ, СЃРѕР±С‹С‚РёСЏ РјРѕРіР»Рё РїРѕС‚РµСЂСЏС‚СЊСЃСЏ.
@@ -370,6 +404,8 @@ function RealtimeBridge() {
         if (socket === ws) socket = null;
         useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(false);
+        // Два сбоя подряд — включаем опрос, чтобы приложение работало без сокета.
+        if (reconnectAttempt >= 1) startPolling();
         scheduleReconnect();
       };
       ws.onmessage = (raw) => {
@@ -692,6 +728,7 @@ function RealtimeBridge() {
 
     return () => {
       disposed = true;
+      stopPolling();
       unsubMesh();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (fallbackTimer) clearInterval(fallbackTimer);
