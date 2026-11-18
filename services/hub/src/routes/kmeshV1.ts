@@ -653,7 +653,10 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
           kind: envelope.kind,
           createdAt: row.created_at,
           nonce: nonceB64,
-          header: { kmeshV1: true, transport: 'mesh', ciphertextB64, nonceB64, nonce: nonceB64 },
+          // Схема и версия ключа нужны получателю, чтобы расшифровать как обычное сообщение.
+          header: JSON.parse(header),
+          scheme: keyRow ? 'server' : 'e2e',
+          ...(keyRow ? { keyVersion: keyRow.version } : {}),
           envelopeB64: ciphertextB64,
         },
       });
@@ -977,8 +980,11 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY id ASC LIMIT 20`,
-      [gatewayId, since],
+        ORDER BY id ASC LIMIT 8`,
+      // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
+      // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
+      // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.
+      [gatewayId, 0],
     );
     if (rows.length) {
       const ids = rows.map((r) => r.id);
@@ -1014,8 +1020,11 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY id ASC LIMIT 20`,
-      [gatewayId, since],
+        ORDER BY id ASC LIMIT 8`,
+      // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
+      // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
+      // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.
+      [gatewayId, 0],
     );
     if (rows.length) {
       const ids = rows.map((r) => r.id);

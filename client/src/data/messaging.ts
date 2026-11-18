@@ -24,6 +24,7 @@ import {
   toB64,
   storage,
   type DeviceKeys,
+  decryptBytes,
 } from '../crypto/core';
 import { dbGet, dbSet, enqueueOutbox, listOutbox, removeOutbox, updateOutboxState, type OutboxItem } from './db';
 import { compressImage, uploadBytesWithProgress, type UploadStage } from './uploader';
@@ -620,7 +621,16 @@ async function decryptWithKey(env: Envelope, rawKey: Uint8Array | null, myUserna
       : null;
   // внимание: decryptPayload ожидает стандартный base64 (toB64), не base64url —
   // иначе fromB64 отбрасывает '-'/'_' и шифротекст повреждается.
-  const payload = bytes ? await decryptPayload(rawKey, toB64(bytes), env.nonce) : null;
+  let payload = bytes ? await decryptPayload(rawKey, toB64(bytes), env.nonce) : null;
+  if (!payload && bytes) {
+    // Ранние KMesh-сообщения шифровали «голый» текст, а не JSON {text}.
+    try {
+      const plain = new TextDecoder().decode(decryptBytes(rawKey, toB64(bytes), env.nonce));
+      if (plain) payload = { text: plain } as MessagePayload;
+    } catch {
+      /* не наш ключ */
+    }
+  }
   return {
     ...common,
     text: payload?.text ?? '',

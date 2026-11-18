@@ -371,7 +371,14 @@ export class KMeshV1Client {
       return true;
     };
 
-    let chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+    /* Секретный (E2E) чат: ключ есть только на устройствах участников — шифруем им всегда,
+     * с Hub ключ не синхронизируется. Остальные чаты: постоянный ключ Hub (кэш или CHAT_KEY_REQ через
+     * шлюз); без шлюза — текст внутри пакета, запечатанного временным ключом кластера. */
+    const e2eKey = await this.e2eKeyFor(input.chatId).catch(() => null);
+    let chatKey = e2eKey ?? (await this.chatKeyFor(input.chatId).catch(() => null));
+    /* Шлюза нет — адресата «шлюз» в кластере не существует: шлём всем узлам кластера, каждый телефон
+     * сам примет сообщение, если состоит в чате (по chatRef). */
+    const toCluster = !input.toInternet;
     /* Новый чат без ключа: просим Hub выдать постоянный ключ через KMesh.
      * Пока ответа нет — первое сообщение уходит открытым внутри mesh
      * (пакет всё равно запечатан временным ключом кластера), а после
@@ -392,7 +399,7 @@ export class KMeshV1Client {
       }
     }
 
-    if (!chatKey || !input.toInternet) {
+    if (!chatKey || (!input.toInternet && !e2eKey)) {
       // Офлайн/кластер: текст идёт открытым внутри mesh-пакета (он запечатан
       // временным ключом кластера); при появлении Hub outbox зашифрует его
       // постоянным ключом чата и сохранит.
@@ -401,7 +408,7 @@ export class KMeshV1Client {
         (input.toInternet || isGroup ? PacketFlag.TO_INTERNET : 0) |
         PacketFlag.NEED_CLOUD_ARCHIVE |
         (isGroup ? 0 : PacketFlag.NEED_ACK);
-      const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, textFlags, msgUuid, textRpc);
+      const up = encodeRpcUp(isGroup || toCluster ? BROADCAST_ID : input.peerNodeId, textFlags, msgUuid, textRpc);
       const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
       item.state = 'LOCAL_MESH_ONLY';
       await kmeshV1Update(item);
@@ -419,7 +426,9 @@ export class KMeshV1Client {
       }
       return { msgUuid: uuidHex, state: item.state };
     }
-    const sealed = encryptBytes(chatKey, new TextEncoder().encode(input.text));
+    // Тот же формат, что у обычной отправки (encryptForChat → JSON {text}): Hub и получатели
+    // расшифровывают его как любое другое сообщение. Раньше шифровался «голый» текст → пустое сообщение.
+    const sealed = encryptBytes(chatKey, new TextEncoder().encode(JSON.stringify({ text: input.text })));
     const ciphertextBytes = b64ToBytes(sealed.ciphertext);
     const nonceBytes = b64ToBytes(sealed.nonce);
     // В эфир уходит готовый E2EE-конверт; temp-ключ только транспорт.
@@ -435,7 +444,7 @@ export class KMeshV1Client {
         ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE
         : PacketFlag.NEED_CLOUD_ARCHIVE) |
       (isGroup ? 0 : PacketFlag.NEED_ACK);
-    const up = encodeRpcUp(isGroup ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
+    const up = encodeRpcUp(isGroup || toCluster ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
     const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
 
     item.ciphertextB64 = sealed.ciphertext;
@@ -632,6 +641,13 @@ export class KMeshV1Client {
     return null;
   }
 
+  /** Локальный E2E-ключ секретного чата (с Hub не синхронизируется). */
+  private async e2eKeyFor(chatId: string): Promise<Uint8Array | null> {
+    const keys = await storage.loadKeys();
+    if (!keys) return null;
+    return loadChatKey(chatId, keys).catch(() => null);
+  }
+
   private async chatKeyFor(chatId: string): Promise<Uint8Array | null> {
     if (this.opts.getChatKey) return this.opts.getChatKey(chatId);
     const keys = await storage.loadKeys();
@@ -676,7 +692,7 @@ export class KMeshV1Client {
           // Ключ ещё не получен (нет сети): не помечаем FAILED, повторим позже.
           continue;
         }
-        const sealed = encryptBytes(key, new TextEncoder().encode(item.text));
+        const sealed = encryptBytes(key, new TextEncoder().encode(JSON.stringify({ text: item.text })));
         item.ciphertextB64 = sealed.ciphertext;
         item.nonce = sealed.nonce;
       }
