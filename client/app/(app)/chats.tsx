@@ -75,6 +75,7 @@ import { useStore } from '../../src/state/useStore';
 import { onKmeshFeed, onKmeshHistory, onKmeshSearch } from '../../src/kmesh/v1/events';
 import { requestKmeshFeed, requestKmeshHistory, requestKmeshSearch } from '../../src/kmesh/v1/runtime';
 import { crc16 } from '../../src/kmesh/v1/protocol';
+import { cachePeerAccountKeys } from '../../src/kmesh/v1/pairKey';
 import { setChatSearchActive } from '../../src/state/chatSearchState';
 import { hasNetworkAccess } from '../../src/data/access';
 import { onReadAllRequest } from '../../src/state/chatEvents';
@@ -539,6 +540,9 @@ export default function ChatsScreen() {
       if (chat.encryption === 'e2e') continue;
       void getServerChatKey(chat.id).catch(() => undefined);
     }
+    // Ключи аккаунтов собеседников: из них выводится ключ пары для KMesh без Hub.
+    const me = useStore.getState().session?.username;
+    if (me && list.length) void cachePeerAccountKeys(list, me).catch(() => undefined);
   }, [chats.data]);
 
   /* -------------------------------------- скрытие поиска при скролле вниз */

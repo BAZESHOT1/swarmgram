@@ -278,6 +278,15 @@ async function deriveKek(privHex: string, peerJwkJson: string, salt: Uint8Array)
   return hkdf(sha256, shared, salt, utf8Encode('klinto-chat-key-v1'), 32);
 }
 
+/**
+ * Ключ пары пользователей (KMesh без Hub): ECDH ключей аккаунтов + HKDF по chatId. Симметричен —
+ * обе стороны получают один и тот же ключ; модули и Hub его не знают.
+ */
+export function derivePairKey(myAccountPrivHex: string, peerAccountPubJson: string, chatId: string): Uint8Array {
+  const shared = p256.getSharedSecret(myAccountPrivHex, jwkToSec1(JSON.parse(peerAccountPubJson) as JsonWebKey));
+  return hkdf(sha256, shared.slice(1, 33), utf8Encode(chatId), utf8Encode('klinto-kmesh-pair-v1'), 32);
+}
+
 /** Оборачиваем ключ чата под устройство получателя. */
 export async function wrapKeyForDevice(chatKeyRaw: Uint8Array, recipientEcdhPubJson: string): Promise<string> {
   const ephPriv = randomPriv();

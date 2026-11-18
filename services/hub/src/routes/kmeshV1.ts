@@ -600,6 +600,20 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
       [envelope.chatId, senderId]);
     if (!member) return true;
+    if (envelope.kind.startsWith('text:pair')) {
+      // Ключ пары пользователей: Hub не может прочитать и не хранит; пересылаем узлам собеседников,
+      // серверная копия придёт от отправителя через /kmesh/v1/sync под ключом чата.
+      const peers = await query<{ user_id: string }>(
+        'SELECT user_id::text FROM chat_members WHERE chat_id = $1', [envelope.chatId]);
+      for (const m of peers) {
+        if (m.user_id === senderId) continue;
+        const target = await nodeForUser(m.user_id);
+        if (!target || target.nodeId === packet.srcId) continue;
+        await queuePacket({ gatewayId: target.gatewayId || gatewayId, dstNodeId: target.nodeId,
+          srcNodeId: packet.srcId, msgUuid: packet.msgUuid, rpc: plain });
+      }
+      return true;
+    }
     const sender = await one<{ username: string }>('SELECT username FROM users WHERE id = $1',
       [senderId]);
     const uuid = msgUuidHex(packet.msgUuid);

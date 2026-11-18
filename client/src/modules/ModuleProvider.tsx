@@ -154,6 +154,16 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [connection]);
   const ignoredModulesRef = useRef<Set<string>>(new Set());
+  /** Публичный канал: пост можно отправить в кластер открыто, если ключа канала нет. */
+  const isPublicChannel = (chatId: string): boolean => {
+    const lists = [qc.getQueryData<Array<{ id?: string; type?: string; isPublic?: boolean; visibility?: string }>>(['chats', useStore.getState().session?.username]),
+      qc.getQueryData<Array<{ id?: string; type?: string; isPublic?: boolean; visibility?: string }>>(['chats'])];
+    for (const list of lists) {
+      const chat = Array.isArray(list) ? list.find((c) => c?.id === chatId) : undefined;
+      if (chat) return chat.type === 'channel' && (chat.isPublic === true || chat.visibility === 'public');
+    }
+    return false;
+  };
   const cancelAutoKeyRef = useRef<string | null>(null);
 
   const connectionRef = useRef<ModuleConnection | null>(null);
@@ -231,6 +241,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             peerNodeId: 1,
             text,
             toInternet: Boolean(useStore.getState().transportOnline) || Boolean(infoRef.current?.gateway),
+            allowPlaintext: isPublicChannel(chatId),
             clientId,
           });
           return result.state !== 'FAILED';
@@ -492,7 +503,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 id: `mesh-${message.msgUuid}`,
                 chatId: message.chatId,
                 seq: 0,
-                kind: message.kind,
+                kind: message.kind.startsWith('text') ? 'text' : message.kind,
                 text: bodyText,
                 createdAt,
                 mine: false,
@@ -572,6 +583,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               peerNodeId: 1,
               text,
               toInternet: Boolean(useStore.getState().transportOnline) || Boolean(infoRef.current?.gateway),
+            allowPlaintext: isPublicChannel(chatId),
               clientId,
             });
             return result.state !== 'FAILED';

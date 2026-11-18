@@ -9,6 +9,7 @@
  *     подписывать постоянным ключом устройства и вызывать /v1/kmesh/v1/sync;
  *   - отдавать статус MSG_SYNCED, чтобы UI не дублировал сообщение.
  */
+import { pairKeyFor } from './pairKey';
 import { encryptBytes, decryptBytes, storage } from '../../crypto/core';
 import { kv } from '../../crypto/storage';
 import { getServerChatKey, loadChatKey, peekServerChatKey } from '../../data/chatkit';
@@ -286,6 +287,8 @@ export class KMeshV1Client {
     text: string;
     toInternet?: boolean;
     group?: boolean;
+    /** Публичный канал: без ключа можно слать открыто (пост и так публичный). */
+    allowPlaintext?: boolean;
     clientId?: string;
   }): Promise<{ msgUuid: string; state: KMeshV1SyncState }> {
     const keys = await storage.loadKeys();
@@ -371,35 +374,49 @@ export class KMeshV1Client {
       return true;
     };
 
-    /* Секретный (E2E) чат: ключ есть только на устройствах участников — шифруем им всегда,
-     * с Hub ключ не синхронизируется. Остальные чаты: постоянный ключ Hub (кэш или CHAT_KEY_REQ через
-     * шлюз); без шлюза — текст внутри пакета, запечатанного временным ключом кластера. */
+    /* Выбор ключа (конфиденциальность в кластере без Hub):
+     *  1) секретный чат — E2E-ключ с устройства (с Hub не синхронизируется);
+     *  2) закэшированный постоянный серверный ключ чата — всегда, даже без шлюза;
+     *  3) шлюз есть — запрашиваем серверный ключ у Hub через KMesh (CHAT_KEY_REQ);
+     *  4) ключа нет — ключ пары пользователей (ECDH ключей аккаунтов), модули и Hub его не знают;
+     *  5) нет и его — в эфир НЕ отправляем: сообщение ждёт в outbox до доступа к Hub.
+     *     Исключение — публичный канал (allowPlaintext): пост и так публичный. */
     const e2eKey = await this.e2eKeyFor(input.chatId).catch(() => null);
-    let chatKey = e2eKey ?? (await this.chatKeyFor(input.chatId).catch(() => null));
-    /* Шлюза нет — адресата «шлюз» в кластере не существует: шлём всем узлам кластера, каждый телефон
-     * сам примет сообщение, если состоит в чате (по chatRef). */
-    const toCluster = !input.toInternet;
-    /* Новый чат без ключа: просим Hub выдать постоянный ключ через KMesh.
-     * Пока ответа нет — первое сообщение уходит открытым внутри mesh
-     * (пакет всё равно запечатан временным ключом кластера), а после
-     * подтверждения и ключа уйдёт обычным E2EE-конвертом. */
-    if (!chatKey && input.toInternet) {
-      this.opts.onSendProgress?.({
-        msgUuid: uuidHex,
-        clientId: input.clientId,
-        chatId: input.chatId,
-        sent: 0,
-        total: 0,
-        phase: 'key',
-      });
-      await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
-      for (let i = 0; i < 14 && !chatKey; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
-      }
+    let keyKind: 'e2e' | 'server' | 'pair' | null = null;
+    let chatKey: Uint8Array | null = null;
+    if (e2eKey) {
+      chatKey = e2eKey;
+      keyKind = 'e2e';
+    } else {
+      chatKey = await peekServerChatKey(input.chatId).catch(() => null);
+      if (chatKey) keyKind = 'server';
     }
-
-    if (!chatKey || (!input.toInternet && !e2eKey)) {
+    const toCluster = !input.toInternet;
+    if (!chatKey && input.toInternet) {
+      this.opts.onSendProgress?.({ msgUuid: uuidHex, clientId: input.clientId, chatId: input.chatId, sent: 0, total: 0, phase: 'key' });
+      chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+      if (!chatKey) {
+        await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
+        for (let i = 0; i < 14 && !chatKey; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          chatKey = await peekServerChatKey(input.chatId).catch(() => null);
+        }
+      }
+      if (chatKey) keyKind = 'server';
+    }
+    if (!chatKey) {
+      chatKey = await pairKeyFor(input.chatId);
+      if (chatKey) keyKind = 'pair';
+    }
+    if (!chatKey && !input.allowPlaintext) {
+      // Нечем зашифровать конфиденциально — в эфир не отправляем. Сообщение остаётся в outbox и уйдёт
+      // с серверным ключом, как только Hub станет доступен (через интернет или шлюз KMesh).
+      item.state = 'LOCAL_MESH_ONLY';
+      await kmeshV1Update(item);
+      console.log('[kmesh]', 'no confidential key, kept in outbox', { chatId: input.chatId });
+      return { msgUuid: uuidHex, state: item.state };
+    }
+    if (!chatKey) {
       // Офлайн/кластер: текст идёт открытым внутри mesh-пакета (он запечатан
       // временным ключом кластера); при появлении Hub outbox зашифрует его
       // постоянным ключом чата и сохранит.
@@ -435,20 +452,27 @@ export class KMeshV1Client {
     const rpc = encodeEnvelopeRpc({
       chatRef: input.chatRef,
       chatId: input.chatId,
-      kind: 'text',
+      // 'text:pair' — зашифровано ключом пары: Hub не хранит такую копию (не может прочитать),
+      // только пересылает узлам собеседника; серверная копия придёт через outbox.
+      kind: keyKind === 'pair' ? 'text:pair' : 'text',
       nonce: nonceBytes,
       ciphertext: ciphertextBytes,
     });
     const flags =
-      (input.toInternet || isGroup
-        ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE
-        : PacketFlag.NEED_CLOUD_ARCHIVE) |
-      (isGroup ? 0 : PacketFlag.NEED_ACK);
+      (keyKind === 'pair'
+        ? 0
+        : input.toInternet || isGroup
+          ? PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE
+          : PacketFlag.NEED_CLOUD_ARCHIVE) |
+      (isGroup || toCluster ? 0 : PacketFlag.NEED_ACK);
     const up = encodeRpcUp(isGroup || toCluster ? BROADCAST_ID : input.peerNodeId, flags, msgUuid, rpc);
     const frame = encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++);
 
-    item.ciphertextB64 = sealed.ciphertext;
-    item.nonce = sealed.nonce;
+    if (keyKind !== 'pair') {
+      // Копия под ключом пары на Hub не нужна: outbox зашифрует серверным ключом при синхронизации.
+      item.ciphertextB64 = sealed.ciphertext;
+      item.nonce = sealed.nonce;
+    }
     item.state = 'LOCAL_MESH_ONLY';
     await kmeshV1Update(item);
 
@@ -619,6 +643,8 @@ export class KMeshV1Client {
     const candidates: Uint8Array[] = [];
     const server = await peekServerChatKey(chatId).catch(() => null);
     if (server) candidates.push(server);
+    const pair = await pairKeyFor(chatId);
+    if (pair) candidates.push(pair);
     const keys = await storage.loadKeys();
     if (keys) {
       const e2e = await loadChatKey(chatId, keys).catch(() => null);
