@@ -10,6 +10,7 @@
  *   - отдавать статус MSG_SYNCED, чтобы UI не дублировал сообщение.
  */
 import { pairKeyFor } from './pairKey';
+import { signRelay } from './relay';
 import { encryptBytes, decryptBytes, storage } from '../../crypto/core';
 import { kv } from '../../crypto/storage';
 import { getServerChatKey, loadChatKey, peekServerChatKey } from '../../data/chatkit';
@@ -56,6 +57,7 @@ import {
   type SearchResult,
 } from './protocol';
 import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
+import { decodeLocalSearch, encodeLocalSearchReq, encodeLocalSearchResp, msgUuidFromHex } from './protocol';
 
 export interface KMeshV1Link {
   send(frame: Uint8Array): Promise<boolean>;
@@ -99,6 +101,8 @@ export interface KMeshV1ClientOptions {
   onStatus?: (event: KMeshV1StatusEvent) => void;
   onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number; gateway: boolean }) => void;
   onSearch?: (reqId: number, results: SearchResult[], more: boolean) => void;
+  /** Поиск без Hub: соседний телефон спрашивает — отвечаем из своих локальных данных. */
+  onLocalSearchRequest?: (query: string) => Array<{ type: number; name: string }>;
   onFeed?: (entries: FeedEntry[], more: boolean) => void;
   onHistory?: (chatRef: number, messages: HistoryEntry[], more: boolean) => void;
   /** Прогресс записи кадра в BLE: байты и привязка к сообщению. */
@@ -215,6 +219,12 @@ export class KMeshV1Client {
 
   private async sendServiceRpc(rpc: Uint8Array): Promise<boolean> {
     const up = encodeRpcUp(ANY_GATEWAY_ID, PacketFlag.TO_INTERNET, 0n, rpc);
+    return this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+  }
+
+  /** Поиск без Hub: опросить телефоны в кластере (broadcast; ретрансляторы передают дальше по TTL). */
+  async localSearch(reqId: number, query: string): Promise<boolean> {
+    const up = encodeRpcUp(BROADCAST_ID, 0, 0n, encodeLocalSearchReq(reqId, query));
     return this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
   }
 
@@ -445,7 +455,15 @@ export class KMeshV1Client {
     }
     // Тот же формат, что у обычной отправки (encryptForChat → JSON {text}): Hub и получатели
     // расшифровывают его как любое другое сообщение. Раньше шифровался «голый» текст → пустое сообщение.
-    const sealed = encryptBytes(chatKey, new TextEncoder().encode(JSON.stringify({ text: input.text })));
+    let payloadJson = JSON.stringify({ text: input.text });
+    if (keyKind === 'pair') {
+      // Подпись автора — чтобы получатель мог выгрузить копию на Hub, если отправитель туда не выйдет.
+      const ts = Date.now();
+      const signed = JSON.stringify({ text: input.text, ts, sig: signRelay(keys.identityPriv, uuidHex, input.chatId, ts, input.text) });
+      // Пакет KMesh ≤ 255 байт: длинный текст уходит без подписи (сохранность — через очередь отправителя).
+      if (signed.length <= 150) payloadJson = signed;
+    }
+    const sealed = encryptBytes(chatKey, new TextEncoder().encode(payloadJson));
     const ciphertextBytes = b64ToBytes(sealed.ciphertext);
     const nonceBytes = b64ToBytes(sealed.nonce);
     // В эфир уходит готовый E2EE-конверт; temp-ключ только транспорт.
@@ -491,6 +509,51 @@ export class KMeshV1Client {
       await kmeshV1Update(item);
     }
     return { msgUuid: uuidHex, state: item.state };
+  }
+
+  /**
+   * Hub стал доступен через шлюз KMesh (у телефона интернета нет): сообщения, ушедшие под ключом пары,
+   * переотправляем под постоянным серверным ключом чата с тем же msgUuid — Hub сохранит их как обычные
+   * (дедупликация по msgUuid), и у обоих собеседников появится серверная копия.
+   */
+  async resendPairViaGateway(): Promise<number> {
+    if (!this.nodeId) return 0;
+    const items = (await kmeshV1List().catch(() => [])).filter(
+      (row) => !row.ciphertextB64 && row.state !== 'SYNCED_PERMANENT' && row.text,
+    );
+    let sent = 0;
+    for (const item of items.slice(0, 5)) {
+      let key = await peekServerChatKey(item.chatId).catch(() => null);
+      if (!key) {
+        await this.requestChatKey(item.chatId, item.chatRef).catch(() => false);
+        for (let i = 0; i < 14 && !key; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          key = await peekServerChatKey(item.chatId).catch(() => null);
+        }
+      }
+      if (!key) continue;
+      const sealed = encryptBytes(key, new TextEncoder().encode(JSON.stringify({ text: item.text })));
+      const rpc = encodeEnvelopeRpc({
+        chatRef: item.chatRef,
+        chatId: item.chatId,
+        kind: 'text',
+        nonce: b64ToBytes(sealed.nonce),
+        ciphertext: b64ToBytes(sealed.ciphertext),
+      });
+      const up = encodeRpcUp(item.peerNodeId || ANY_GATEWAY_ID,
+        PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE | PacketFlag.NEED_ACK,
+        msgUuidFromHex(item.msgUuid), rpc);
+      const ok = await this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+      if (ok) {
+        item.ciphertextB64 = sealed.ciphertext;
+        item.nonce = sealed.nonce;
+        item.state = 'SYNC_PENDING';
+        await kmeshV1Update(item);
+        sent += 1;
+      }
+    }
+    if (sent) console.log('[kmesh]', 'pair messages re-sent with server key via gateway', sent);
+    return sent;
   }
 
   /** Feed bytes from the BLE notification stream. */
@@ -588,6 +651,26 @@ export class KMeshV1Client {
                 ciphertext: bytesToB64(envelope.ciphertext),
                 srcNodeId: packet.srcId,
               });
+            }
+            break;
+          }
+          if (op === RpcOp.LOCAL_SEARCH_REQ || op === RpcOp.LOCAL_SEARCH_RESP) {
+            const local = decodeLocalSearch(packet.payload);
+            if (!local || packet.srcId === this.nodeId) break;
+            if (local.op === RpcOp.LOCAL_SEARCH_REQ && local.query && this.opts.onLocalSearchRequest) {
+              const items = this.opts.onLocalSearchRequest(local.query);
+              if (items.length) {
+                const resp = encodeLocalSearchResp(local.reqId, items);
+                void this.link.send(
+                  encodeClientFrame(ClientFrameType.RPC_UP, encodeRpcUp(BROADCAST_ID, 0, 0n, resp), this.seq++),
+                );
+              }
+            } else if (local.op === RpcOp.LOCAL_SEARCH_RESP && local.items) {
+              this.opts.onSearch?.(
+                local.reqId,
+                local.items.map((item) => ({ entityId: 0, type: item.type, name: item.name })),
+                false,
+              );
             }
             break;
           }

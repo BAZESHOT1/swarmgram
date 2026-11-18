@@ -19,6 +19,7 @@ import { useStore } from '../state/useStore';
 import { getModuleTransport, webBluetoothSupported, webSerialSupported } from './transport';
 import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
+import { flushRelayQueue, queueRelay } from '../kmesh/v1/relay';
 import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
 import { storeServerChatKey } from '../data/chatkit';
@@ -154,6 +155,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [connection]);
   const ignoredModulesRef = useRef<Set<string>>(new Set());
+  const lastPairResendRef = useRef(0);
   /** Публичный канал: пост можно отправить в кластер открыто, если ключа канала нет. */
   const isPublicChannel = (chatId: string): boolean => {
     const lists = [qc.getQueryData<Array<{ id?: string; type?: string; isPublic?: boolean; visibility?: string }>>(['chats', useStore.getState().session?.username]),
@@ -408,10 +410,31 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           resolveChatByRef: resolveChat,
           onInfo: (info) => {
             setMeshCapabilities({ queue: info.queue });
+            // Шлюз в кластере = доступ к Hub: переводим сообщения под ключом пары на серверный ключ.
+            if (info.gateway && Date.now() - lastPairResendRef.current > 60_000) {
+              lastPairResendRef.current = Date.now();
+              setTimeout(() => void v1ClientRef.current?.resendPairViaGateway().catch(() => 0), 3000);
+            }
             setTransportGateway(info.gateway);
             if (info.nodeId) void api.kmeshV1NodeBind(info.nodeId).catch(() => undefined);
           },
           onSearch: (reqId, results, more) => emitKmeshSearch({ reqId, results, more }),
+          onLocalSearchRequest: (q) => {
+            // Отвечаем соседям только публичным: свой профиль, публичные группы/каналы из своего списка.
+            const needle = q.trim().replace(/^@+/, '').toLowerCase();
+            if (needle.length < 2) return [];
+            const out: Array<{ type: number; name: string }> = [];
+            const me = useStore.getState().session?.username ?? '';
+            if (me && me.toLowerCase().includes(needle)) out.push({ type: 1, name: '@' + me });
+            const list = qc.getQueryData<Array<{ type?: string; title?: string; isPublic?: boolean; visibility?: string }>>(['chats', me]) ?? [];
+            for (const chat of list) {
+              const isPublic = chat.isPublic === true || chat.visibility === 'public';
+              if (!isPublic || !chat.title || chat.type === 'direct') continue;
+              if (chat.title.toLowerCase().includes(needle)) out.push({ type: chat.type === 'channel' ? 3 : 2, name: chat.title });
+              if (out.length >= 6) break;
+            }
+            return out;
+          },
           onChatKey: (chatId, version, key) => {
             console.log('[kmesh]', 'chat key received', { chatId, version, bytes: key.length });
             void storeServerChatKey(chatId, version, key).catch(() => undefined);
@@ -492,8 +515,15 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               let bodyText = text;
               if (text.startsWith('{')) {
                 try {
-                  const parsed = JSON.parse(text) as { text?: unknown };
+                  const parsed = JSON.parse(text) as { text?: unknown; ts?: unknown; sig?: unknown };
                   if (typeof parsed.text === 'string') bodyText = parsed.text;
+                  // Сообщение под ключом пары с подписью автора: сохраняем для выгрузки на Hub,
+                  // если автор сам туда не выйдет (сохранность личных сообщений).
+                  if (message.kind.startsWith('text:pair') && typeof parsed.sig === 'string' && typeof parsed.ts === 'number') {
+                    void queueRelay({ msgUuid: message.msgUuid, chatId: message.chatId, text: bodyText, ts: parsed.ts, sig: parsed.sig })
+                      .then(() => (useStore.getState().transportOnline ? flushRelayQueue() : 0))
+                      .catch(() => undefined);
+                  }
                 } catch {
                   /* это обычный текст */
                 }
@@ -1199,6 +1229,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     const timer = setInterval(() => {
       if (!useStore.getState().transportOnline) return;
       void v1ClientRef.current?.syncOutbox().catch(() => undefined);
+      void flushRelayQueue().catch(() => undefined);
     }, 30_000);
     return () => clearInterval(timer);
   }, []);

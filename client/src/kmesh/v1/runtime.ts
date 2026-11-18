@@ -42,6 +42,8 @@ async function withRetry(run: (client: KMeshV1Client) => Promise<boolean>): Prom
 export async function requestKmeshSearch(query: string, type = 0): Promise<boolean> {
   if (!active) return false;
   const reqId = nextReqId();
+  // Без Hub отвечают соседние телефоны кластера; с Hub — сервер. Спрашиваем оба источника.
+  void active.localSearch(reqId, query).catch(() => false);
   return withRetry((client) => client.search(reqId, query, type));
 }
 

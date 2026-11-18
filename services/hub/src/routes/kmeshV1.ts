@@ -14,7 +14,8 @@
  * Каноническая строка подписи (UTF-8, хэшируется один раз перед ECDSA/Ed25519):
  *   KLINTO-KMESH1-PERM|<msg_uuid hex>|<sender_id>|<receiver_id>|<timestamp_ms>|<cipher hex>
  */
-import { createHash, createPublicKey, randomBytes, verify as verifyRawSignature } from 'node:crypto';
+import { createDecipheriv, createHash, createPublicKey, randomBytes, verify as verifyRawSignature } from 'node:crypto';
+import { decryptSecret } from '../secrets.js';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth.js';
 import { requireModule } from './modules.js';
@@ -898,6 +899,125 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     // Сообщения и сервисные RPC: маршрутизация по node_id/chat_ref.
     await routeRelayedPacket(body, gatewayId);
     return reply.send({ ok: true, status: 200, kind: 'archive' });
+  });
+
+  /**
+   * Копия KMesh-сообщения, выгружаемая ЛЮБЫМ участником чата (обычно получателем), если автор сам не вышел
+   * к Hub. Защита от подделки: автор подписал (ECDSA P-256, ключ устройства) строку
+   *   "klinto-relay-v1|<msgUuid>|<chatId>|<ts>|<sha256(text)>";
+   * Hub ищет автора среди устройств участников чата, расшифровывает копию серверным ключом и сверяет хеш
+   * текста. Без ключа устройства автора чужое сообщение не создать; содержимое подменить нельзя.
+   */
+  app.post('/kmesh/v1/relay-sync', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const uuid = String(body.msg_uuid ?? '').toLowerCase();
+    const chatId = String(body.chat_id ?? '');
+    const ts = num(body.timestamp);
+    const textHash = String(body.text_sha256 ?? '').toLowerCase();
+    const sigB64 = String(body.sender_sig ?? '');
+    const ciphertextB64 = String(body.ciphertext_b64 ?? '');
+    const nonceB64 = String(body.nonce ?? '');
+    const keyVersion = num(body.key_version);
+    if (!UUID64_RE.test(uuid)) throw badRequest('invalid_msg_uuid');
+    if (!UUID_RE.test(chatId)) throw badRequest('invalid_chat_id');
+    if (!/^[0-9a-f]{64}$/.test(textHash)) throw badRequest('invalid_text_hash');
+    if (!Number.isFinite(ts) || ts <= 0) throw badRequest('invalid_timestamp');
+    if (!ciphertextB64 || ciphertextB64.length > MAX_CIPHERTEXT_B64) throw badRequest('invalid_ciphertext');
+    rateLimit(`kmesh-v1-relay-sync:${auth.userId}`, 120, 60_000);
+
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chatId, auth.userId]);
+    if (!member) throw forbidden('not_a_member');
+
+    const existing = await one('SELECT 1 FROM messages WHERE chat_id = $1 AND msg_uuid = $2', [chatId, uuid]);
+    if (existing) return reply.send({ ok: true, deduped: true });
+
+    // Автор: участник чата, чьё устройство подписало canonical.
+    const canonical = Buffer.from(`klinto-relay-v1|${uuid}|${chatId}|${ts}|${textHash}`, 'utf8');
+    const sig = Buffer.from(sigB64, 'base64');
+    if (sig.length !== 64) throw badRequest('invalid_signature');
+    const devices = await query<{ user_id: string; identity_pub: string }>(
+      `SELECT d.user_id::text, d.identity_pub FROM devices d
+         JOIN chat_members cm ON cm.user_id = d.user_id AND cm.chat_id = $1`,
+      [chatId],
+    );
+    let senderId: string | null = null;
+    for (const d of devices) {
+      try {
+        if (!d.identity_pub || !d.identity_pub.startsWith('{')) continue;
+        const key = createPublicKey({ key: JSON.parse(d.identity_pub), format: 'jwk' });
+        if (verifyRawSignature('sha256', canonical, { key, dsaEncoding: 'ieee-p1363' }, sig)) {
+          senderId = d.user_id;
+          break;
+        }
+      } catch {
+        /* следующий ключ */
+      }
+    }
+    if (!senderId) throw badRequest('invalid_signature');
+
+    // Копия обязана быть под серверным ключом чата и содержать именно подписанный текст.
+    const keyRow = await one<{ version: number; key_enc: string }>(
+      keyVersion > 0
+        ? 'SELECT version, key_enc FROM chat_key_versions WHERE chat_id = $1 AND version = $2'
+        : 'SELECT version, key_enc FROM chat_key_versions WHERE chat_id = $1 ORDER BY version DESC LIMIT 1',
+      keyVersion > 0 ? [chatId, keyVersion] : [chatId],
+    );
+    if (!keyRow) throw badRequest('no_server_key');
+    try {
+      const key = Buffer.from(decryptSecret(keyRow.key_enc), 'base64');
+      const data = Buffer.from(ciphertextB64, 'base64');
+      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(nonceB64, 'base64'));
+      decipher.setAuthTag(data.subarray(data.length - 16));
+      const plain = Buffer.concat([decipher.update(data.subarray(0, data.length - 16)), decipher.final()]);
+      const text = String((JSON.parse(plain.toString('utf8')) as { text?: unknown }).text ?? '');
+      if (createHash('sha256').update(text, 'utf8').digest('hex') !== textHash) throw new Error('hash');
+    } catch {
+      throw badRequest('copy_mismatch');
+    }
+
+    const sender = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [senderId]);
+    const header = {
+      kmeshV1: true,
+      transport: 'mesh',
+      relayedBy: auth.userId,
+      msgUuid: uuid,
+      scheme: 'server',
+      keyVersion: keyRow.version,
+      ciphertextB64,
+      nonceB64,
+      nonce: nonceB64,
+    };
+    const row = await one<{ seq: number; id: string; created_at: string }>(
+      `INSERT INTO messages (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid)
+       VALUES ($1,$2,NULL,'text',$3,$4)
+       ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL DO NOTHING
+       RETURNING seq, id, created_at`,
+      [chatId, senderId, JSON.stringify(header), uuid],
+    );
+    if (!row) return reply.send({ ok: true, deduped: true });
+    await query('UPDATE chats SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1', [chatId, row.seq]);
+    const members = await query<{ user_id: string }>('SELECT user_id::text FROM chat_members WHERE chat_id = $1', [chatId]);
+    for (const m of members) {
+      publishRealtime(m.user_id, {
+        type: 'message',
+        message: {
+          id: row.id,
+          chatId,
+          seq: row.seq,
+          senderUserId: senderId,
+          senderUsername: sender?.username ?? '',
+          kind: 'text',
+          createdAt: row.created_at,
+          nonce: nonceB64,
+          header,
+          scheme: 'server',
+          keyVersion: keyRow.version,
+          envelopeB64: ciphertextB64,
+        },
+      });
+    }
+    return reply.code(201).send({ ok: true, deduped: false });
   });
 
   /** Клиент сообщает Hub соответствие chat_ref = CRC16(chatId). */

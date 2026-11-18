@@ -52,7 +52,56 @@ export const RpcOp = {
   SEND_ENVELOPE: 0x0e,
   CHAT_KEY_REQ: 0x0f,
   CHAT_KEY_RESP: 0x10,
+  /** Поиск без Hub: широковещательный опрос телефонов кластера (ответ тоже broadcast). */
+  LOCAL_SEARCH_REQ: 0x20,
+  LOCAL_SEARCH_RESP: 0x21,
 } as const;
+
+/** Запрос локального поиска: [op][reqId u16][utf8 query]. */
+export function encodeLocalSearchReq(reqId: number, query: string): Uint8Array {
+  const q = new TextEncoder().encode(query.slice(0, 48));
+  const out = new Uint8Array(3 + q.length);
+  out[0] = RpcOp.LOCAL_SEARCH_REQ;
+  out[1] = reqId & 0xff;
+  out[2] = (reqId >> 8) & 0xff;
+  out.set(q, 3);
+  return out;
+}
+
+/** Ответ: [op][reqId u16][JSON [[type,name],...]], не больше ~180 байт. */
+export function encodeLocalSearchResp(reqId: number, items: Array<{ type: number; name: string }>): Uint8Array {
+  const rows: Array<[number, string]> = [];
+  let body = new TextEncoder().encode('[]');
+  for (const item of items) {
+    const next = new TextEncoder().encode(JSON.stringify([...rows, [item.type, item.name.slice(0, 40)]]));
+    if (next.length > 180) break;
+    rows.push([item.type, item.name.slice(0, 40)]);
+    body = next;
+  }
+  const out = new Uint8Array(3 + body.length);
+  out[0] = RpcOp.LOCAL_SEARCH_RESP;
+  out[1] = reqId & 0xff;
+  out[2] = (reqId >> 8) & 0xff;
+  out.set(body, 3);
+  return out;
+}
+
+export function decodeLocalSearch(payload: Uint8Array): { op: number; reqId: number; query?: string; items?: Array<{ type: number; name: string }> } | null {
+  if (payload.length < 3) return null;
+  const op = payload[0];
+  const reqId = payload[1] | (payload[2] << 8);
+  const text = new TextDecoder().decode(payload.subarray(3));
+  if (op === RpcOp.LOCAL_SEARCH_REQ) return { op, reqId, query: text };
+  if (op === RpcOp.LOCAL_SEARCH_RESP) {
+    try {
+      const rows = JSON.parse(text) as Array<[number, string]>;
+      return { op, reqId, items: rows.map(([type, name]) => ({ type: Number(type) || 0, name: String(name) })) };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 export const SearchType = {
   ALL: 0,

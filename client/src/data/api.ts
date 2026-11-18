@@ -1649,6 +1649,22 @@ export const api = {
       '/v1/kmesh/v1/me/identity',
     ),
 
+  /** Копия чужого KMesh-сообщения с подписью автора (выгружает любой участник чата). */
+  kmeshV1RelaySync: (body: {
+    msg_uuid: string;
+    chat_id: string;
+    timestamp: number;
+    text_sha256: string;
+    sender_sig: string;
+    ciphertext_b64: string;
+    nonce: string;
+    key_version: number;
+  }) =>
+    req<{ ok: true; deduped?: boolean }>('/v1/kmesh/v1/relay-sync', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   /** Зарегистрировать chat_ref = CRC16(chatId) для серверной маршрутизации. */
   kmeshV1RegisterRef: (chatId: string) =>
     req<{ ok: true; chat_ref: number }>('/v1/kmesh/v1/ref', {
