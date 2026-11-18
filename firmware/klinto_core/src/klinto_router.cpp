@@ -565,6 +565,9 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
       case KL_TYPE_ACK: {
         if (pkt->payload_len >= 9) {
           const uint32_t acked = kl_read_le32(pkt->payload + 4);
+          /* payload[8]==1 — подтверждение Hub: сообщение сохранено на сервере. */
+          const bool hub_confirmed = pkt->payload[8] == 1;
+          bool matched = false;
           for (uint16_t i = 0; i < KL_ACK_TABLE; ++i) {
             if (!acks_[i].used || acks_[i].pkt.packet_id != acked) continue;
             const bool via_gw = acks_[i].via_gateway;
@@ -572,11 +575,29 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
             const uint32_t pid = acks_[i].pkt.packet_id;
             acks_[i].used = false;
             stats_.acks_received++;
+            matched = true;
+            if (via_gw && !hub_confirmed) {
+              recent_acks_[recent_ack_idx_ & 7] = {pid, uuid, now_ms};
+              recent_ack_idx_++;
+            }
             if (sink_.status) {
               sink_.status(sink_.ctx, uuid, pid,
-                           via_gw ? KL_STATUS_ACKED_BY_GATEWAY : KL_STATUS_DELIVERED_TO_PEER);
+                           hub_confirmed ? KL_STATUS_SYNCED_PERMANENT
+                                         : (via_gw ? KL_STATUS_ACKED_BY_GATEWAY
+                                                   : KL_STATUS_DELIVERED_TO_PEER));
             }
             break;
+          }
+          if (!matched && hub_confirmed) {
+            for (int i = 0; i < 8; ++i) {
+              if (recent_acks_[i].packet_id != acked || recent_acks_[i].msg_uuid == 0) continue;
+              stats_.acks_received++;
+              if (sink_.status) {
+                sink_.status(sink_.ctx, recent_acks_[i].msg_uuid, acked, KL_STATUS_SYNCED_PERMANENT);
+              }
+              recent_acks_[i].msg_uuid = 0;
+              break;
+            }
           }
         }
         return;

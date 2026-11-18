@@ -302,6 +302,12 @@ export class KMeshV1Client {
       }
     }
     const uuidHex = msgUuidHex(msgUuid);
+    // Повторный вызов для уже принятого шлюзом сообщения не шлём заново: раньше очередь повторяла отправку,
+    // и статус в пузыре гонялся «Подготовка kMesh» ↔ «Шлюз принял».
+    if (knownUuid) {
+      const prev = (await kmeshV1List().catch(() => [])).find((row) => row.msgUuid === uuidHex);
+      if (prev && prev.state === 'SYNCED_PERMANENT') return { msgUuid: uuidHex, state: prev.state };
+    }
     const isGroup = Boolean(input.group);
     const item: KMeshV1OutboxItem = {
       msgUuid: uuidHex,
@@ -348,7 +354,7 @@ export class KMeshV1Client {
       // сообщение вечно: по таймауту считаем попытку неуспешной, очередь повторит.
       const ok = await Promise.race([
         sendOnce.catch(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 9_000)),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30_000)),
       ]);
       if (!ok) {
         console.log('[kmesh]', 'sendFrame timeout/failed', frame.length);

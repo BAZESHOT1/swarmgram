@@ -76,6 +76,14 @@ struct kl_ack_slot_t {
   kl_packet_t pkt;
 };
 
+/** Недавно подтверждённые шлюзом пакеты: Hub-подтверждение («сохранено») приходит позже и должно
+ * найти msg_uuid, хотя запись в acks_ уже освобождена. */
+struct kl_recent_ack_t {
+  uint32_t packet_id;
+  uint64_t msg_uuid;
+  uint32_t at_ms;
+};
+
 struct kl_bcast_slot_t {
   bool used;
   uint32_t packet_id;
@@ -245,6 +253,8 @@ class KlintoRouter {
   kl_gw_route_t gw_;
   kl_pending_t pending_[KL_PENDING_QUEUE];
   kl_ack_slot_t acks_[KL_ACK_TABLE];
+  kl_recent_ack_t recent_acks_[8] = {};
+  uint8_t recent_ack_idx_ = 0;
   kl_bcast_slot_t bcasts_[KL_BCAST_QUEUE];
 
   uint8_t battery_;

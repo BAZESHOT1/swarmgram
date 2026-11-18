@@ -165,6 +165,7 @@ bool HttpGatewayTransport::build_ack(uint32_t dst_node, uint32_t packet_id, uint
   uint8_t payload[9];
   memset(payload, 0, sizeof(payload));
   kl_write_le32(payload + 4, packet_id);
+  payload[8] = 1; /* подтверждение Hub: «сохранено» (носимый покажет статус SYNCED) */
   if (!kl_packet_set_payload(&pkt, payload, sizeof(payload))) return false;
   *len = kl_packet_serialize(&pkt, out, cap);
   return *len > 0;

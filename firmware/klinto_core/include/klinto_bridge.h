@@ -92,10 +92,10 @@ class KlintoClientBridge {
   void loop(uint32_t now_ms);
   /** Клиент подписался на notify: первый INFO мог уйти раньше CCCD и потеряться — шлём серию. */
   void push_info_burst() {
-    info_reply_left_ = 3;
+    info_reply_left_ = 1;
     info_reply_next_ms_ = 0;
     legacy_reply_type_ = 1;
-    legacy_reply_left_ = 2;
+    legacy_reply_left_ = 1;
     legacy_reply_next_ms_ = 0;
   }
   bool send_info();

@@ -367,6 +367,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   (event.clientId && m.clientId === event.clientId) ||
                   m.id === `mesh-${event.msgUuid}`;
                 if (!match) return row;
+                // Уже принято шлюзом/доставлено — прогресс повторной отправки статус не перетирает.
+                if ((row as { storedOnGateway?: boolean }).storedOnGateway || (row as { delivered?: boolean }).delivered) {
+                  return row;
+                }
                 const label =
                   event.phase === 'preparing'
                     ? 'Подготовка KMesh…'

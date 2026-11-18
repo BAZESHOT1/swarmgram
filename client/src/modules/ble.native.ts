@@ -912,7 +912,7 @@ export class NativeBleTransport implements ModuleConnection {
         const writeChunk = async (): Promise<void> => {
           // write-without-response быстрее, но не везде проходит (iOS может
           // отказать, если очередь периферии занята) — тогда пишем с ответом.
-          if (withoutResponse) {
+          if (withoutResponse && Platform.OS === 'android') {
             try {
               await manager().writeCharacteristicWithoutResponseForDevice(
                 deviceId,
@@ -939,7 +939,7 @@ export class NativeBleTransport implements ModuleConnection {
           await Promise.race([
             writeChunk(),
             new Promise<void>((_, reject) => {
-              timer = setTimeout(() => reject(new Error('ble_write_timeout')), 2500);
+              timer = setTimeout(() => reject(new Error('ble_write_timeout')), 8000);
             }),
           ]);
         } finally {
@@ -968,7 +968,7 @@ export class NativeBleTransport implements ModuleConnection {
       // GATT завис (типично для MediaTek после серии reconnect): закрываем и
       // сообщаем о разрыве, чтобы ModuleProvider поднял чистое соединение.
       dbg(`sendRawProgress failed: ${errorMessage(error)}`);
-      await this.failLink();
+      if (this.linkLooksDead()) await this.failLink();
       return false;
     }
   }
@@ -986,9 +986,17 @@ export class NativeBleTransport implements ModuleConnection {
       return true;
     } catch (error) {
       dbg(`sendRaw failed: ${errorMessage(error)}`);
-      await this.failLink();
+      if (this.linkLooksDead()) await this.failLink();
       return false;
     }
+  }
+
+  /**
+   * Связь мертва, только если от модуля давно ничего нет (INFO идёт раз в 15 с). Медленная запись
+   * при живом приёме — не повод разрывать соединение: раньше это давало цикл переподключений.
+   */
+  private linkLooksDead(): boolean {
+    return Date.now() - this.lastDataMs > 30_000;
   }
 
   /** Ограничивает ожидание записи кадра (включая очередь перед ним). */

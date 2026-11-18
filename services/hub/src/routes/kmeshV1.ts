@@ -390,17 +390,42 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return true;
   }
 
+  /**
+   * chat_ref → chat_id. Таблица chat_refs заполняется приложением (HTTP), поэтому у телефона без интернета
+   * она оставалась пустой и текст из mesh нечем было маршрутизировать. Если записи нет — перебираем чаты
+   * пользователя узла и сверяем CRC16(chatId) (и сохраняем соответствие).
+   */
+  async function resolveChatByRef(chatRef: number, userId: string | null): Promise<{ chat_id: string } | null> {
+    const known = await one<{ chat_id: string }>(
+      `SELECT chat_id::text FROM kmesh_v1_chat_refs WHERE chat_ref = $1 LIMIT 1`,
+      [chatRef],
+    );
+    if (known) return known;
+    if (!userId) return null;
+    const chats = await query<{ chat_id: string }>(
+      'SELECT chat_id::text FROM chat_members WHERE user_id = $1',
+      [userId],
+    );
+    for (const row of chats) {
+      const ref = crc16(Buffer.from(row.chat_id, 'utf8')) || 1;
+      if (ref !== chatRef) continue;
+      await query(
+        `INSERT INTO kmesh_v1_chat_refs (chat_ref, chat_id, user_id) VALUES ($1,$2,$3)
+         ON CONFLICT (chat_ref, chat_id) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()`,
+        [ref, row.chat_id, userId],
+      );
+      return { chat_id: row.chat_id };
+    }
+    return null;
+  }
+
   async function routeText(packet: ReturnType<typeof parsePacket> & object, plain: Buffer,
                            gatewayId: number): Promise<void> {
     const rpc = decodeTextRpc(plain);
     if (!rpc) return;
-    const chat = await one<{ chat_id: string }>(
-      `SELECT chat_id::text FROM kmesh_v1_chat_refs
-        WHERE chat_ref = $1 LIMIT 1`,
-      [rpc.chatRef],
-    );
-    if (!chat) return;
     const sender = await userForNode(packet.srcId);
+    const chat = await resolveChatByRef(rpc.chatRef, sender);
+    if (!chat) return;
     const members = await query<{ user_id: string }>(
       'SELECT user_id::text FROM chat_members WHERE chat_id = $1',
       [chat.chat_id],
@@ -534,13 +559,11 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (prefix.op === RpcOp.CHAT_HISTORY_REQ) {
       const req = decodeHistoryRequest(plain);
       if (!req) return false;
-      const chat = await one<{ chat_id: string }>(
-        `SELECT r.chat_id::text FROM kmesh_v1_chat_refs r
-           JOIN chat_members cm ON cm.chat_id = r.chat_id AND cm.user_id = $2
-          WHERE r.chat_ref = $1 LIMIT 1`,
-        [prefix.chatRef, userId],
-      );
+      const chat = await resolveChatByRef(prefix.chatRef, userId);
       if (!chat) return false;
+      // История — только участнику чата (запись в chat_refs могла быть создана другим пользователем).
+      const isMember = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chat.chat_id, userId]);
+      if (!isMember) return false;
       const rows = await query<{ msg_uuid: string; sender_node_id: string; synced_at: string }>(
         `SELECT msg_uuid, sender_node_id::text, synced_at::text
            FROM kmesh_v1_messages

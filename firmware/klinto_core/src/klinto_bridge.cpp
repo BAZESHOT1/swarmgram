@@ -65,6 +65,9 @@ void KlintoClientBridge::dbg_line(const char *fmt, ...) {
   vsnprintf(line, sizeof(line), fmt, ap);
   va_end(ap);
   if (sink_.log) sink_.log(sink_.ctx, line);
+#if !defined(KL_BLE_DEBUG_LOG) || !KL_BLE_DEBUG_LOG
+  return; /* отладочные строки на телефон не шлём */
+#endif
   if (!link_ || !link_->connected() || dbg_pending_) return;
   strncpy(dbg_text_, line, sizeof(dbg_text_) - 1);
   dbg_text_[sizeof(dbg_text_) - 1] = '\0';
@@ -143,7 +146,7 @@ void KlintoClientBridge::handle_legacy_frame(uint8_t type, const uint8_t *payloa
    * Запоминаем тип и отдаём INFO/PONG из clientTask (трижды, чтобы
    * пережить задержку подписки на notify в Android). */
   legacy_reply_type_ = type;
-  legacy_reply_left_ = 2;
+  legacy_reply_left_ = 1;
   legacy_reply_next_ms_ = 0;
 }
 
@@ -300,7 +303,7 @@ void KlintoClientBridge::handle_frame(uint8_t type, uint8_t flags, const uint8_t
       /* INFO отправляем из clientTask: из GATT-колбэка NimBLE может зависнуть.
        * Повторяем 3 раза — Android иногда подтверждает подписку на notify
        * уже после первого HELLO, и первый INFO теряется. */
-      info_reply_left_ = 2;
+      info_reply_left_ = 1;
       info_reply_next_ms_ = 0;
       break;
     case KL_CF_RPC_UP:
@@ -558,6 +561,8 @@ void KlintoClientBridge::deliver_mesh(const kl_packet_t *pkt) {
 }
 
 void KlintoClientBridge::status(uint64_t msg_uuid, uint32_t packet_id, uint8_t status_code) {
+  log_line("[status] msg=%08lx%08lx pkt=%lu st=%u", (unsigned long)(msg_uuid >> 32),
+           (unsigned long)(msg_uuid & 0xFFFFFFFFu), (unsigned long)packet_id, (unsigned)status_code);
   StatusEvt evt;
   memset(&evt, 0, sizeof(evt));
   evt.msg_uuid = msg_uuid;
