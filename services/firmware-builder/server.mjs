@@ -235,7 +235,8 @@ function generateConfigHeader(config, version) {
   const battery = config.battery || {};
   const useLora = connectivity === 'wifi_lora' || connectivity === 'lora';
   const useWifiMesh = connectivity !== 'lora';
-  const battEnabled = cfgBoolean(battery.enabled, false) ? 1 : 0;
+  // Нет пина делителя — нет батареи.
+  const battEnabled = cfgBoolean(battery.enabled, false) && Number.isInteger(Number(battery.pin)) && Number(battery.pin) >= 0 ? 1 : 0;
 
   // РџРёРЅС‹ LoRa РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ: РІРёР·Р°СЂРґ Р±РѕР»СЊС€Рµ РЅРµ СЃРїСЂР°С€РёРІР°РµС‚ РёС… РІСЂСѓС‡РЅСѓСЋ.
   const LORA_DEFAULTS = {
@@ -253,7 +254,7 @@ function generateConfigHeader(config, version) {
 
   const pins = { ...defaults, ...(lora?.pins || {}) };
   const chip = lora?.chip || defaults.chip;
-  const isSx1262 = chip === 'sx1262';
+  const isSx1262 = chip === 'sx1262' || chip === 'lr2021';
 
   const useKmeshV1 = cfgBoolean(kmesh.v1, true);
   // BLE-мост: wearable/repeater по умолчанию, шлюзу — только по запросу.
@@ -329,6 +330,7 @@ function generateConfigHeader(config, version) {
     lines.push(
       `#define KL_LORA_CHIP ${cString(chip)}`,
       `#define KL_LORA_CHIP_SX1262 ${isSx1262 ? 1 : 0}`,
+      `#define KL_LORA_CHIP_ID ${({ sx1278: 0, sx1262: 1, sx1276: 2, lr2021: 3 })[chip] ?? 1}`,
       // Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ РїСЂРѕС„РёР»СЊ LoRa (СѓС‚РІРµСЂР¶РґС‘РЅ): 869.525 / SF9 / BW125 / CR5.
       `#define KL_LORA_FREQ 869.525`,
       `#define KL_LORA_SF 9`,
@@ -582,6 +584,9 @@ async function compileFirmware(config, version) {
   const role = String(config.role || 'wearable');
   const connectivity = String(config.connectivity || 'wifi').toLowerCase();
   const useLora = connectivity.includes('lora') || connectivity === 'both' || Boolean(config.lora);
+  // Совпадает с KL_HAS_BLE из generateConfigHeader().
+  const hasBle = ['esp32', 'esp32c3', 'esp32s3', 'esp32c6', 'esp32c5'].includes(board) &&
+    (config.ble === true || role === 'wearable' || role === 'repeater');
   const fqbn = (useKmeshV1 ? FQBN_KMESH : FQBN)[board];
   if (!fqbn) throw new Error(`unsupported_board:${board}`);
 

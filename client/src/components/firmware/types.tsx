@@ -9,7 +9,7 @@ export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32
 export type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
 /** wifi — Wi-Fi mesh (ESP-NOW); lora — только LoRa; wifi_lora — оба канала с мостом между ними. */
 export type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
-export type LoraChip = 'sx1278' | 'sx1276' | 'sx1262';
+export type LoraChip = 'sx1278' | 'sx1276' | 'sx1262' | 'lr2021';
 export type LoraFrequency = 433 | 868 | 915;
 export type LoraBandwidth = 125 | 250 | 500;
 

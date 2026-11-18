@@ -136,7 +136,7 @@ export function ConnectModuleFlow({
     void qc.invalidateQueries({ queryKey: ['modules'] });
   }, [visible, stage, result, qc]);
 
-  const flashing = stage === 'flash' && wizardStep === 7;
+  const flashing = stage === 'flash' && wizardStep === 8;
 
   const close = React.useCallback(() => {
     if (flashing) return;

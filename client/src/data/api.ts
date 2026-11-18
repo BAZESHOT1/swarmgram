@@ -852,7 +852,7 @@ export interface MeshNeighbor {
 export type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32c5';
 export type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
 export type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
-export type FirmwareLoraChip = 'sx1278' | 'sx1276' | 'sx1262';
+export type FirmwareLoraChip = 'sx1278' | 'sx1276' | 'sx1262' | 'lr2021';
 
 /** Пины LoRa-модуля (рекомендуемые значения подставляет визард). */
 export interface FirmwareLoraPins {
@@ -874,6 +874,8 @@ export interface FirmwareConfig {
   hubUrl?: string;
   moduleToken?: string;
   claimToken?: string;
+  /** Отображаемое имя модуля (до 15 символов). */
+  name?: string;
   lora?: {
     chip: FirmwareLoraChip;
     frequencyMhz: 433 | 868 | 915;

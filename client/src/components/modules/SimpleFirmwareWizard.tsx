@@ -40,7 +40,7 @@ export interface SimpleFirmwareResult {
   role: FirmwareRole;
 }
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 type LinkChoice = 'wifi' | 'wifi_lora' | 'lora';
 
 /** Человекочитаемые фазы серверной сборки. */
@@ -141,7 +141,7 @@ export function SimpleFirmwareWizard({
   initialRole?: FirmwareRole;
   onCancel: () => void;
   onComplete: (result: SimpleFirmwareResult) => void;
-  /** Сообщает внешнему мастеру текущий шаг: 7 — прошивка, закрывать нельзя. */
+  /** Сообщает внешнему мастеру текущий шаг: 8 — прошивка, закрывать нельзя. */
   onStepChange?: (step: number) => void;
 }) {
   const theme = useTheme();
@@ -150,9 +150,12 @@ export function SimpleFirmwareWizard({
   const [step, setStep] = React.useState<Step>(initialRole ? 2 : 1);
   const [role, setRole] = React.useState<FirmwareRole>(initialRole ?? 'wearable');
   const [board, setBoard] = React.useState<FirmwareBoard>('esp32c3');
-  const [link, setLink] = React.useState<LinkChoice>('wifi');
-  const [battery, setBattery] = React.useState(true);
-  const [batteryPin, setBatteryPin] = React.useState<number>(recommendedBatteryPin('esp32c3'));
+  const [link, setLink] = React.useState<LinkChoice>('wifi_lora');
+  /** Пин делителя батареи: пусто — батареи нет. */
+  const [batteryPinText, setBatteryPinText] = React.useState('');
+  const batteryPin = batteryPinText.trim() === '' ? -1 : Number(batteryPinText);
+  const battery = batteryPin >= 0;
+  const [moduleName, setModuleName] = React.useState('');
   const [batteryRatio, setBatteryRatio] = React.useState(2);
   const [loraChip, setLoraChip] = React.useState<LoraChip>('sx1262');
   const [loraPins, setLoraPins] = React.useState<LoraPins>(() => recommendedPins('esp32c3'));
@@ -160,7 +163,6 @@ export function SimpleFirmwareWizard({
 
   React.useEffect(() => {
     setLoraPins(recommendedPins(board));
-    setBatteryPin(recommendedBatteryPin(board));
     setLoraChip(board === 'esp32' ? 'sx1278' : 'sx1262');
   }, [board]);
   const [ssid, setSsid] = React.useState('');
@@ -175,6 +177,7 @@ export function SimpleFirmwareWizard({
   const [buildError, setBuildError] = React.useState('');
   const [result, setResult] = React.useState<SimpleFirmwareResult | null>(null);
   const [readError, setReadError] = React.useState('');
+  const [boundName, setBoundName] = React.useState('');
 
   // Сообщаем внешнему мастеру шаг — на шаге прошивки он блокирует закрытие.
   React.useEffect(() => {
@@ -264,31 +267,41 @@ export function SimpleFirmwareWizard({
     setStepError('');
   };
 
+  const afterBattery = (): Step => (link !== 'wifi' ? 5 : role === 'gateway' ? 6 : 7);
+  const afterLora = (): Step => (role === 'gateway' ? 6 : 7);
+
   const next = () => {
     if (step === 1) return go(2);
-    if (step === 2) {
+    if (step === 2) return go(3);
+    if (step === 3) {
       if (!boardAvailable(board)) {
         setStepError('Эта плата не установлена на сервере сборки — выберите другую.');
         return;
       }
-      return go(3);
+      return go(4);
     }
-    if (step === 3) return go(4);
-    if (step === 4) return go(role === 'gateway' ? 5 : 6);
-    if (step === 5) {
+    if (step === 4) {
+      if (batteryPinText.trim() && !(Number.isInteger(batteryPin) && batteryPin >= 0 && batteryPin <= 48)) {
+        setStepError('Пин делителя — число от 0 до 48, или оставьте поле пустым, если батареи нет.');
+        return;
+      }
+      return go(afterBattery());
+    }
+    if (step === 5) return go(afterLora());
+    if (step === 6) {
       if (!ssid.trim()) {
         setStepError('Укажите SSID вашего Wi-Fi-роутера — шлюзу нужен интернет.');
         return;
       }
-      return go(6);
+      return go(7);
     }
-    if (step === 6) {
+    if (step === 7) {
       const error = validate();
       if (error) {
         setStepError(error);
         return;
       }
-      if (build?.status === 'ready') go(7);
+      if (build?.status === 'ready') go(8);
       else if (!build || build.status === 'failed') void startBuild();
       return;
     }
@@ -296,10 +309,9 @@ export function SimpleFirmwareWizard({
   };
 
   const back = () => {
-    if (step === 6) return go(role === 'gateway' ? 5 : 4);
-    if (step === 5) return go(4);
-    if (step === 7) return go(6);
-    if (step === 8) return go(6);
+    if (step === 7) return go(role === 'gateway' ? 6 : link !== 'wifi' ? 5 : 4);
+    if (step === 6) return go(link !== 'wifi' ? 5 : 4);
+    if (step === 8 || step === 9) return go(7);
     return go(Math.max(1, step - 1) as Step);
   };
 
@@ -313,6 +325,7 @@ export function SimpleFirmwareWizard({
     board,
     role,
     connectivity: link,
+    name: moduleName.trim() || undefined,
     wifi: role === 'gateway' ? { ssid: ssid.trim(), password } : undefined,
     // Глобальные mesh-параметры и Hub URL подставляет сервер.
     lora:
@@ -328,7 +341,7 @@ export function SimpleFirmwareWizard({
         : undefined,
     battery: {
       enabled: battery,
-      pin: batteryPin,
+      pin: battery ? batteryPin : 0,
       ratio: batteryRatio,
       intervalSec: 900,
     },
@@ -384,6 +397,17 @@ export function SimpleFirmwareWizard({
   const handleFlashed = async (hardwareId: string) => {
     let moduleId: string | undefined;
     let publicId: string | undefined;
+    // Привязка: MAC модуля + UUID владельца (KMesh v1). Чужой модуль — только через передачу с подтверждением.
+    const mac = hardwareId.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+    if (mac.length === 12) {
+      try {
+        const claimed = await api.kmeshV1ClaimModule(mac.match(/../g)!.join(':'), moduleName.trim());
+        if (claimed.needsTransfer) setBuildError('Модуль привязан к другому аккаунту — отправлена заявка на передачу.');
+        else if (claimed.bleName) setBoundName(claimed.bleName);
+      } catch {
+        /* привяжем при первом подключении */
+      }
+    }
     try {
       const paired = await api.pairModule({
         hardwareId,
@@ -433,7 +457,7 @@ export function SimpleFirmwareWizard({
     });
     setResult({ hardwareId, publicId, moduleId, role });
     // Сразу показываем ID, не дожидаясь авто-перехода FlashStep.
-    go(8);
+    go(9);
   };
 
   /** Если API не вернул ID — можно прочитать его из INFO по USB. */
@@ -452,11 +476,22 @@ export function SimpleFirmwareWizard({
     }));
   };
 
+  const linkTitle = link === 'wifi' ? 'ESP-NOW' : link === 'lora' ? 'LoRa' : 'LoRa + ESP-NOW';
   const summaryRows = [
+    { label: 'Название', value: moduleName.trim() || '—' },
     { label: 'Тип', value: ROLE_OPTIONS.find((item) => item.id === role)?.title ?? role },
+    { label: 'Интерфейсы', value: linkTitle },
     { label: 'Плата', value: boardPreset(board).title },
-    { label: 'Связь', value: link === 'wifi' ? 'Wi-Fi mesh' : 'Wi-Fi mesh + LoRa' },
-    { label: 'Батарея', value: battery ? 'включена · делитель 1:1' : 'выключена' },
+    { label: 'Батарея', value: battery ? `GPIO ${batteryPin} · делитель ×${batteryRatio}` : 'нет' },
+    ...(link !== 'wifi'
+      ? [
+          { label: 'LoRa', value: loraChip.toUpperCase() },
+          {
+            label: 'Пины LoRa',
+            value: `SCK ${loraPins.sck} MISO ${loraPins.miso} MOSI ${loraPins.mosi} CS ${loraPins.cs} RST ${loraPins.rst} IRQ ${loraPins.dio0}${loraPins.busy !== undefined ? ` BUSY ${loraPins.busy}` : ''}`,
+          },
+        ]
+      : []),
     ...(role === 'gateway' ? [{ label: 'Роутер', value: ssid.trim() || '—' }] : []),
   ];
 
@@ -500,6 +535,35 @@ export function SimpleFirmwareWizard({
       case 2:
         return (
           <View>
+            <ChoiceCard
+              icon="git-merge-outline"
+              title="LoRa + ESP-NOW"
+              subtitle="рекомендуется · мост между радиосетями"
+              description="ESP-NOW (Wi-Fi LR) для ближних узлов и LoRa для дальних; модуль пересылает пакеты между ними."
+              selected={link === 'wifi_lora'}
+              onPress={() => setLink('wifi_lora')}
+            />
+            <ChoiceCard
+              icon="wifi-outline"
+              title="ESP-NOW"
+              subtitle="базовый · без LoRa-модуля"
+              description="Связь модулей через ESP-NOW (Wi-Fi LR) на 2.4 ГГц. Дополнительное железо не нужно."
+              selected={link === 'wifi'}
+              onPress={() => setLink('wifi')}
+            />
+            <ChoiceCard
+              icon="radio-outline"
+              title="LoRa"
+              subtitle="максимальная дальность"
+              description="Только LoRa между модулями (BLE для телефона остаётся). Нужен LoRa-модуль и антенна."
+              selected={link === 'lora'}
+              onPress={() => setLink('lora')}
+            />
+          </View>
+        );
+      case 3:
+        return (
+          <View>
             <Note icon="hardware-chip-outline" tone="neutral">
               {availableBoards?.length
                 ? 'Серверный сборщик поддерживает не все платы: недоступные помечены и не выбираются. ESP32 Lite и ESP32-S3 подключайте по USB; для Lite может понадобиться драйвер CP210x.'
@@ -528,7 +592,6 @@ export function SimpleFirmwareWizard({
                       return;
                     }
                     setBoard(item.id);
-                    setBatteryPin(recommendedBatteryPin(item.id));
                     setStepError('');
                   }}
                 />
@@ -536,157 +599,117 @@ export function SimpleFirmwareWizard({
             })}
           </View>
         );
-      case 3:
-        return (
-          <View>
-            <ChoiceCard
-              icon="wifi-outline"
-              title="Wi-Fi mesh"
-              subtitle="проще · без LoRa-модуля"
-              description="Модуль работает через Wi-Fi и BLE. Антенна LoRa не нужна."
-              selected={link === 'wifi'}
-              onPress={() => setLink('wifi')}
-            />
-            <ChoiceCard
-              icon="cellular-outline"
-              title="Wi-Fi + LoRa"
-              subtitle="дальняя связь · нужен SX1278"
-              description="Добавляет дальний радиоканал. Понадобится антенна на 869 МГц."
-              selected={link === 'wifi_lora'}
-              onPress={() => setLink('wifi_lora')}
-            />
-            <ChoiceCard
-              icon="radio-outline"
-              title="Только LoRa"
-              subtitle="максимальная дальность · нужен LoRa-модуль"
-              description="Без Wi-Fi mesh: узел связывается с кластером только по LoRa (BLE для телефона остаётся)."
-              selected={link === 'lora'}
-              onPress={() => setLink('lora')}
-            />
-          </View>
-        );
       case 4:
         return (
           <View>
             <StepCard>
-              <SettingsToggle
-                icon="battery-charging-outline"
-                title="Отправлять заряд батареи"
-                subtitle="появится в списке модулей"
-                value={battery}
-                onValueChange={setBattery}
+              <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
+                Название модуля
+              </Text>
+              <SettingsInput
+                label="Название (до 15 символов)"
+                value={moduleName}
+                onChangeText={(text) => setModuleName(text.replace(/["\\]/g, '').slice(0, 15))}
+                placeholder="например, Брелок или Крыша"
+                accessibilityLabel="Название модуля"
+                maxLength={15}
               />
-              {battery ? (
-                <View style={{ paddingHorizontal: 10, paddingBottom: 10 }}>
-                  <SettingsInput
-                    label="Пин делителя напряжения (ADC)"
-                    value={String(batteryPin)}
-                    onChangeText={(text) => {
-                      const parsed = Number(text.trim());
-                      if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) setBatteryPin(parsed);
-                    }}
-                    keyboardType="numeric"
-                    placeholder="0–48"
-                    accessibilityLabel="Пин делителя напряжения"
-                    maxLength={2}
-                  />
-                  <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: -4 }}>
-                    Рекомендуемый для платы: GPIO {recommendedBatteryPin(board)}. Делитель 1:1 (коэффициент 2.0).
-                  </Text>
-                  <SettingsInput
-                    label="Коэффициент делителя"
-                    value={String(batteryRatio)}
-                    onChangeText={(text) => {
-                      const parsed = Number(text.replace(',', '.').trim());
-                      if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 10) setBatteryRatio(parsed);
-                    }}
-                    keyboardType="numeric"
-                    placeholder="2.0"
-                    accessibilityLabel="Коэффициент делителя батареи"
-                    maxLength={4}
-                  />
-                </View>
-              ) : null}
+              <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: -4 }}>
+                Видно на карте кластера и в списке модулей. Его можно поменять позже.
+              </Text>
             </StepCard>
             <View style={{ height: 10 }} />
             <StepCard>
               <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
-                Светодиод индикации
-              </Text>
-              <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 8 }}>
-                Горит — связь с модулями есть. Мигает — связи нет. Пусто — LED не подключён.
+                Делитель напряжения батареи
               </Text>
               <SettingsInput
-                label="GPIO светодиода"
-                value={ledPin === undefined ? '' : String(ledPin)}
-                onChangeText={(text) => {
-                  const trimmed = text.trim();
-                  if (!trimmed) {
-                    setLedPin(undefined);
-                    return;
-                  }
-                  const parsed = Number(trimmed);
-                  if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) setLedPin(parsed);
-                }}
+                label="Пин делителя (ADC)"
+                value={batteryPinText}
+                onChangeText={(text) => setBatteryPinText(text.replace(/[^0-9]/g, '').slice(0, 2))}
                 keyboardType="numeric"
-                placeholder="например, 2"
-                accessibilityLabel="GPIO светодиода"
+                placeholder="пусто — батареи нет"
+                accessibilityLabel="Пин делителя напряжения"
                 maxLength={2}
               />
+              <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: -4 }}>
+                Оставьте пустым, если модуль питается без батареи. Рекомендуемый пин для платы: GPIO{' '}
+                {recommendedBatteryPin(board)}.
+              </Text>
+              {battery ? (
+                <SettingsInput
+                  label="Коэффициент делителя"
+                  value={String(batteryRatio)}
+                  onChangeText={(text) => {
+                    const parsed = Number(text.replace(',', '.').trim());
+                    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 10) setBatteryRatio(parsed);
+                  }}
+                  keyboardType="numeric"
+                  placeholder="2.0"
+                  accessibilityLabel="Коэффициент делителя батареи"
+                  maxLength={4}
+                />
+              ) : null}
             </StepCard>
-            {link !== 'wifi' ? (
-              <>
-                <View style={{ height: 10 }} />
-                <StepCard>
-                  <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700', marginBottom: 4 }}>
-                    Модуль LoRa
-                  </Text>
-                  <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 8 }}>
-                    Тип чипа и пины подключения. Частота и модуляция задаются сервером.
-                  </Text>
-                  <SettingsInput
-                    label="Тип чипа (sx1278 / sx1276 / sx1262)"
-                    value={loraChip}
-                    onChangeText={(text) => {
-                      const value = text.trim().toLowerCase();
-                      if (value === 'sx1278' || value === 'sx1276' || value === 'sx1262') setLoraChip(value);
-                    }}
-                    autoCapitalize="none"
-                    accessibilityLabel="Тип чипа LoRa"
-                    maxLength={8}
-                  />
-                  {(Object.keys(loraPins) as Array<keyof LoraPins>).map((key) => (
-                    <SettingsInput
-                      key={key}
-                      label={`${key.toUpperCase()}${key === 'busy' ? ' (SX1262)' : ''}`}
-                      value={loraPins[key] === undefined ? '' : String(loraPins[key])}
-                      onChangeText={(text) => {
-                        const trimmed = text.trim();
-                        if (!trimmed) {
-                          setLoraPins((prev) => ({ ...prev, [key]: undefined }));
-                          return;
-                        }
-                        const parsed = Number(trimmed);
-                        if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) {
-                          setLoraPins((prev) => ({ ...prev, [key]: parsed }));
-                        }
-                      }}
-                      keyboardType="numeric"
-                      placeholder={`GPIO (реком. ${recommendedPins(board)[key] ?? '—'})`}
-                      accessibilityLabel={`Пин LoRa ${key}`}
-                      maxLength={2}
-                    />
-                  ))}
-                </StepCard>
-              </>
-            ) : null}
-            <View style={{ height: 10 }} />
-            <Note icon="information-circle-outline" tone="neutral">
-              Параметры LoRa (869.525 МГц, SF9, BW125) и канал mesh (11) задаёт сервер.
-            </Note>
           </View>
         );
       case 5:
+        return (
+          <View>
+            <Note icon="radio-outline" tone="neutral">
+              Выберите LoRa-модуль и укажите, к каким GPIO он подключён. Подставлены рекомендуемые пины платы.
+            </Note>
+            {(
+              [
+                { id: 'sx1262', title: 'SX1262', text: '868/915 МГц · нужен BUSY' },
+                { id: 'sx1278', title: 'SX1278', text: '433 МГц · Ra-02' },
+                { id: 'sx1276', title: 'SX1276', text: '868/915 МГц · RFM95' },
+                { id: 'lr2021', title: 'LR2021', text: 'новое поколение Semtech · нужен BUSY' },
+              ] as Array<{ id: LoraChip; title: string; text: string }>
+            ).map((chip) => (
+              <ChoiceCard
+                key={chip.id}
+                icon="hardware-chip-outline"
+                title={chip.title}
+                subtitle={chip.text}
+                description=""
+                selected={loraChip === chip.id}
+                onPress={() => setLoraChip(chip.id)}
+              />
+            ))}
+            <StepCard>
+              {(Object.keys(recommendedPins(board)) as Array<keyof LoraPins>)
+                .filter((key) => key !== 'busy' || loraChip === 'sx1262' || loraChip === 'lr2021')
+                .map((key) => (
+                  <SettingsInput
+                    key={key}
+                    label={key === 'dio0' ? 'IRQ (DIO0/DIO1)' : key.toUpperCase()}
+                    value={loraPins[key] === undefined ? '' : String(loraPins[key])}
+                    onChangeText={(text) => {
+                      const trimmed = text.trim();
+                      if (!trimmed) {
+                        setLoraPins((prev) => ({ ...prev, [key]: undefined }));
+                        return;
+                      }
+                      const parsed = Number(trimmed);
+                      if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 48) {
+                        setLoraPins((prev) => ({ ...prev, [key]: parsed }));
+                      }
+                    }}
+                    keyboardType="numeric"
+                    placeholder={`GPIO (реком. ${recommendedPins(board)[key] ?? '—'})`}
+                    accessibilityLabel={`Пин LoRa ${key}`}
+                    maxLength={2}
+                  />
+                ))}
+            </StepCard>
+            <View style={{ height: 10 }} />
+            <Note icon="information-circle-outline" tone="neutral">
+              Частоту и модуляцию LoRa (869.525 МГц, SF9, BW125) задаёт сервер — они общие для всей сети.
+            </Note>
+          </View>
+        );
+      case 6:
         return (
           <View>
             <Note icon="wifi-outline" tone="accent">
@@ -716,7 +739,7 @@ export function SimpleFirmwareWizard({
             />
           </View>
         );
-      case 6:
+      case 7:
         return (
           <View>
             <GlassCard>
@@ -754,7 +777,7 @@ export function SimpleFirmwareWizard({
                   }
                   tone={build.status === 'ready' ? 'success' : build.status === 'failed' ? 'danger' : 'accent'}
                 />
-                {build.version ? <StatusBadge text={`v${build.version}`} tone="neutral" /> : null}
+                {build.version ? <StatusBadge text={`прошивка ${build.version}`} tone="neutral" /> : null}
               </View>
             ) : null}
             {build?.createdAt ? (
@@ -794,7 +817,7 @@ export function SimpleFirmwareWizard({
             ) : null}
           </View>
         );
-      case 7:
+      case 8:
         return (
           <FlashStep
             build={build}
@@ -803,67 +826,66 @@ export function SimpleFirmwareWizard({
               // Если MAC прочитать не удалось, всё равно показываем итог:
               // ID можно прочитать по USB отдельной кнопкой.
               if (!result) setResult({ hardwareId: '', role });
-              go(8);
+              go(9);
             }}
             onFlashed={handleFlashed}
           />
         );
-      case 8:
+      case 9:
         return (
           <View>
             <GlassCard>
-              <View style={{ padding: 18, alignItems: 'center' }}>
-                <View
-                  style={{
-                    width: 58,
-                    height: 58,
-                    borderRadius: 29,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: theme.successSoft,
-                    marginBottom: 10,
-                  }}
-                >
-                  <Ionicons name="checkmark-done" size={30} color={theme.success} />
+              <View style={{ padding: 16, gap: 8 }}>
+                <View style={{ alignItems: 'center', marginBottom: 4 }}>
+                  <View
+                    style={{
+                      width: 58,
+                      height: 58,
+                      borderRadius: 29,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: theme.successSoft,
+                      marginBottom: 10,
+                    }}
+                  >
+                    <Ionicons name="checkmark-done" size={30} color={theme.success} />
+                  </View>
+                  <Text style={{ color: theme.textPrimary, fontSize: 18, fontWeight: '800', textAlign: 'center' }}>
+                    Модуль готов
+                  </Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 4, textAlign: 'center' }}>
+                    Привязан к вашему аккаунту по MAC. Передать его можно только с вашим подтверждением.
+                  </Text>
                 </View>
-                <Text style={{ color: theme.textPrimary, fontSize: 18, fontWeight: '800', textAlign: 'center' }}>
-                  Прошивка установлена
-                </Text>
-                {result?.publicId ? (
-                  <>
-                    <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 10 }}>8-значный ID модуля</Text>
+                {[
+                  { label: 'MAC', value: result?.hardwareId ? result.hardwareId.replace(/^esp32-/, '').toUpperCase() : 'прочитается при подключении' },
+                  ...(boundName ? [{ label: 'BLE-имя', value: boundName }] : []),
+                  { label: 'Прошивка', value: build?.version || '—' },
+                  ...summaryRows.filter((row) => row.label !== 'Роутер'),
+                ].map((row) => (
+                  <View key={row.label} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 12 }}>{row.label}</Text>
                     <Text
                       selectable
-                      style={{
-                        color: theme.accent,
-                        fontSize: 26,
-                        fontWeight: '800',
-                        letterSpacing: 4,
-                        marginTop: 4,
-                        fontVariant: ['tabular-nums'] as never,
-                      }}
+                      style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '600', flex: 1, textAlign: 'right' }}
                     >
-                      {result.publicId}
+                      {row.value}
                     </Text>
-                    <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 6, textAlign: 'center' }}>
-                      Сохраните ID — по нему модуль добавляется на другом устройстве.
-                    </Text>
-                  </>
-                ) : (
+                  </View>
+                ))}
+                {!result?.hardwareId ? (
                   <>
-                    <Text style={{ color: theme.textSecondary, fontSize: 12.5, marginTop: 8, textAlign: 'center', lineHeight: 18 }}>
-                      ID появится после первого подключения модуля. Можно прочитать его по USB прямо сейчас.
-                    </Text>
-                    <View style={{ height: 10 }} />
-                    <Btn title="Прочитать ID по USB" size="s" variant="ghost" onPress={() => void readPublicId()} />
-                    {readError ? <Text style={{ color: theme.danger, fontSize: 11.5, marginTop: 8 }}>{readError}</Text> : null}
+                    <Btn title="Прочитать MAC по USB" size="s" variant="ghost" onPress={() => void readPublicId()} />
+                    {readError ? <Text style={{ color: theme.danger, fontSize: 11.5 }}>{readError}</Text> : null}
                   </>
-                )}
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5, marginTop: 12, fontVariant: ['tabular-nums'] as never }}>
-                  {result?.hardwareId}
-                </Text>
+                ) : null}
               </View>
             </GlassCard>
+            {buildError ? (
+              <View style={{ marginTop: 10 }}>
+                <ErrorText>{buildError}</ErrorText>
+              </View>
+            ) : null}
             <View style={{ height: 12 }} />
             <Btn
               title="Готово"
@@ -881,25 +903,26 @@ export function SimpleFirmwareWizard({
 
   const titles: Record<Step, string> = {
     1: 'Тип модуля',
-    2: 'Плата',
-    3: 'Связь',
-    4: 'Батарея',
-    5: 'Wi-Fi роутера',
-    6: 'Проверка и сборка',
-    7: 'Прошивка',
-    8: 'Готово',
+    2: 'Интерфейсы',
+    3: 'Плата',
+    4: 'Название и батарея',
+    5: 'LoRa-модуль',
+    6: 'Wi-Fi роутера',
+    7: 'Сборка',
+    8: 'Прошивка по USB',
+    9: 'Готово',
   };
 
-  const canGoBack = step > 1 && step !== 7;
+  const canGoBack = step > 1 && step !== 8;
 
   return (
     <View>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 2 }}>
         <Text style={{ color: theme.textPrimary, fontSize: 13.5, fontWeight: '700' }}>{titles[step]}</Text>
-        <Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>{step <= 6 ? `${step} / 6` : ''}</Text>
+        <Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>{step <= 7 ? `${step} / 7` : ''}</Text>
       </View>
       <View style={{ flexDirection: 'row', gap: 4, marginBottom: 14 }}>
-        {Array.from({ length: 6 }).map((_, index) => {
+        {Array.from({ length: 7 }).map((_, index) => {
           const number = index + 1;
           const active = step === number;
           const done = step > number;
@@ -926,7 +949,7 @@ export function SimpleFirmwareWizard({
         </View>
       ) : null}
 
-      {step >= 1 && step <= 6 ? (
+      {step >= 1 && step <= 7 ? (
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
           {canGoBack ? (
             <View style={{ flex: 1 }}>
@@ -935,7 +958,7 @@ export function SimpleFirmwareWizard({
           ) : null}
           <View style={{ flex: 1.4 }}>
             <Btn
-              title={step === 6 ? (build?.status === 'ready' ? 'К прошивке' : 'Собрать') : 'Далее'}
+              title={step === 7 ? (build?.status === 'ready' ? 'К прошивке' : 'Собрать') : 'Далее'}
               loading={building}
               onPress={next}
             />
@@ -944,7 +967,7 @@ export function SimpleFirmwareWizard({
       ) : null}
 
       <View style={{ marginTop: 10 }}>
-        {step === 7 ? (
+        {step === 8 ? (
           <Text style={{ color: theme.warning, fontSize: 11.5, textAlign: 'center', lineHeight: 17 }}>
             Идёт прошивка — не закрывайте мастер и не отключайте USB, пока запись не завершится.
           </Text>

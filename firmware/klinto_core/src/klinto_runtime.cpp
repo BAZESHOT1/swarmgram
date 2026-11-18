@@ -231,7 +231,11 @@ bool KlintoNode::loadConfig() {
 
   if (KL_USE_LORA) {
     cfg_.lora_present = true;
+#ifdef KL_LORA_CHIP_ID
+    cfg_.lora.chip = (uint8_t)KL_LORA_CHIP_ID; /* 0 sx1278, 1 sx1262, 2 sx1276, 3 lr2021 */
+#else
     cfg_.lora.chip = KL_LORA_CHIP_SX1262 ? KL_LORA_SX1262 : KL_LORA_SX1278;
+#endif
     cfg_.lora.sck = KL_LORA_SCK;
     cfg_.lora.miso = KL_LORA_MISO;
     cfg_.lora.mosi = KL_LORA_MOSI;
@@ -398,7 +402,7 @@ bool KlintoNode::begin() {
     uint8_t radio_caps = 0;
     if (cfg_.lora_present) {
       radio_caps |= KL_RADIO_LORA;
-      radio_caps |= cfg_.lora.chip == KL_LORA_SX1262 ? KL_RADIO_SX1262 : KL_RADIO_SX127X;
+      radio_caps |= (cfg_.lora.chip == KL_LORA_SX1262 || cfg_.lora.chip == KL_LORA_LR2021) ? KL_RADIO_SX1262 : KL_RADIO_SX127X;
     }
 #if KL_HAS_BLE
     radio_caps |= KL_RADIO_BLE;

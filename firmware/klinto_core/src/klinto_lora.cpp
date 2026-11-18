@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <RadioLib.h>
+#include <SPI.h>
 #include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -28,8 +29,6 @@ LoraInterface::LoraInterface()
       channel_pending_(false),
       pending_channel_(1),
       module_(nullptr),
-      sx1262_(nullptr),
-      sx1278_(nullptr),
       phys_(nullptr) {
   memset(&cfg_, 0, sizeof(cfg_));
   memset(queue_, 0, sizeof(queue_));
@@ -51,19 +50,38 @@ bool LoraInterface::init(const kl_config_t &cfg) {
   const uint8_t irq = (uint8_t)(cfg.lora.dio1 >= 0 ? cfg.lora.dio1 : cfg.lora.dio0);
   const uint8_t busy = cfg.lora.busy < 0 ? (uint8_t)RADIOLIB_NC : (uint8_t)cfg.lora.busy;
 
+  /* RadioLib 8: единая конфигурация LoRa (частоты в Гц). */
+  ConfigLoRa_t lc;
+  lc.frequency = (uint32_t)(cfg.lora.freq_mhz * 1000000.0f);
+  lc.bandwidth = (uint32_t)(cfg.lora.bw_khz * 1000.0f);
+  lc.spreadingFactor = cfg.lora.sf;
+  lc.codingRate = cfg.lora.cr;
+  lc.syncWord = cfg.lora.sync_word;
+  lc.power = cfg.lora.power_dbm;
+  lc.preambleLength = cfg.lora.preamble;
+  /* Пины шины из конфигурации (раньше всегда шла SPI по умолчанию). */
+  SPI.begin(cfg.lora.sck, cfg.lora.miso, cfg.lora.mosi, cfg.lora.cs);
   int16_t state = RADIOLIB_ERR_UNKNOWN;
   if (cfg.lora.chip == KL_LORA_SX1262) {
-    module_ = new Module(cs, irq, rst, busy);
-    sx1262_ = new SX1262(module_);
-    phys_ = sx1262_;
-    state = sx1262_->begin(cfg.lora.freq_mhz, cfg.lora.bw_khz, cfg.lora.sf, cfg.lora.cr,
-                          cfg.lora.sync_word, cfg.lora.power_dbm, cfg.lora.preamble);
+    module_ = new Module(cs, irq, rst, busy, SPI);
+    SX1262 *r = new SX1262(module_);
+    phys_ = r;
+    state = r->begin(lc);
+  } else if (cfg.lora.chip == KL_LORA_LR2021) {
+    module_ = new Module(cs, irq, rst, busy, SPI);
+    LR2021 *r = new LR2021(module_);
+    phys_ = r;
+    state = r->begin(lc);
+  } else if (cfg.lora.chip == KL_LORA_SX1276) {
+    module_ = new Module(cs, irq, rst, (uint32_t)RADIOLIB_NC, SPI);
+    SX1276 *r = new SX1276(module_);
+    phys_ = r;
+    state = r->begin(lc);
   } else {
-    module_ = new Module(cs, irq, rst, (uint8_t)RADIOLIB_NC);
-    sx1278_ = new SX1278(module_);
-    phys_ = sx1278_;
-    state = sx1278_->begin(cfg.lora.freq_mhz, cfg.lora.bw_khz, cfg.lora.sf, cfg.lora.cr,
-                          cfg.lora.sync_word, cfg.lora.power_dbm, cfg.lora.preamble);
+    module_ = new Module(cs, irq, rst, (uint32_t)RADIOLIB_NC, SPI);
+    SX1278 *r = new SX1278(module_);
+    phys_ = r;
+    state = r->begin(lc);
   }
   if (state != RADIOLIB_ERR_NONE || !phys_) {
     inited_ = false;
@@ -84,21 +102,15 @@ bool LoraInterface::setChannel(uint8_t wifi_channel) {
 
 bool LoraInterface::applyRadioConfig() {
   if (!inited_) return false;
+  if (!phys_) return false;
   int16_t state = RADIOLIB_ERR_NONE;
-  if (sx1262_) {
-    state |= sx1262_->setFrequency(cfg_.lora.freq_mhz);
-    state |= sx1262_->setBandwidth(cfg_.lora.bw_khz);
-    state |= sx1262_->setSpreadingFactor(cfg_.lora.sf);
-    state |= sx1262_->setCodingRate(cfg_.lora.cr);
-    state |= sx1262_->setSyncWord(cfg_.lora.sync_word);
-  } else if (sx1278_) {
-    state |= sx1278_->setFrequency(cfg_.lora.freq_mhz);
-    state |= sx1278_->setBandwidth(cfg_.lora.bw_khz);
-    state |= sx1278_->setSpreadingFactor(cfg_.lora.sf);
-    state |= sx1278_->setCodingRate(cfg_.lora.cr);
-    state |= sx1278_->setSyncWord(cfg_.lora.sync_word);
-  }
-  if (phys_) phys_->startReceive();
+  uint8_t sw = cfg_.lora.sync_word;
+  state |= phys_->setFrequency((uint32_t)(cfg_.lora.freq_mhz * 1000000.0f));
+  state |= phys_->setBandwidth((uint32_t)(cfg_.lora.bw_khz * 1000.0f));
+  state |= phys_->setSpreadingFactor(cfg_.lora.sf);
+  state |= phys_->setCodingRate(cfg_.lora.cr);
+  state |= phys_->setSyncWord(&sw, 1);
+  phys_->startReceive();
   return state == RADIOLIB_ERR_NONE;
 }
 
@@ -171,11 +183,7 @@ void LoraInterface::pushRx(const uint8_t *data, size_t len, int16_t rssi) {
 bool LoraInterface::cadClear() {
   int16_t result = RADIOLIB_CHANNEL_FREE;
   ++cad_total_;
-  if (cfg_.lora.chip == KL_LORA_SX1262 && sx1262_) {
-    result = sx1262_->scanChannel();
-  } else if (sx1278_) {
-    result = sx1278_->scanChannel();
-  }
+  if (phys_) result = phys_->scanChannel();
   return result == RADIOLIB_CHANNEL_FREE;
 }
 
@@ -302,7 +310,7 @@ LoraInterface::LoraInterface() : cb_(nullptr), cb_ctx_(nullptr), count_(0), seq_
                                  last_quality_(0), cad_busy_(0), cad_total_(0),
                                  airtime_window_ms_(0), airtime_used_ms_(0),
                                  channel_pending_(false), pending_channel_(1), module_(nullptr),
-                                 sx1262_(nullptr), sx1278_(nullptr), phys_(nullptr) {
+                                 phys_(nullptr) {
   memset(&cfg_, 0, sizeof(cfg_));
 }
 bool LoraInterface::init(const kl_config_t &) { return false; }

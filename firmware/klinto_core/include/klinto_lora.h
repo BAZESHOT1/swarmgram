@@ -12,8 +12,6 @@
 
 #if defined(ESP32)
 class Module;
-class SX1262;
-class SX1278;
 class PhysicalLayer;
 #endif
 
@@ -76,8 +74,6 @@ class LoraInterface : public INetInterface {
 
 #if defined(ESP32)
   Module *module_;
-  SX1262 *sx1262_;
-  SX1278 *sx1278_;
   PhysicalLayer *phys_;
   static void taskEntry(void *arg);
 #endif

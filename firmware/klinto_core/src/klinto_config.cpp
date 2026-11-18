@@ -283,6 +283,7 @@ bool kl_config_from_json(kl_config_t *cfg, const char *json) {
     if (kl_json_get_bool(json, "present", &b)) cfg->lora_present = b;
     if (kl_json_get_string(json, "chip", text, sizeof(text))) {
       if (!strcmp(text, "sx1262")) cfg->lora.chip = KL_LORA_SX1262;
+      else if (!strcmp(text, "lr2021")) cfg->lora.chip = KL_LORA_LR2021;
       else if (!strcmp(text, "sx1276")) cfg->lora.chip = KL_LORA_SX1276;
       else if (!strcmp(text, "sx1278") || !strcmp(text, "sx127x")) cfg->lora.chip = KL_LORA_SX1278;
     }
@@ -312,7 +313,8 @@ size_t kl_config_to_json(const kl_config_t *cfg, char *out, size_t cap) {
   const char *role = cfg->role == KL_ROLE_GATEWAY ? "gateway"
                      : cfg->role == KL_ROLE_ROUTER ? "router"
                                                     : "client";
-  const char *chip = cfg->lora.chip == KL_LORA_SX1262 ? "sx1262"
+  const char *chip = cfg->lora.chip == KL_LORA_LR2021 ? "lr2021"
+                   : cfg->lora.chip == KL_LORA_SX1262 ? "sx1262"
                      : cfg->lora.chip == KL_LORA_SX1276 ? "sx1276"
                                                         : "sx1278";
   int n = snprintf(

@@ -105,7 +105,8 @@ enum kl_role_t : uint8_t {
 enum kl_lora_chip_t : uint8_t {
   KL_LORA_SX1278 = 0,
   KL_LORA_SX1262 = 1,
-  KL_LORA_SX1276 = 2
+  KL_LORA_SX1276 = 2,
+  KL_LORA_LR2021 = 3
 };
 
 struct kl_lora_config_t {

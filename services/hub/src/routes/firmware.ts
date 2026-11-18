@@ -22,7 +22,7 @@ import { getMeshConfig } from './network.js';
 type FirmwareBoard = 'esp32c3' | 'esp32' | 'esp32s3' | 'esp32c6' | 'esp32c5';
 type FirmwareRole = 'gateway' | 'repeater' | 'wearable';
 type FirmwareConnectivity = 'wifi' | 'wifi_lora' | 'lora';
-type LoraChip = 'sx1278' | 'sx1276' | 'sx1262';
+type LoraChip = 'sx1278' | 'sx1276' | 'sx1262' | 'lr2021';
 
 interface LoraPins {
   sck: number;
@@ -35,6 +35,8 @@ interface LoraPins {
 }
 
 interface FirmwareConfig {
+  /** Отображаемое имя модуля. */
+  name?: string;
   board: FirmwareBoard;
   role: FirmwareRole;
   connectivity: FirmwareConnectivity;
@@ -79,7 +81,7 @@ interface FirmwareConfig {
 const BOARDS: FirmwareBoard[] = ['esp32c3', 'esp32', 'esp32s3', 'esp32c6', 'esp32c5'];
 const ROLES: FirmwareRole[] = ['gateway', 'repeater', 'wearable'];
 const CONNECTIVITY: FirmwareConnectivity[] = ['wifi', 'wifi_lora', 'lora'];
-const LORA_CHIPS: LoraChip[] = ['sx1278', 'sx1276', 'sx1262'];
+const LORA_CHIPS: LoraChip[] = ['sx1278', 'sx1276', 'sx1262', 'lr2021'];
 const LORA_DEFAULT_PINS: Record<FirmwareBoard, LoraPins & { chip: LoraChip }> = {
   esp32c3: { sck: 4, miso: 5, mosi: 6, cs: 7, rst: 3, dio0: 2, busy: 10, chip: 'sx1262' },
   esp32: { sck: 18, miso: 19, mosi: 23, cs: 5, rst: 14, dio0: 26, busy: 27, chip: 'sx1278' },
@@ -212,6 +214,8 @@ function validateConfig(raw: unknown): FirmwareConfig {
   }
 
   if (b.ota !== undefined) out.ota = boolValue(b.ota, 'ota', false);
+  // Отображаемое имя модуля (карта сети, список): печатные символы, до 31 байта.
+  if (typeof b.name === 'string' && b.name.trim()) out.name = b.name.trim().replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 31);
   if (b.ledPin !== undefined && b.ledPin !== null) out.ledPin = intIn(b.ledPin, 'ledPin', 0, PIN_MAX);
 
   return out;
