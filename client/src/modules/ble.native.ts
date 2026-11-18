@@ -86,8 +86,6 @@ const HELLO_RETRY_DELAY_MS = 700;
 const INFO_TIMEOUT_MS = 2500;
 /** Сколько ждём INFO после каждого HELLO, прежде чем повторить. */
 const HELLO_WAIT_MS = 1600;
-/** Столько тишины от модуля считаем обрывом связи (INFO приходит раз в 15 с). */
-const LINK_SILENT_MS = 45_000;
 /** Общий предел на запись кадра: дольше — GATT завис. */
 const FRAME_WRITE_LIMIT_MS = 20_000;
 /** Ранняя остановка скана: минимум времени и ожидание имени из scan response. */
@@ -647,33 +645,32 @@ export class NativeBleTransport implements ModuleConnection {
     subscribeTx();
     subscribeStatus();
 
-    /* Сторож связи. Модуль шлёт INFO каждые 15 с, поэтому долгая тишина —
-     * признак «зомби»-соединения: GATT формально жив, но notify/write больше
-     * не проходят (так выглядело зависание отправки на iOS). Тогда рвём
-     * соединение, ModuleProvider переподключается и очередь досылает текст.
-     * Android дополнительно пересоздаёт подписку после 25 с тишины. */
+    /* Соединение с модулем НИКОГДА не рвём сами: ни из-за тишины, ни из-за неудачной записи.
+     * Модуль может оказаться единственным источником входящих (шлюз/mesh), поэтому подписка на
+     * notify остаётся всегда. Разрыв — только если его объявит система (disconnect) или пользователь.
+     * Android (MediaTek/Bluedroid) иногда теряет notify без ошибки: после 25 с тишины создаём
+     * новую подписку ДО снятия старой, чтобы подписка не оставалась выключенной. */
     this.lastDataMs = Date.now();
     this.rearmTimer = setInterval(() => {
       if (this.closing || !this.deviceId) return;
       const silentMs = Date.now() - this.lastDataMs;
-      if (silentMs >= LINK_SILENT_MS) {
-        dbg(`link silent ${Math.round(silentMs / 1000)}s -> reconnect`);
-        void this.failLink();
-        return;
-      }
-      if (Platform.OS !== 'android' || silentMs < 25_000) return;
-      try {
-        this.rxSub?.remove();
-      } catch {
-        /* ignore */
-      }
-      try {
-        this.statusSub?.remove();
-      } catch {
-        /* ignore */
-      }
+      if (silentMs < 25_000) return;
+      if (Platform.OS !== 'android') return;
+      const oldRx = this.rxSub;
+      const oldStatus = this.statusSub;
       subscribeTx();
       subscribeStatus();
+      try {
+        oldRx?.remove();
+      } catch {
+        /* ignore */
+      }
+      try {
+        oldStatus?.remove();
+      } catch {
+        /* ignore */
+      }
+      this.lastDataMs = Date.now() - 10_000;
     }, 10_000);
 
     // Живой лог показал: модуль отвечает на legacy HELLO сразу, а на первый
@@ -968,7 +965,6 @@ export class NativeBleTransport implements ModuleConnection {
       // GATT завис (типично для MediaTek после серии reconnect): закрываем и
       // сообщаем о разрыве, чтобы ModuleProvider поднял чистое соединение.
       dbg(`sendRawProgress failed: ${errorMessage(error)}`);
-      if (this.linkLooksDead()) await this.failLink();
       return false;
     }
   }
@@ -986,17 +982,8 @@ export class NativeBleTransport implements ModuleConnection {
       return true;
     } catch (error) {
       dbg(`sendRaw failed: ${errorMessage(error)}`);
-      if (this.linkLooksDead()) await this.failLink();
       return false;
     }
-  }
-
-  /**
-   * Связь мертва, только если от модуля давно ничего нет (INFO идёт раз в 15 с). Медленная запись
-   * при живом приёме — не повод разрывать соединение: раньше это давало цикл переподключений.
-   */
-  private linkLooksDead(): boolean {
-    return Date.now() - this.lastDataMs > 30_000;
   }
 
   /** Ограничивает ожидание записи кадра (включая очередь перед ним). */
@@ -1014,17 +1001,6 @@ export class NativeBleTransport implements ModuleConnection {
     ]).finally(() => {
       if (timer) clearTimeout(timer);
     });
-  }
-
-  /**
-   * Аварийное закрытие после сбоя записи. В отличие от обычного close()
-   * обязательно уведомляет подписчиков: раньше ModuleProvider не узнавал о
-   * закрытии, держал «живой» транспорт и сообщения бесконечно уходили в
-   * закрытый канал (цикл «Отправка в модуль» ↔ «Подготовка KMesh»).
-   */
-  private async failLink(): Promise<void> {
-    await this.close().catch(() => undefined);
-    this.emitDisconnect();
   }
 
   /** KMesh_v1: подписка на сырые чанки до разбора legacy-кадров. */
