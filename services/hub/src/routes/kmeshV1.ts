@@ -850,6 +850,20 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         [nodeId, gatewayId, num(body.rssi), num(body.hops), num(body.iface), num(body.battery),
          num(body.role), ttlSec],
       );
+      // Соседи узла (кого он слышит напрямую) — для карты кластера.
+      const nb = String(body.nb ?? '');
+      if (nb) {
+        for (const part of nb.split(';').slice(0, 12)) {
+          const [id, rssi, flags] = part.split(':').map((v) => Number(v));
+          if (!Number.isInteger(id) || id <= 1 || id === nodeId) continue;
+          await query(
+            `INSERT INTO kmesh_v1_links (node_id, neighbor_id, rssi, flags, seen_at)
+             VALUES ($1,$2,$3,$4, now())
+             ON CONFLICT (node_id, neighbor_id) DO UPDATE SET rssi = EXCLUDED.rssi, flags = EXCLUDED.flags, seen_at = now()`,
+            [nodeId, id, Number.isFinite(rssi) ? rssi : 0, Number.isFinite(flags) ? flags : 0],
+          );
+        }
+      }
       await query(
         `INSERT INTO kmesh_v1_gateways (gateway_id, last_seen_at, uplink_ok, uplink_fail, version)
          VALUES ($1, now(), 1, 0, $2)
@@ -1018,6 +1032,72 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       });
     }
     return reply.code(201).send({ ok: true, deduped: false });
+  });
+
+  /**
+   * Карта кластера вокруг узла пользователя: узлы, которых видно за 10 минут (presence), прямые связи
+   * между ними, шлюзы (доступ к Hub) и соседние кластеры (узлы, чей шлюз — другой).
+   */
+  app.get('/kmesh/v1/topology', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const auth = req.auth!;
+    const q = req.query as { node_id?: string };
+    let rootId = num(q.node_id);
+    if (!Number.isInteger(rootId) || rootId <= 1) {
+      const bound = await one<{ node_id: string }>(
+        'SELECT node_id::text FROM kmesh_v1_node_bindings WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1',
+        [auth.userId]);
+      rootId = bound ? Number(bound.node_id) : 0;
+    }
+    if (!rootId) return reply.send({ ok: true, root: 0, nodes: [], links: [] });
+    // Два шага по связям от корня — текущий кластер и его соседи.
+    const links = await query<{ node_id: string; neighbor_id: string; rssi: number; flags: number }>(
+      `WITH RECURSIVE reach(id, depth) AS (
+         SELECT $1::bigint, 0
+         UNION
+         SELECT CASE WHEN l.node_id = r.id THEN l.neighbor_id ELSE l.node_id END, r.depth + 1
+           FROM kmesh_v1_links l JOIN reach r ON (l.node_id = r.id OR l.neighbor_id = r.id)
+          WHERE r.depth < 3 AND l.seen_at > now() - interval '10 minutes'
+       )
+       SELECT DISTINCT l.node_id::text, l.neighbor_id::text, l.rssi, l.flags
+         FROM kmesh_v1_links l
+        WHERE l.seen_at > now() - interval '10 minutes'
+          AND l.node_id IN (SELECT id FROM reach) AND l.neighbor_id IN (SELECT id FROM reach)
+        LIMIT 400`,
+      [rootId],
+    );
+    const ids = new Set<number>([rootId]);
+    for (const l of links) { ids.add(Number(l.node_id)); ids.add(Number(l.neighbor_id)); }
+    const nodes = await query<{ node_id: string; gateway_id: string; rssi: number; battery: number; role: number;
+      last_seen_at: string; online: boolean; display_name: string | null; node_role: number | null; battery_pct: number | null }>(
+      `SELECT p.node_id::text, p.gateway_id::text, p.rssi, p.battery, p.role, p.last_seen_at,
+              p.expires_at > now() AS online, p.display_name, t.node_role, t.battery_pct
+         FROM kmesh_v1_presence p
+         LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
+        WHERE p.node_id = ANY($1::bigint[])`,
+      [[...ids]],
+    ).catch(() => []);
+    const gateways = await query<{ gateway_id: string; last_seen_at: string }>(
+      `SELECT gateway_id::text, last_seen_at FROM kmesh_v1_gateways WHERE last_seen_at > now() - interval '2 minutes'`,
+    ).catch(() => []);
+    const liveGw = new Set(gateways.map((g) => Number(g.gateway_id)));
+    const rootGw = nodes.find((n) => Number(n.node_id) === rootId)?.gateway_id;
+    return reply.send({
+      ok: true,
+      root: rootId,
+      nodes: nodes.map((n) => ({
+        nodeId: Number(n.node_id),
+        name: n.display_name ?? '',
+        gatewayId: Number(n.gateway_id),
+        hub: liveGw.has(Number(n.node_id)),
+        online: n.online,
+        rssi: n.rssi,
+        battery: n.battery_pct != null && n.battery_pct !== 255 ? n.battery_pct : null,
+        role: n.node_role ?? n.role,
+        sameCluster: !rootGw || n.gateway_id === rootGw,
+        lastSeenAt: n.last_seen_at,
+      })),
+      links: links.map((l) => ({ a: Number(l.node_id), b: Number(l.neighbor_id), rssi: l.rssi, flags: l.flags })),
+    });
   });
 
   /** Клиент сообщает Hub соответствие chat_ref = CRC16(chatId). */

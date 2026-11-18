@@ -1042,18 +1042,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           : undefined) ?? ownDevices[0] ?? null;
         const candidate = available[0] ?? null;
 
-        if (!last?.hardwareId) {
-          if (candidate) {
-            setAutoModule({ key: candidate.id, name: candidate.name, isMine: false, phase: 'found' });
-          }
+        // Чужие и свободные модули не подключаем и не показываем уведомлений: только свои
+        // (префикс владельца в BLE-имени или MAC из списка модулей аккаунта).
+        void candidate;
+        if (!mine) {
+          setAutoModule((prev) => (prev && prev.isMine ? null : prev));
           return;
+        }
+        if (!last?.hardwareId) {
+          // Свой модуль, но запись о последнем подключении потеряна (переустановка) — подключаемся.
         }
 
-        // Если рядом есть чужой модуль, а свой не найден — предлагаем подключить.
-        if (!mine && candidate) {
-          setAutoModule({ key: candidate.id, name: candidate.name, isMine: false, phase: 'found' });
-          return;
-        }
+
 
         if (!mine) {
           // Своего модуля нет в эфире — не пытаемся подключаться к выключенному
@@ -1063,7 +1063,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         }
 
         const key = mine.id;
-        const displayName = mine?.name ?? `Модуль ${last.publicId ?? ''}`.trim();
+        const displayName = mine?.name ?? `Модуль ${last?.publicId ?? ''}`.trim();
         cancelAutoKeyRef.current = null;
 
         const transport = getModuleTransport('ble');
@@ -1089,7 +1089,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           const nextInfo = await withConnectTimeout(
             transport.openDevice
               ? transport.openDevice(mine.id)
-              : transport.openKnown(last.hardwareId, 5000),
+              : transport.openKnown(last?.hardwareId, 5000),
             30_000,
           );
           console.log('[ble]', 'restore open', Boolean(nextInfo));

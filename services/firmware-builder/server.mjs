@@ -290,6 +290,7 @@ function generateConfigHeader(config, version) {
     `#define KL_HAS_MQTT ${role === 'gateway' ? 1 : 0}`,
     `#define KL_OTA_PUBKEY_HEX ${cString(OTA_PUBKEY)}`,
     `#define KL_CONNECTIVITY ${cString(connectivity)}`,
+    `#define KL_MODULE_NAME ${cString(String(config.name ?? '').slice(0, 31))}`,
     `#define KL_IS_GATEWAY ${role === 'gateway' ? 1 : 0}`,
     `#define KL_IS_WEARABLE ${role === 'wearable' ? 1 : 0}`,
     `#define KL_USE_WIFI_MESH ${useWifiMesh ? 1 : 0}`,

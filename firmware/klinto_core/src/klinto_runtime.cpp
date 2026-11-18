@@ -277,6 +277,10 @@ bool KlintoNode::loadConfig() {
         kl_owner_prefix_normalize(prefix, cfg_.owner_ble_prefix)) {
       /* загружено из NVS */
     }
+#ifdef KL_MODULE_NAME
+    strncpy(cfg_.display_name, KL_MODULE_NAME, sizeof(cfg_.display_name) - 1);
+#endif
+    kl_nvs_get_str("klinto3", "name", cfg_.display_name, sizeof(cfg_.display_name));
     cfg_.owner_net_id = kl_nvs_get_uint("klinto3", "owner_net", cfg_.owner_net_id);
     cfg_.owner_epoch = kl_nvs_get_uint("klinto3", "owner_epoch", cfg_.owner_epoch);
   }
@@ -756,6 +760,12 @@ void KlintoNode::onConfigJson(const char *json, size_t len) {
   char ssid[64] = {0};
   char pass[64] = {0};
   bool changed = false;
+  char name[32] = {0};
+  if (kl_json_get_string(json, "name", name, sizeof(name)) && name[0]) {
+    strncpy(cfg_.display_name, name, sizeof(cfg_.display_name) - 1);
+    kl_nvs_set_str("klinto3", "name", cfg_.display_name);
+    Serial.printf("[klinto] name=%s\n", cfg_.display_name);
+  }
   if (kl_json_get_string(json, "wifiSsid", ssid, sizeof(ssid)) && ssid[0]) {
     kl_nvs_set_str("wifi", "ssid", ssid);
     changed = true;

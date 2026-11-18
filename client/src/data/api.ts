@@ -1649,6 +1649,16 @@ export const api = {
       '/v1/kmesh/v1/me/identity',
     ),
 
+  /** Карта кластера вокруг узла пользователя (Hub 1.4.7+). */
+  kmeshV1Topology: (nodeId?: number) =>
+    req<{
+      ok: true;
+      root: number;
+      nodes: Array<{ nodeId: number; name: string; gatewayId: number; hub: boolean; online: boolean; rssi: number;
+        battery: number | null; role: number; sameCluster: boolean; lastSeenAt: string }>;
+      links: Array<{ a: number; b: number; rssi: number; flags: number }>;
+    }>(`/v1/kmesh/v1/topology${nodeId ? `?node_id=${nodeId}` : ''}`),
+
   /** Копия чужого KMesh-сообщения с подписью автора (выгружает любой участник чата). */
   kmeshV1RelaySync: (body: {
     msg_uuid: string;

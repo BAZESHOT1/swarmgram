@@ -926,10 +926,24 @@ void KlintoRouter::maybe_presence(uint32_t now_ms) {
   telemetry.battery_pct = charging_ ? 255 : battery_;
   telemetry.owner_net_id = owner_net_id_;
 
-  uint8_t payload[24];
-  const size_t plen = kl_codec_encode_presence_ex(payload, sizeof(payload), battery_, last_rssi_,
-                                                  (uint8_t)cfg_.role, capabilities_, &telemetry);
+  uint8_t payload[80];
+  size_t plen = kl_codec_encode_presence_ex(payload, sizeof(payload), battery_, last_rssi_,
+                                            (uint8_t)cfg_.role, capabilities_, &telemetry);
   if (!plen) return;
+  {
+    /* Соседи для карты сети на Hub: [count][id u32][rssi i8][flags u8]... */
+    const size_t count_pos = plen++;
+    uint8_t count = 0;
+    for (uint16_t i = 0; i < KL_NEIGHBOR_TABLE && count < 8 && plen + 6 <= sizeof(payload); ++i) {
+      if (!neighbors_[i].used || now_ms - neighbors_[i].last_seen_ms > 120000u) continue;
+      kl_write_le32(payload + plen, neighbors_[i].node_id);
+      payload[plen + 4] = (uint8_t)(int8_t)(neighbors_[i].rssi < -127 ? -127 : neighbors_[i].rssi);
+      payload[plen + 5] = (uint8_t)((neighbors_[i].is_gateway ? 1 : 0) | (neighbors_[i].iface == KL_IFACE_LORA ? 2 : 0));
+      plen += 6;
+      count++;
+    }
+    payload[count_pos] = count;
+  }
   kl_packet_t pkt;
   kl_packet_init(&pkt, KL_TYPE_NODE_PRESENCE, cfg_.node_id, KL_ANY_GATEWAY_ID, KL_BROADCAST_ID,
                  KL_FLAG_TO_INTERNET);

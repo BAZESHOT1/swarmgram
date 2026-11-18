@@ -175,6 +175,8 @@ struct kl_config_t {
   char owner_ble_prefix[9];
   /* Последние 6 hex MAC — для имени KL-<USER8>-<MOD6>. */
   char ble_mod6[7];
+  /* Отображаемое имя модуля (карта сети, список модулей). Задаётся при прошивке или через CONFIG. */
+  char display_name[32];
 };
 
 void kl_config_defaults(kl_config_t *cfg);

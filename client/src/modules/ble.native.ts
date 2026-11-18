@@ -774,6 +774,8 @@ export class NativeBleTransport implements ModuleConnection {
         ownerNetId: Number(raw.ownerNetId ?? 0) >>> 0,
         ownerPrefix: String(raw.ownerPrefix ?? '00000000').toLowerCase(),
         bleMod6: typeof raw.bleMod6 === 'string' ? raw.bleMod6.toLowerCase() : undefined,
+        name: typeof raw.name === 'string' ? raw.name : undefined,
+        nb: Array.isArray(raw.nb) ? (raw.nb as Array<[number, number, number]>).slice(0, 16) : undefined,
       });
     } catch {
       return null;

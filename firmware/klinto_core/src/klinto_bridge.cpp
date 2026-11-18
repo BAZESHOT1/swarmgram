@@ -632,7 +632,7 @@ void KlintoClientBridge::flush_statuses() {
 }
 
 bool KlintoClientBridge::send_info() {
-  char info[384];
+  char info[900];
   const bool gateway = cfg_.role == KL_ROLE_GATEWAY ||
                        (router_ && router_->gateway_route()->valid) ||
                        (router_ && router_->mobile_gateway_active());
@@ -652,8 +652,38 @@ bool KlintoClientBridge::send_info() {
       (long)(router_ ? router_->gateway_age_ms(kl_uptime_ms()) : -1),
       (unsigned)(router_ ? router_->channel() : 0),
       (unsigned)((router_ && router_->mobile_gateway_active()) ? 1 : 0));
-  if (n <= 0) return false;
-  return send_frame(KL_CF_INFO, (const uint8_t *)info, (size_t)n);
+  if (n <= 0 || (size_t)n >= sizeof(info)) return false;
+  /* Карта кластера: имя модуля и соседи, которых он слышит напрямую за последние 60 с.
+   * nb: [[nodeId, rssi, flags]], flags: 1 — шлюз, 2 — по LoRa. */
+  size_t used = (size_t)n - 1; /* затираем закрывающую '}' */
+  char esc[40];
+  size_t e = 0;
+  for (const char *p = cfg_.display_name; *p && e + 2 < sizeof(esc); ++p) {
+    if (*p == '"' || *p == '\\') esc[e++] = '\\';
+    esc[e++] = *p;
+  }
+  esc[e] = '\0';
+  int w = snprintf(info + used, sizeof(info) - used, ",\"name\":\"%s\",\"nb\":[", esc);
+  if (w <= 0) return false;
+  used += (size_t)w;
+  if (router_) {
+    const kl_neighbor_t *nb = router_->neighbors();
+    const uint32_t now = kl_uptime_ms();
+    int count = 0;
+    for (uint16_t i = 0; i < KL_NEIGHBOR_TABLE && count < 12; ++i) {
+      if (!nb[i].used || now - nb[i].last_seen_ms > 60000u) continue;
+      const unsigned flags = (nb[i].is_gateway ? 1u : 0u) | (nb[i].iface == KL_IFACE_LORA ? 2u : 0u);
+      w = snprintf(info + used, sizeof(info) - used, "%s[%lu,%d,%u]", count ? "," : "",
+                   (unsigned long)nb[i].node_id, (int)nb[i].rssi, flags);
+      if (w <= 0 || (size_t)w >= sizeof(info) - used - 4) break;
+      used += (size_t)w;
+      count++;
+    }
+  }
+  w = snprintf(info + used, sizeof(info) - used, "]}");
+  if (w <= 0) return false;
+  used += (size_t)w;
+  return send_frame(KL_CF_INFO, (const uint8_t *)info, used);
 }
 
 void KlintoClientBridge::flush_outbox() {

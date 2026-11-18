@@ -44,6 +44,10 @@ export interface ModuleInfo {
   ownerPrefix?: string;
   /** Последние 6 hex MAC. */
   bleMod6?: string;
+  /** Отображаемое имя модуля (задаётся при прошивке/в настройках). */
+  name?: string;
+  /** Кого модуль слышит напрямую: [nodeId, rssi, flags(1 шлюз, 2 LoRa)]. */
+  nb?: Array<[number, number, number]>;
 }
 
 /** Входящий конверт из mesh-сети. */
@@ -141,6 +145,8 @@ export function normalizeInfo(raw: {
   ownerNetId?: number;
   ownerPrefix?: string;
   bleMod6?: string;
+  name?: string;
+  nb?: Array<[number, number, number]>;
 }): ModuleInfo {
   const role = raw.role === 'wearable' || raw.role === 'repeater' || raw.role === 'gateway' ? raw.role : 'gateway';
   // Прошивка отдаёт gateway/border как 0/1, старые версии — как boolean.
