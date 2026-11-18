@@ -60,6 +60,11 @@ import {
   moduleStatusView,
 } from '../../src/components/modules/moduleUi';
 import { useModuleConnection } from '../../src/modules/ModuleProvider';
+import { ClusterMap, nodeIdFromMac, type MapLink, type MapNode } from '../../src/components/modules/ClusterMap';
+import { kv } from '../../src/crypto/storage';
+import { router } from 'expo-router';
+
+const LAST_ROOT_KEY = 'sg:kmesh:map-root';
 
 type ModuleFilter = 'all' | 'online' | 'offline' | 'blocked' | 'wearable' | 'repeater' | 'gateway';
 type FlowMode = 'prepared' | 'flash' | 'claim';
@@ -492,7 +497,7 @@ export default function ModulesScreen() {
   /** Носимый модуль, который прямо сейчас подключён к этому клиенту. */
   const directInfo = localConnection.connected ? localConnection.info : null;
   const directModule =
-    directInfo && directInfo.role === 'wearable' && directInfo.hardwareId
+    directInfo && directInfo.hardwareId
       ? realModules.find((module) => hardwareIdOf(module) === directInfo.hardwareId.toLowerCase()) ?? null
       : null;
   const directKind: 'usb' | 'ble' | null =
@@ -657,6 +662,172 @@ export default function ModulesScreen() {
         }
       : null;
 
+  /* ------------------------------------------------ карта и список -- */
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [topology, setTopology] = useState<Awaited<ReturnType<typeof api.kmeshV1Topology>> | null>(null);
+  const [rootId, setRootId] = useState<number>(0);
+
+  // Корень карты — последний подключённый носимый модуль (запоминаем между сессиями).
+  useEffect(() => {
+    if (directInfo?.nodeId) {
+      setRootId(directInfo.nodeId);
+      void kv.set(LAST_ROOT_KEY, String(directInfo.nodeId)).catch(() => undefined);
+    } else if (!rootId) {
+      void kv
+        .get(LAST_ROOT_KEY)
+        .then((v) => v && setRootId(Number(v) || 0))
+        .catch(() => undefined);
+    }
+  }, [directInfo?.nodeId, rootId]);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      if (AppState.currentState === 'background') return;
+      void api
+        .kmeshV1Topology(rootId || undefined)
+        .then((t) => alive && setTopology(t))
+        .catch(() => undefined);
+    };
+    load();
+    const timer = setInterval(load, 15_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [rootId]);
+
+  const map = useMemo(() => {
+    const byNode = new Map<number, { name: string; mac: string }>();
+    for (const m of meshModules?.modules ?? []) {
+      const id = nodeIdFromMac(m.moduleMac);
+      if (id) byNode.set(id, { name: m.customName || `Модуль ${m.mod6}`, mac: m.moduleMac });
+    }
+    const root = rootId || topology?.root || 0;
+    if (!root) return { nodes: [] as MapNode[], links: [] as MapLink[], byNode };
+    const nodes = new Map<number, MapNode>();
+    const linkMap = new Map<string, MapLink>();
+    const addLink = (a: number, b: number, rssi: number, flags: number) => {
+      const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+      const prev = linkMap.get(key);
+      if (!prev || rssi > prev.rssi) linkMap.set(key, { a, b, rssi, lora: (flags & 2) !== 0 });
+    };
+    const label = (id: number, fallback?: string) =>
+      byNode.get(id)?.name || fallback || `Узел ${id.toString(16).slice(-4)}`;
+    const topo = topology && topology.root === root ? topology : null;
+    const rootTopo = topo?.nodes.find((n) => n.nodeId === root);
+    const liveNb = directInfo?.nodeId === root ? directInfo.nb ?? [] : null;
+    nodes.set(root, {
+      nodeId: root,
+      name: label(root, (directInfo?.nodeId === root ? directInfo.name : '') || rootTopo?.name || 'Мой модуль'),
+      mac: byNode.get(root)?.mac,
+      online: directInfo?.nodeId === root || Boolean(rootTopo?.online),
+      gateway: false,
+      hub: Boolean(rootTopo?.hub),
+      rssi: null,
+      battery: directInfo?.nodeId === root ? directInfo.battery : rootTopo?.battery ?? null,
+      layer: 0,
+      mine: true,
+    });
+    const direct = new Set<number>();
+    for (const [id, rssi, flags] of liveNb ?? []) {
+      direct.add(id >>> 0);
+      addLink(root, id >>> 0, rssi, flags);
+    }
+    for (const l of topo?.links ?? []) {
+      if (!liveNb && (l.a === root || l.b === root)) direct.add(l.a === root ? l.b : l.a);
+      addLink(l.a, l.b, l.rssi, l.flags);
+    }
+    for (const n of topo?.nodes ?? []) {
+      if (n.nodeId === root) continue;
+      nodes.set(n.nodeId, {
+        nodeId: n.nodeId,
+        name: label(n.nodeId, n.name),
+        mac: byNode.get(n.nodeId)?.mac,
+        online: n.online,
+        gateway: n.role === 2 || n.hub,
+        hub: n.hub,
+        rssi: n.rssi,
+        battery: n.battery,
+        layer: direct.has(n.nodeId) ? 1 : n.sameCluster ? 2 : 3,
+        mine: byNode.has(n.nodeId),
+      });
+    }
+    for (const [id, rssi, flags] of liveNb ?? []) {
+      const nid = id >>> 0;
+      const prev = nodes.get(nid);
+      if (prev) {
+        prev.online = true;
+        prev.rssi = rssi;
+        prev.layer = 1;
+        if (flags & 1) prev.gateway = true;
+      } else {
+        nodes.set(nid, {
+          nodeId: nid,
+          name: label(nid),
+          mac: byNode.get(nid)?.mac,
+          online: true,
+          gateway: (flags & 1) !== 0,
+          hub: false,
+          rssi,
+          battery: null,
+          layer: 1,
+          mine: byNode.has(nid),
+        });
+      }
+    }
+    const links = [...linkMap.values()].filter((l) => nodes.has(l.a) && nodes.has(l.b));
+    return { nodes: [...nodes.values()], links, byNode };
+  }, [meshModules, topology, rootId, directInfo]);
+
+  type Row = {
+    key: string;
+    name: string;
+    mac: string;
+    role: string;
+    online: boolean;
+    rssi: number | null;
+    battery: number | null;
+    mesh?: NonNullable<typeof meshModules>['modules'][number];
+    legacy?: ModuleRow;
+  };
+  const rows = useMemo<Row[]>(() => {
+    const macKey = (v: string) => v.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+    const out = new Map<string, Row>();
+    const mapNode = (mac: string) => map.nodes.find((n) => n.nodeId === nodeIdFromMac(mac));
+    for (const m of meshModules?.modules ?? []) {
+      const node = mapNode(m.moduleMac);
+      out.set(macKey(m.moduleMac), {
+        key: macKey(m.moduleMac),
+        name: m.customName || node?.name || `Модуль ${m.mod6}`,
+        mac: m.moduleMac,
+        role: node?.layer === 0 ? 'носимый' : node?.gateway ? 'шлюз' : '',
+        online: Boolean(m.online || node?.online),
+        rssi: node?.rssi ?? null,
+        battery: node?.battery ?? null,
+        mesh: m,
+      });
+    }
+    for (const mod of realModules) {
+      const key = macKey(hardwareIdOf(mod)) || mod.id;
+      const prev = out.get(key);
+      const live = directInfo && macKey(directInfo.hardwareId) === key;
+      const merged: Row = {
+        key,
+        name: prev?.name || moduleName(mod),
+        mac: prev?.mac || hardwareIdOf(mod),
+        role: moduleRoleLabel(mod.role),
+        online: Boolean(prev?.online || live || (mod.online === true && !mod.blocked)),
+        rssi: live && directInfo.rssi ? directInfo.rssi : prev?.rssi ?? (mod.rssi ? Number(mod.rssi) : null),
+        battery: live ? directInfo.battery : prev?.battery ?? (mod.battery != null ? Number(mod.battery) : null),
+        mesh: prev?.mesh,
+        legacy: mod,
+      };
+      out.set(key, merged);
+    }
+    return [...out.values()].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  }, [meshModules, realModules, map, directInfo]);
+
   const subtitle = loading
     ? 'Загружаем модули…'
     : total > 0
@@ -693,272 +864,229 @@ export default function ModulesScreen() {
     <SettingsPage
       title="Модули"
       subtitle={subtitle}
-      right={
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          {Platform.OS === 'web' ? (
-            <Btn title="Подключить модуль" size="s" onPress={() => openFlow('prepared')} />
-          ) : (
-            <HeaderIconButton icon="add" label="Добавить модуль" onPress={() => openFlow()} />
-          )}
-          <HeaderIconButton
-            icon="refresh-outline"
-            label="Обновить список модулей"
-            onPress={() => void modules.refetch()}
-            disabled={modules.isFetching}
-          />
-        </View>
-      }
+      right={<HeaderIconButton icon="add" label="Добавить модуль" onPress={() => router.push('/modules-add')} />}
     >
-      {/* 0. ПОСТОЯННАЯ ИДЕНТИЧНОСТЬ И КОНТРАКТЫ ПЕРЕДАЧИ. */}
+      {/* 1. ПОДКЛЮЧЁННЫЙ МОДУЛЬ — только при активном BLE/USB-подключении. */}
+      {directModule ? (
+        <SettingsSection title="Подключённый модуль" delay={0}>
+          <ConnectedModuleCard
+            module={directModule}
+            kind={directKind}
+            battery={Number(directInfo?.battery ?? directModule.battery ?? 0)}
+            rssi={Number(directInfo?.rssi || directModule.rssi || 0)}
+            firmware={directInfo?.firmware || directModule.firmware || ''}
+            onDisconnect={() => void disconnectCurrent()}
+            onBlock={() => {
+              setBlockReason('');
+              setBlockTarget(directModule);
+            }}
+            onUnbind={() => setUnbindTarget(directModule)}
+            onOta={() => setOtaTarget(directModule)}
+          />
+        </SettingsSection>
+      ) : autoStatus ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2, marginBottom: 12 }}>
+          <Ionicons name={autoStatus.icon} size={14} color={autoStatus.color} />
+          <Text style={{ color: autoStatus.color, fontSize: 12, flex: 1 }} numberOfLines={1}>
+            {autoStatus.text}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* 2. КАРТА КЛАСТЕРА — от последнего подключённого носимого, данные модуля + Hub. */}
       <SettingsSection
-        title="Мои модули"
-        delay={0}
+        title="Карта кластера"
+        delay={motion.staggerStepMs}
         right={
-          meshModules ? (
-            <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
-              KL-{meshModules.identity.blePrefix}
-            </Text>
-          ) : undefined
+          <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
+            {map.nodes.length ? `${map.nodes.length} узлов` : ''}
+          </Text>
         }
       >
         <GlassCard>
-          {meshModules && meshModules.modules.length ? (
-            meshModules.modules.map((m) => (
-              <View
-                key={m.moduleMac}
-                style={{ paddingHorizontal: 12, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: theme.line }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                  <View
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      backgroundColor: m.online ? '#30D158' : '#8E8E93',
-                    }}
-                  />
-                  <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700', flexShrink: 1 }}>
-                    {m.customName || `Модуль ${m.mod6}`}
-                  </Text>
-                  <Text style={{ color: m.online ? '#30D158' : theme.textDisabled, fontSize: 11, fontWeight: '600' }}>
-                    {m.online ? 'онлайн' : 'офлайн'}
-                  </Text>
-                </View>
-                <TextInput
-                  defaultValue={m.customName}
-                  placeholder="Название: Брелок, Рюкзак…"
-                  placeholderTextColor={theme.textDisabled}
-                  onEndEditing={(event) => {
-                    const name = event.nativeEvent.text.trim();
-                    if (name === m.customName) return;
-                    void api
-                      .kmeshV1RenameModule(m.moduleMac, name)
-                      .then(() => reloadMeshModules())
-                      .catch(() => undefined);
-                  }}
-                  style={{
-                    color: theme.textSecondary,
-                    fontSize: 11.5,
-                    marginTop: 4,
-                    paddingVertical: 2,
-                    borderBottomWidth: 1,
-                    borderBottomColor: theme.line,
-                  }}
-                />
-                <Text style={{ color: theme.textDisabled, fontSize: 11, marginTop: 2 }}>
-                  {m.bleName} · MAC {m.moduleMac}
-                </Text>
-              </View>
-            ))
+          {map.nodes.length ? (
+            <ClusterMap nodes={map.nodes} links={map.links} />
           ) : (
+            <View style={{ padding: 18, alignItems: 'center', gap: 8 }}>
+              <Ionicons name="git-network-outline" size={26} color={theme.textDisabled} />
+              <Text style={{ color: theme.textSecondary, fontSize: 12, textAlign: 'center', lineHeight: 18 }}>
+                Подключите носимый модуль — карта строится от него и обновляется по данным модуля и Hub.
+              </Text>
+            </View>
+          )}
+        </GlassCard>
+        {map.nodes.length ? (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 2, marginTop: 8 }}>
+            {[
+              { c: theme.accent, t: 'мой модуль' },
+              { c: theme.success, t: 'онлайн' },
+              { c: theme.textDisabled, t: 'офлайн' },
+            ].map((x) => (
+              <View key={x.t} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <View style={{ width: 7, height: 7, borderRadius: 999, backgroundColor: x.c }} />
+                <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>{x.t}</Text>
+              </View>
+            ))}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Ionicons name="globe-outline" size={11} color={theme.warning} />
+              <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>шлюз с Hub</Text>
+            </View>
+            <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>нижний ряд — соседние кластеры</Text>
+          </View>
+        ) : null}
+      </SettingsSection>
+
+      {/* 3. КОМПАКТНЫЙ СПИСОК — онлайн сначала. */}
+      <SettingsSection
+        title="Мои модули"
+        delay={motion.staggerStepMs}
+        right={
+          <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
+            {rows.length ? `${rows.filter((r) => r.online).length} из ${rows.length} онлайн` : ''}
+          </Text>
+        }
+      >
+        <GlassCard>
+          {rows.length === 0 ? (
             <Text style={{ color: theme.textSecondary, fontSize: 12, padding: 12 }}>
-              Модулей пока нет. Подключите свободный модуль KL-00000000-…
+              {loading ? 'Загружаем модули…' : 'Модулей пока нет. Нажмите «+», чтобы добавить или прошить модуль.'}
             </Text>
+          ) : (
+            rows.map((r, i) => {
+              const open = expanded === r.key;
+              return (
+                <View key={r.key} style={{ borderTopWidth: i ? 1 : 0, borderTopColor: theme.line }}>
+                  <Pressable
+                    onPress={() => setExpanded(open ? null : r.key)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Модуль ${r.name}`}
+                    style={({ pressed }) => ({
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 9,
+                      paddingHorizontal: 12,
+                      paddingVertical: 9,
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                  >
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: r.online ? theme.success : theme.textDisabled,
+                      }}
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }} numberOfLines={1}>
+                        {r.name}
+                      </Text>
+                      <Text style={{ color: theme.textDisabled, fontSize: 10.5 }} numberOfLines={1}>
+                        {r.mac || '—'}
+                        {r.role ? ` · ${r.role}` : ''}
+                      </Text>
+                    </View>
+                    <Text
+                      style={{
+                        color: r.rssi != null ? theme.textSecondary : theme.textDisabled,
+                        fontSize: 11,
+                        fontVariant: ['tabular-nums'] as never,
+                      }}
+                    >
+                      {r.rssi != null ? `${r.rssi} dBm` : '— dBm'}
+                    </Text>
+                    <Text
+                      style={{
+                        color: theme.textSecondary,
+                        fontSize: 11,
+                        width: 38,
+                        textAlign: 'right',
+                        fontVariant: ['tabular-nums'] as never,
+                      }}
+                    >
+                      {r.battery != null ? `${r.battery}%` : '—'}
+                    </Text>
+                    <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={theme.textDisabled} />
+                  </Pressable>
+                  {open ? (
+                    <View style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 8 }}>
+                      {r.mesh ? (
+                        <TextInput
+                          defaultValue={r.mesh.customName}
+                          placeholder="Название: Брелок, Рюкзак…"
+                          placeholderTextColor={theme.textDisabled}
+                          onEndEditing={(event) => {
+                            const name = event.nativeEvent.text.trim();
+                            if (!r.mesh || name === r.mesh.customName) return;
+                            void api
+                              .kmeshV1RenameModule(r.mesh.moduleMac, name)
+                              .then(() => reloadMeshModules())
+                              .catch(() => undefined);
+                          }}
+                          style={{
+                            color: theme.textPrimary,
+                            fontSize: 12.5,
+                            paddingVertical: 4,
+                            borderBottomWidth: 1,
+                            borderBottomColor: theme.line,
+                          }}
+                        />
+                      ) : null}
+                      {r.mesh ? (
+                        <Text style={{ color: theme.textDisabled, fontSize: 11 }}>BLE: {r.mesh.bleName}</Text>
+                      ) : null}
+                      {r.legacy ? renderCard(r.legacy, 0) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
           )}
         </GlassCard>
         {meshModules?.incoming.map((c) => (
-          <GlassCard key={c.id}>
-            <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
-              @{c.toUsername} хочет привязать модуль {c.mod6}
-            </Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 4 }}>
-              Ожидание подтверждения от прежнего владельца
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-              <Btn
-                title="Передать"
-                size="s"
-                onPress={() => {
-                  void api
-                    .kmeshV1AcceptModuleTransfer(c.id)
-                    .then(() => reloadMeshModules())
-                    .catch(() => undefined);
-                }}
-              />
-              <Btn
-                title="Отменить передачу"
-                size="s"
-                variant="ghost"
-                onPress={() => {
-                  void api
-                    .kmeshV1RejectModuleTransfer(c.id)
-                    .then(() => reloadMeshModules())
-                    .catch(() => undefined);
-                }}
-              />
+          <GlassCard key={c.id} style={{ marginTop: 8 }}>
+            <View style={{ padding: 12 }}>
+              <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }}>
+                @{c.toUsername} просит передать модуль {c.mod6}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <Btn
+                  title="Передать"
+                  size="s"
+                  onPress={() => {
+                    void api.kmeshV1AcceptModuleTransfer(c.id).then(() => reloadMeshModules()).catch(() => undefined);
+                  }}
+                />
+                <Btn
+                  title="Отказать"
+                  size="s"
+                  variant="ghost"
+                  onPress={() => {
+                    void api.kmeshV1RejectModuleTransfer(c.id).then(() => reloadMeshModules()).catch(() => undefined);
+                  }}
+                />
+              </View>
             </View>
           </GlassCard>
         ))}
         {meshModules?.outgoing.map((c) => (
-          <GlassCard key={c.id}>
-            <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
-              Ожидают передачи · модуль {c.mod6}
-            </Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 4 }}>
-              Ожидание подтверждения от @{c.fromUsername}
-            </Text>
-            <Btn
-              title="Отменить запрос"
-              size="s"
-              variant="ghost"
-              onPress={() => {
-                void api
-                  .kmeshV1CancelModuleTransfer(c.id)
-                  .then(() => reloadMeshModules())
-                  .catch(() => undefined);
-              }}
-            />
+          <GlassCard key={c.id} style={{ marginTop: 8 }}>
+            <View style={{ padding: 12, gap: 8 }}>
+              <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '700' }}>
+                Модуль {c.mod6}: ждём подтверждения от @{c.fromUsername}
+              </Text>
+              <Btn
+                title="Отменить запрос"
+                size="s"
+                variant="ghost"
+                onPress={() => {
+                  void api.kmeshV1CancelModuleTransfer(c.id).then(() => reloadMeshModules()).catch(() => undefined);
+                }}
+              />
+            </View>
           </GlassCard>
         ))}
       </SettingsSection>
-
-      {/* 1. КАРТА СЕТИ — от носимого модуля, подключённого к клиенту. */}
-      <SettingsSection
-        title="Карта сети"
-        delay={0}
-        right={
-          <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
-            {loading ? '…' : `${total} узлов`}
-          </Text>
-        }
-      >
-        {loading ? (
-          <GlassCard>
-            <View style={{ height: 190, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: theme.textSecondary, fontSize: 12 }}>Строим карту сети…</Text>
-            </View>
-          </GlassCard>
-        ) : directModule ? (
-          <>
-            <GlassCard>
-              <ModulesNetworkMap
-                modules={realModules}
-                focus={directModule}
-                selectedId={selectedId}
-                onSelect={(module) => setSelectedId(module.id)}
-                expanded={mapExpanded}
-              />
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
-                  paddingHorizontal: 12,
-                  paddingVertical: 9,
-                  borderTopWidth: 1,
-                  borderTopColor: theme.line,
-                }}
-              >
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5, flex: 1 }} numberOfLines={1}>
-                  Центр — носимый модуль, подключённый к клиенту
-                </Text>
-                <Pressable
-                  onPress={() => setMapExpanded((value) => !value)}
-                  accessibilityRole="button"
-                  accessibilityLabel={mapExpanded ? 'Свернуть карту' : 'Развернуть карту'}
-                  hitSlop={8}
-                  style={({ pressed }) => ({
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 3,
-                    opacity: pressed ? 0.6 : 1,
-                  })}
-                >
-                  <Text style={{ color: theme.accent, fontSize: 11.5, fontWeight: '700' }}>
-                    {mapExpanded ? 'Свернуть' : 'Развернуть'}
-                  </Text>
-                  <Ionicons
-                    name={mapExpanded ? 'chevron-up' : 'chevron-down'}
-                    size={13}
-                    color={theme.accent}
-                  />
-                </Pressable>
-              </View>
-            </GlassCard>
-            <View
-              style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 2, marginTop: 8 }}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <View style={{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.accent }} />
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>ваш модуль</Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <View style={{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.success }} />
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>онлайн</Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <View style={{ width: 7, height: 7, borderRadius: 999, backgroundColor: theme.textDisabled }} />
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>офлайн</Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <Ionicons name="globe-outline" size={11} color={theme.warning} />
-                <Text style={{ color: theme.textDisabled, fontSize: 10.5 }}>шлюз с интернетом</Text>
-              </View>
-            </View>
-          </>
-        ) : (
-          <GlassCard>
-            <View style={{ padding: 18, alignItems: 'center', gap: 9 }}>
-              <View
-                style={{
-                  width: 52,
-                  height: 52,
-                  borderRadius: 16,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: theme.accentSoft,
-                }}
-              >
-                <Ionicons name="bluetooth-outline" size={25} color={theme.accent} />
-              </View>
-              <Text style={{ color: theme.textPrimary, fontSize: 14.5, fontWeight: '700' }}>
-                Карта сети пока не построена
-              </Text>
-              <Text
-                style={{
-                  color: theme.textSecondary,
-                  fontSize: 12,
-                  lineHeight: 18,
-                  textAlign: 'center',
-                  maxWidth: 320,
-                }}
-              >
-                Подключите носимый модуль, чтобы построить карту
-              </Text>
-              {Platform.OS === 'web' ? (
-                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-                  <Btn title="Подключить модуль" size="s" onPress={() => openFlow('prepared')} />
-                  <Btn title="Прошить модуль" size="s" variant="ghost" onPress={() => openFlow('flash')} />
-                </View>
-              ) : (
-                <Btn title="Добавить модуль" size="s" onPress={() => openFlow()} />
-              )}
-            </View>
-          </GlassCard>
-        )}
-      </SettingsSection>
-
       {/* 1b. ЗАЯВКИ НА ПЕРЕНОС — входящие и исходящие. */}
       {(transfers.data?.incoming.length ?? 0) + (transfers.data?.outgoing.length ?? 0) > 0 ? (
         <SettingsSection
@@ -1060,42 +1188,6 @@ export default function ModulesScreen() {
         </SettingsSection>
       ) : null}
 
-      {/* 2. ТЕКУЩИЙ МОДУЛЬ — прямое USB/BLE-подключение. */}
-      {!loading && total > 0 ? (
-        <SettingsSection
-          title="Текущий модуль"
-          delay={motion.staggerStepMs}
-          right={<Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>USB / BLE</Text>}
-        >
-          {directModule ? (
-            <ConnectedModuleCard
-              module={directModule}
-              kind={directKind}
-              battery={Number(directInfo?.battery ?? directModule.battery ?? 0)}
-              rssi={Number(directInfo?.rssi || directModule.rssi || 0)}
-              firmware={directInfo?.firmware || directModule.firmware || ''}
-              onDisconnect={() => void disconnectCurrent()}
-              onBlock={() => {
-                setBlockReason('');
-                setBlockTarget(directModule);
-              }}
-              onUnbind={() => setUnbindTarget(directModule)}
-              onOta={() => setOtaTarget(directModule)}
-            />
-          ) : (
-            <GlassCard>
-              <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-                <Ionicons name="information-circle-outline" size={17} color={theme.textDisabled} />
-                <Text style={{ color: theme.textSecondary, fontSize: 12, flex: 1, lineHeight: 17 }}>
-                  Носимый модуль не подключён к клиенту. Подключите его по USB или BLE, чтобы видеть текущий
-                  модуль и строить карту от него.
-                </Text>
-              </View>
-            </GlassCard>
-          )}
-        </SettingsSection>
-      ) : null}
-
       {/* 2b. SERIAL-МОНИТОР — отладка прошивки по USB только на ПК (web). */}
       {Platform.OS === 'web' ? (
         <SettingsSection
@@ -1105,155 +1197,6 @@ export default function ModulesScreen() {
         >
           <SerialMonitor blocked={Boolean(serialBlockedReason)} blockedReason={serialBlockedReason} />
         </SettingsSection>
-      ) : null}
-
-      {autoStatus ? (
-        <View
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2, marginBottom: 12 }}
-        >
-          <Ionicons name={autoStatus.icon} size={14} color={autoStatus.color} />
-          <Text style={{ color: autoStatus.color, fontSize: 12, flex: 1 }} numberOfLines={1}>
-            {autoStatus.text}
-          </Text>
-        </View>
-      ) : null}
-
-      {!loading && total > 0 ? (
-        <>
-          {/* Поиск и фильтры применяются к активным и неактивным модулям. */}
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-              borderWidth: 1,
-              borderColor: theme.line,
-              backgroundColor: theme.surface,
-              borderRadius: 13,
-              paddingHorizontal: 11,
-              height: 42,
-              marginBottom: 10,
-            }}
-          >
-            <Ionicons name="search-outline" size={16} color={theme.textDisabled} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Поиск: имя, ID, hardwareId или роль"
-              placeholderTextColor={theme.textDisabled}
-              autoCapitalize="none"
-              autoCorrect={false}
-              accessibilityLabel="Поиск модулей"
-              style={{ flex: 1, color: theme.textPrimary, fontSize: 13, paddingVertical: 0 }}
-            />
-            {query ? (
-              <Pressable
-                onPress={() => setQuery('')}
-                accessibilityRole="button"
-                accessibilityLabel="Очистить поиск"
-                hitSlop={8}
-              >
-                <Ionicons name="close-circle" size={16} color={theme.textDisabled} />
-              </Pressable>
-            ) : null}
-          </View>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 6, paddingBottom: 2, marginBottom: 12 }}
-          >
-            {FILTERS.map((item) => {
-              const active = filter === item.id;
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => setFilter(item.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Фильтр: ${item.label}`}
-                  accessibilityState={{ selected: active }}
-                  style={({ pressed }) => ({
-                    paddingHorizontal: 11,
-                    height: 30,
-                    borderRadius: 999,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderWidth: 1,
-                    borderColor: active ? theme.accent : theme.line,
-                    backgroundColor: active ? theme.accentSoft : theme.surface,
-                    opacity: pressed ? 0.75 : 1,
-                  })}
-                >
-                  <Text
-                    style={{
-                      color: active ? theme.accent : theme.textSecondary,
-                      fontSize: 11.5,
-                      fontWeight: active ? '700' : '600',
-                    }}
-                  >
-                    {item.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-
-          {/* 3. АКТИВНЫЕ МОДУЛИ. */}
-          <SettingsSection
-            title="Активные модули"
-            delay={motion.staggerStepMs}
-            right={
-              <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
-                {filtering ? `${activeModules.length} из ${total}` : `${activeModules.length} шт.`}
-              </Text>
-            }
-          >
-            {nothingFound ? (
-              <View style={{ paddingVertical: 26, alignItems: 'center', gap: 8 }}>
-                <Ionicons name="search-outline" size={26} color={theme.textDisabled} />
-                <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '700' }}>Ничего не найдено</Text>
-                <Text style={{ color: theme.textSecondary, fontSize: 12, textAlign: 'center', lineHeight: 18 }}>
-                  Попробуйте другой запрос или сбросьте фильтр. Поиск ищет по имени, publicId, hardwareId и роли.
-                </Text>
-                <Btn
-                  title="Сбросить поиск и фильтры"
-                  size="s"
-                  variant="ghost"
-                  onPress={() => {
-                    setQuery('');
-                    setFilter('all');
-                  }}
-                />
-              </View>
-            ) : activeModules.length === 0 ? (
-              <Text style={{ color: theme.textSecondary, fontSize: 12, paddingHorizontal: 2, paddingBottom: 4 }}>
-                {directModule
-                  ? 'Других активных модулей сейчас нет.'
-                  : 'Активных модулей сейчас нет. Подключите носимый модуль или дождитесь выхода шлюзов в сеть.'}
-              </Text>
-            ) : (
-              activeModules.map((module, index) => renderCard(module, index))
-            )}
-          </SettingsSection>
-
-          {/* 4. НЕАКТИВНЫЕ МОДУЛИ. */}
-          {inactiveModules.length > 0 ? (
-            <SettingsSection
-              title="Неактивные модули"
-              delay={motion.staggerStepMs}
-              right={
-                <Text style={{ color: theme.textDisabled, fontSize: 11.5, fontWeight: '600' }}>
-                  {inactiveModules.length} шт.
-                </Text>
-              }
-            >
-              <Text style={{ color: theme.textSecondary, fontSize: 11.5, paddingHorizontal: 2, marginBottom: 8 }}>
-                Офлайн или заблокированы. Карточка покажет последний контакт и доступные действия.
-              </Text>
-              {inactiveModules.map((module, index) => renderCard(module, index))}
-            </SettingsSection>
-          ) : null}
-        </>
       ) : null}
 
       {/* Shadow-записи модулей, привязанных на другом устройстве. */}
