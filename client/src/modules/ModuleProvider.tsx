@@ -107,6 +107,14 @@ function moduleIdOf(row: { id?: string } | null | undefined): string | undefined
   return row && typeof row.id === 'string' ? row.id : undefined;
 }
 
+/** Сетевой вызов с жёстким пределом: без интернета HTTP висит десятки секунд и держит inFlight («Bluetooth занят»). */
+function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('net_timeout')), ms)),
+  ]);
+}
+
 /** Android BLE иногда «зависает» в connectGatt: ограничиваем ожидание. */
 function withConnectTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -576,7 +584,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // Первичная привязка на уровне прошивки: если модуль ещё свободен,
         // сразу пишем в него prefix/net из оффлайн-кэша пользователя.
         if ((nextInfo.ownerPrefix ?? '00000000').toLowerCase() === '00000000') {
-          const cachedIdentity = (await loadCachedIdentity()) ?? (await refreshCachedIdentity());
+          const cachedIdentity = (await loadCachedIdentity()) ?? (await bounded(refreshCachedIdentity(), 2500).catch(() => null));
           if (cachedIdentity) {
             await new Promise((resolve) => setTimeout(resolve, 250));
             await v1
@@ -617,7 +625,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       let moduleId: string | undefined;
       let publicId = /^\d{8}$/.test(String(nextInfo.publicId ?? '')) ? nextInfo.publicId : undefined;
       try {
-        const paired = await api.pairModule({
+        const paired = await bounded(api.pairModule({
           hardwareId: nextInfo.hardwareId,
           bleMac: nextInfo.bleMac,
           publicId,
@@ -625,7 +633,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           transport: kind,
           firmware: nextInfo.firmware || undefined,
           battery: nextInfo.battery,
-        });
+        }), 4000);
         if (isPendingTransfer(paired)) {
           const message = 'Модуль принадлежит другому пользователю. Заявка на перенос отправлена.';
           if (mountedRef.current) setError(message);
@@ -638,7 +646,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // Связь есть, но сервер не принял привязку — показываем причину,
         // соединение не рвём: модуль может работать локально.
         if (mountedRef.current) {
-          setError(
+          // net_timeout — просто нет интернета: связь с модулем есть, привязка дойдёт позже.
+          if (!(pairError instanceof Error && pairError.message === 'net_timeout')) setError(
             pairError instanceof Error
               ? `Модуль подключён, но привязка не удалась: ${pairError.message}`
               : 'Модуль подключён, но привязка не удалась.',
@@ -650,7 +659,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       // к текущему пользователю и переименовываем BLE через SET_OWNER.
       if ((nextInfo.ownerPrefix ?? '').toLowerCase() === '00000000' && transport.setOwner) {
         try {
-          const claim = await api.kmeshV1ClaimModule(nextInfo.hardwareId);
+          const claim = await bounded(api.kmeshV1ClaimModule(nextInfo.hardwareId), 4000);
           const decoded = claim.claimToken ? decodeOwnerClaimToken(claim.claimToken) : null;
           if (decoded) {
             if (v1ClientRef.current) await v1ClientRef.current.setOwner(decoded);
@@ -671,7 +680,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         const my = await loadCachedIdentity();
         if (my && nextInfo.ownerPrefix !== my.blePrefix) {
           try {
-            const req = await api.kmeshV1RequestModuleTransfer(nextInfo.hardwareId);
+            const req = await bounded(api.kmeshV1RequestModuleTransfer(nextInfo.hardwareId), 4000);
             useStore.getState().pushToast({
               kind: 'info',
               message: req.deduped
@@ -707,7 +716,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       // Носимый модуль физически подключён к этому клиенту.
       if (nextInfo.role === 'wearable' && moduleId) {
         try {
-          await api.attachModule(moduleId, kind);
+          await bounded(api.attachModule(moduleId, kind), 4000);
         } catch {
           /* attach повторится при следующем восстановлении */
         }
@@ -895,12 +904,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // Префикс своего модуля читаем ДО сканирования: иначе первый скан
         // может принять чужой KL-модуль за свой.
         let identity = await loadCachedIdentity();
-        if (!identity) identity = await refreshCachedIdentity();
+        if (!identity) identity = await bounded(refreshCachedIdentity(), 2500).catch(() => null);
         // Список модулей аккаунта: даже если имя модуля по какой-то причине
         // с другим префиксом, mod6 из user_modules доказывает владение.
         const ownedMod6 = new Set<string>();
         try {
-          const remote = await api.kmeshV1Modules();
+          const remote = await bounded(api.kmeshV1Modules(), 2500);
           if (remote.identity?.blePrefix) {
             identity = await saveCachedIdentity({
               userId: remote.identity.userId,

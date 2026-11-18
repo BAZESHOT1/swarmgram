@@ -442,6 +442,7 @@ bool KlintoNode::begin() {
     Serial.printf("[klinto3] heap after BLE: free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(),
                   (unsigned)ESP.getMaxAllocHeap());
     ble_.setReceiveCallback(&KlintoNode::onClientLink, this);
+    ble_.setConnectedHook(&KlintoNode::onBleHook, this);
   }
 #endif
   serial_.begin(115200);
@@ -631,6 +632,11 @@ void KlintoNode::cellLocked(void *ctx, uint8_t channel, uint32_t gateway_id, int
     saved_channel = channel;
     kl_nvs_set_uint("klinto3", "last_ch", channel);
   }
+}
+
+void KlintoNode::onBleHook(void *ctx, bool connected) {
+  KlintoNode *self = (KlintoNode *)ctx;
+  if (connected) self->bridge_.push_info_burst();
 }
 
 void KlintoNode::cellProbe(void *ctx) {

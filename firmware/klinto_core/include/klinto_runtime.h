@@ -76,6 +76,7 @@ class KlintoNode {
                          uint8_t hops, uint8_t reason);
   static void cellOffline(void *ctx, uint8_t channel);
   static void cellProbe(void *ctx);
+  static void onBleHook(void *ctx, bool connected);
   static void sinkBeacon(void *ctx, const kl_packet_t *pkt, int16_t rssi, uint8_t iface);
 
   kl_config_t cfg_;

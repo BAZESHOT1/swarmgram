@@ -241,6 +241,8 @@ void BleClientLink::onSubscribe(bool is_tx, uint16_t sub_value) {
   if (is_tx) tx_subscribed_ = on;
   else rx_subscribed_ = on;
   Serial.printf("[ble] subscribe %s=%u\n", is_tx ? "a5c1" : "a5c2", (unsigned)sub_value);
+  /* Подписка оформлена — теперь INFO точно дойдёт (раньше первый ответ на HELLO терялся). */
+  if (on && hook_) hook_(hook_ctx_, true);
 }
 
 void BleClientLink::onWrite(const uint8_t *data, size_t len) {

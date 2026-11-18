@@ -89,7 +89,7 @@ const HELLO_WAIT_MS = 1600;
 /** Столько тишины от модуля считаем обрывом связи (INFO приходит раз в 15 с). */
 const LINK_SILENT_MS = 45_000;
 /** Общий предел на запись кадра: дольше — GATT завис. */
-const FRAME_WRITE_LIMIT_MS = 7000;
+const FRAME_WRITE_LIMIT_MS = 20_000;
 /** Ранняя остановка скана: минимум времени и ожидание имени из scan response. */
 const SCAN_EARLY_MIN_MS = 1000;
 const SCAN_EARLY_NAMELESS_MS = 2200;
@@ -903,7 +903,9 @@ export class NativeBleTransport implements ModuleConnection {
       if (!deviceId || this.closing) {
         throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
       }
-      const chunkSize = 20;
+      // Прошивка собирает кадр из любых кусков (кольцо приёма), поэтому при нормальном MTU шлём
+      // по 100 байт: 300-байтный кадр был 15 записей с подтверждением (по ~0.1 с) и упирался в таймаут.
+      const chunkSize = this.mtu >= 103 ? 100 : 20;
       for (let offset = 0; offset < frame.length; offset += chunkSize) {
         const chunk = frame.slice(offset, offset + chunkSize);
         const payload = bytesToBase64(chunk);

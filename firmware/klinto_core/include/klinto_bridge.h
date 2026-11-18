@@ -90,6 +90,14 @@ class KlintoClientBridge {
   void synced(uint64_t msg_uuid, uint32_t server_seq);
 
   void loop(uint32_t now_ms);
+  /** Клиент подписался на notify: первый INFO мог уйти раньше CCCD и потеряться — шлём серию. */
+  void push_info_burst() {
+    info_reply_left_ = 3;
+    info_reply_next_ms_ = 0;
+    legacy_reply_type_ = 1;
+    legacy_reply_left_ = 2;
+    legacy_reply_next_ms_ = 0;
+  }
   bool send_info();
   /** Мобильный шлюз: отправить перехваченный пакет в приложение для отправки на Hub. */
   bool proxy_uplink(const kl_packet_t *pkt);
