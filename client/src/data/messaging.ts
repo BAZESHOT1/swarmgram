@@ -223,7 +223,9 @@ export async function sendMessage(
   const meshAvailable = canSendViaMesh();
   console.log('[msg]', 'send', { chatId, kind, online, meshAvailable, known: transportState.transportKnown, text: typeof payload.text === 'string' && payload.text.length });
   // Транспорт уже точно офлайн — HTTP не пробуем вовсе, сразу mesh/outbox.
-  const skipHttp = transportState.transportKnown === true && !online;
+  // Модуль на связи, а интернета у телефона нет (или он ещё не подтверждён): HTTP не ждём вовсе.
+  // Раньше при known=false запрос ключа чата висел ~100 с, прежде чем сообщение уходило в mesh.
+  const skipHttp = (transportState.transportKnown === true && !online) || (meshAvailable && !online);
   const httpStartedAt = Date.now();
 
   // Оффлайн через KMesh: текст уходит сразу через модуль, не дожидаясь

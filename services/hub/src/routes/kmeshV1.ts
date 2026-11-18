@@ -1959,7 +1959,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!UUID64_RE.test(uuid)) throw badRequest('invalid_msg_uuid');
     if (!UUID_RE.test(chatId)) throw badRequest('invalid_chat_id');
     if (!Number.isInteger(senderNode) || senderNode <= 1) throw badRequest('invalid_sender_node');
-    if (!Number.isInteger(receiverNode) || receiverNode <= 1) throw badRequest('invalid_receiver_node');
+    // 1 = ANY_GATEWAY: сообщение ушло «шлюзу кластера», конкретного получателя-узла нет — это нормально.
+    if (!Number.isInteger(receiverNode) || receiverNode < 1) throw badRequest('invalid_receiver_node');
     if (!Number.isFinite(timestamp) || timestamp <= 0) throw badRequest('invalid_timestamp');
     if (!ciphertext.length || ciphertextB64.length > MAX_CIPHERTEXT_B64) throw badRequest('invalid_ciphertext');
     if (resignMode !== 'client' && resignMode !== 'server') throw badRequest('invalid_resign_mode');

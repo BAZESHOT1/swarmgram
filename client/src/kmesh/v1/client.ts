@@ -380,7 +380,7 @@ export class KMeshV1Client {
         phase: 'key',
       });
       await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
-      for (let i = 0; i < 6 && !chatKey; i += 1) {
+      for (let i = 0; i < 14 && !chatKey; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 350));
         chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
       }
