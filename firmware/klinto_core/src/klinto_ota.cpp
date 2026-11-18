@@ -86,7 +86,7 @@ void KlintoOta::send_packet(uint8_t type, const uint8_t *payload, size_t len, bo
 
 size_t kl_ota_encode_announce(const kl_ota_manifest_t *m, uint8_t *out, size_t cap) {
   if (!m || !out) return 0;
-  const size_t need = 78u + m->sig_len;
+  const size_t need = 80u + m->sig_len;
   if (cap < need || m->sig_len > KL_OTA_MAX_SIG) return 0;
   kl_write_le16(out, m->patch_id);
   out[2] = m->chip;
@@ -98,6 +98,8 @@ size_t kl_ota_encode_announce(const kl_ota_manifest_t *m, uint8_t *out, size_t c
   memcpy(out + 45, m->target_sha256, 32);
   out[77] = m->sig_len;
   memcpy(out + 78, m->sig, m->sig_len);
+  out[78 + m->sig_len] = m->variant;
+  out[79 + m->sig_len] = m->ifc_mask;
   return need;
 }
 
@@ -116,7 +118,14 @@ bool kl_ota_decode_announce(const uint8_t *payload, size_t len, kl_ota_manifest_
   memcpy(out->target_sha256, payload + 45, 32);
   out->sig_len = sig_len;
   memcpy(out->sig, payload + 78, sig_len);
+  /* Старые анонсы без хвоста: вариант 0, все транспорты. */
+  out->variant = len >= 80u + sig_len ? payload[78 + sig_len] : 0;
+  out->ifc_mask = len >= 80u + sig_len ? payload[79 + sig_len] : 0xFF;
   return true;
+}
+
+bool kl_ota_manifest_is_full(const kl_ota_manifest_t *m) {
+  return m && memcmp(m->patch_sha256, m->target_sha256, 32) == 0;
 }
 
 size_t kl_ota_encode_chunk(uint16_t patch_id, uint16_t index, const uint8_t *data, uint8_t len,
@@ -167,8 +176,9 @@ void kl_ota_manifest_digest(const kl_ota_manifest_t *m, uint8_t out[32]) {
   kl_hex_encode(m->target_sha256, 32, target_hex, sizeof(target_hex), false);
   char canonical[256];
   const int n = snprintf(canonical, sizeof(canonical),
-                         "KLINTO-OTA1|%u|%u|%u|%s|%s|%u|%lu", (unsigned)m->chip,
-                         (unsigned)m->base_build, (unsigned)m->target_build, patch_hex, target_hex,
+                         "KLINTO-OTA2|%u|%u|%u|%u|%s|%s|%u|%lu", (unsigned)m->chip,
+                         (unsigned)m->variant, (unsigned)m->base_build, (unsigned)m->target_build,
+                         patch_hex, target_hex,
                          (unsigned)m->total_chunks, (unsigned long)m->patch_size);
   if (n <= 0 || (size_t)n >= sizeof(canonical)) {
     memset(out, 0, 32);
@@ -212,7 +222,17 @@ bool KlintoOta::handle_packet(const kl_packet_t *pkt, uint32_t now_ms) {
 
 void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
   if (!has_platform_) return;
-  if (m.chip != chip_arch_) return;
+  if (m.chip != chip_arch_ || m.variant != variant_) return;
+  /* Сборка, которая уже откатывалась на этом модуле, повторно не ставится. */
+  if (bad_build_ && m.target_build == bad_build_) return;
+  /* Повторный анонс той же раздачи (каждые 60 с) не должен сбрасывать загрузку. */
+  if (has_manifest_ && (state_ == KL_OTA_DOWNLOADING || state_ == KL_OTA_VERIFYING) &&
+      m.target_build == manifest_.target_build && m.patch_id == manifest_.patch_id &&
+      memcmp(m.patch_sha256, manifest_.patch_sha256, 32) == 0) {
+    if (m.ifc_mask) manifest_.ifc_mask = m.ifc_mask;
+    last_packet_ms_ = now_ms;
+    return;
+  }
   /* Анти-откат: только монотонно растущий build_number. */
   if (m.target_build <= current_build_ || m.target_build <= stored_build_) return;
   if (m.total_chunks == 0 || m.total_chunks > kMaxChunks || m.patch_size == 0) return;
@@ -235,7 +255,16 @@ void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
     return;
   }
   deferred_ = false;
-  if (platform_.patch_erase) platform_.patch_erase(platform_.ctx);
+  full_ = kl_ota_manifest_is_full(&m);
+  if (full_) {
+    /* Полный образ: место — неактивный OTA-слот, LittleFS не нужна. */
+    if (!platform_.slot_begin || !platform_.slot_begin(platform_.ctx, m.patch_size)) {
+      has_manifest_ = false;
+      return;
+    }
+  } else if (platform_.patch_erase) {
+    platform_.patch_erase(platform_.ctx);
+  }
   memset(received_bits_, 0, sizeof(received_bits_));
   received_count_ = 0;
   window_start_ = 0;
@@ -249,11 +278,14 @@ void KlintoOta::handle_chunk(uint16_t patch_id, uint16_t index, const uint8_t *d
                              uint32_t now_ms) {
   if (state_ != KL_OTA_DOWNLOADING || !has_manifest_) return;
   if (patch_id != manifest_.patch_id || index >= manifest_.total_chunks || !data) return;
-  if (!platform_.patch_write) return;
   const uint32_t offset = (uint32_t)index * KL_OTA_CHUNK_DATA;
   if (offset + len > manifest_.patch_size) return;
   if (chunk_received(index)) return;
-  if (!platform_.patch_write(platform_.ctx, offset, data, len)) return;
+  if (full_) {
+    if (!platform_.slot_write || !platform_.slot_write(platform_.ctx, offset, data, len)) return;
+  } else {
+    if (!platform_.patch_write || !platform_.patch_write(platform_.ctx, offset, data, len)) return;
+  }
   set_chunk(index);
   received_count_++;
   last_packet_ms_ = now_ms;
@@ -291,6 +323,18 @@ void KlintoOta::send_nack(uint32_t now_ms) {
 
 void KlintoOta::maybe_finish_download(uint32_t now_ms) {
   if (state_ != KL_OTA_VERIFYING || now_ms < finish_at_ms_) return;
+  if (full_) {
+    /* Полный образ уже в слоте: проверка подписи/SHA и переключение загрузки. */
+    if (!has_platform_ || !platform_.slot_finish || !platform_.slot_finish(platform_.ctx, &manifest_)) {
+      set_state(KL_OTA_FAILED_ROLLBACK);
+      return;
+    }
+    if (platform_.store_manifest) platform_.store_manifest(platform_.ctx, &manifest_);
+    stored_build_ = manifest_.target_build;
+    set_state(KL_OTA_PENDING_REBOOT);
+    reboot_at_ms_ = now_ms + 3000;
+    return;
+  }
   if (!has_platform_ || !platform_.patch_read) {
     set_state(KL_OTA_FAILED_ROLLBACK);
     return;
@@ -404,8 +448,21 @@ void KlintoOta::mark_boot_valid() {
 
 /* ---------------------------------------------------------- источник ----- */
 
-bool KlintoOta::start_source(const kl_ota_manifest_t &m) {
-  if (!has_platform_ || !platform_.patch_read) return false;
+bool KlintoOta::src_read(uint32_t offset, uint8_t *out, size_t len) {
+  if (!has_platform_) return false;
+  switch (src_mode_) {
+    case KL_OTA_SRC_RUNNING:
+      return platform_.read_running && platform_.read_running(platform_.ctx, offset, out, len);
+    case KL_OTA_SRC_REMOTE:
+      return platform_.remote_read && platform_.remote_read(platform_.ctx, offset, out, len);
+    default:
+      return platform_.patch_read && platform_.patch_read(platform_.ctx, offset, out, len);
+  }
+}
+
+bool KlintoOta::start_source(const kl_ota_manifest_t &m, uint8_t mode) {
+  if (!has_platform_) return false;
+  src_mode_ = mode;
   manifest_ = m;
   has_manifest_ = true;
   source_ = true;
@@ -444,35 +501,43 @@ void KlintoOta::gossip_tick(uint32_t now_ms) {
     const uint16_t end = (uint16_t)(source_next_ + KL_OTA_WINDOW);
     uint8_t data[KL_OTA_CHUNK_DATA];
     uint8_t payload[200];
-    for (uint16_t idx = source_next_; idx < end && idx < manifest_.total_chunks; ++idx) {
+    uint16_t idx = source_next_;
+    for (; idx < end && idx < manifest_.total_chunks; ++idx) {
       const uint32_t offset = (uint32_t)idx * KL_OTA_CHUNK_DATA;
       const uint32_t left = manifest_.patch_size - offset;
       const uint8_t take = (uint8_t)(left > KL_OTA_CHUNK_DATA ? KL_OTA_CHUNK_DATA : left);
-      if (!platform_.patch_read(platform_.ctx, offset, data, take)) break;
+      if (!src_read(offset, data, take)) break;
       const size_t len = kl_ota_encode_chunk(manifest_.patch_id, idx, data, take, payload,
                                              sizeof(payload));
       if (len) send_packet(KL_TYPE_OTA_CHUNK, payload, len, true);
     }
-    source_next_ = end;
-    source_window_ms_ = now_ms + KL_OTA_SOURCE_WINDOW_DELAY_MS;
+    if (idx == source_next_) {
+      source_window_ms_ = now_ms + 200; /* окно ещё не готово — повторим чуть позже */
+    } else {
+      source_next_ = idx;
+      source_window_ms_ = now_ms + KL_OTA_SOURCE_WINDOW_DELAY_MS;
+    }
   }
 
   /* Досылка потерянных чанков по NACK (только запрошенное окно). */
-  if (resend_mask_ && platform_.patch_read) {
+  if (resend_mask_) {
     uint8_t data[KL_OTA_CHUNK_DATA];
     uint8_t payload[200];
     for (uint16_t i = 0; i < KL_OTA_WINDOW; ++i) {
       if (!(resend_mask_ & (1u << i))) continue;
       const uint16_t idx = (uint16_t)(resend_window_ + i);
-      if (idx >= manifest_.total_chunks) continue;
+      if (idx >= manifest_.total_chunks) {
+        resend_mask_ &= ~(1u << i);
+        continue;
+      }
       const uint32_t offset = (uint32_t)idx * KL_OTA_CHUNK_DATA;
       const uint32_t left = manifest_.patch_size - offset;
       const uint8_t take = (uint8_t)(left > KL_OTA_CHUNK_DATA ? KL_OTA_CHUNK_DATA : left);
-      if (!platform_.patch_read(platform_.ctx, offset, data, take)) break;
+      if (!src_read(offset, data, take)) break; /* окно запрошено — дошлём на следующем тике */
       const size_t len = kl_ota_encode_chunk(manifest_.patch_id, idx, data, take, payload,
                                              sizeof(payload));
       if (len) send_packet(KL_TYPE_OTA_CHUNK, payload, len, true);
+      resend_mask_ &= ~(1u << i);
     }
-    resend_mask_ = 0;
   }
 }

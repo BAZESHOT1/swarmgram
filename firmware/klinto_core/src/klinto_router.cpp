@@ -351,6 +351,25 @@ bool KlintoRouter::send(kl_packet_t *pkt, uint32_t now_ms, uint8_t iface_hint, b
   return true;
 }
 
+bool KlintoRouter::send_ota(kl_packet_t *pkt, uint8_t mask, uint32_t now_ms) {
+  if (!pkt) return false;
+  KlintoGuard guard(lock_);
+  if (pkt->payload_len > KL_MAX_PAYLOAD) return false;
+  pkt->src_id = cfg_.node_id;
+  if (pkt->packet_id == 0) pkt->packet_id = kl_packet_next_id();
+  pkt->magic = KL_PACKET_MAGIC;
+  pkt->version = KL_PACKET_VERSION;
+  pkt->ttl = 1; /* каскад идёт от узла к узлу: каждый обновившийся сам становится источником */
+  pkt->hop_count = 0;
+  pkt->dst_id = KL_BROADCAST_ID;
+  bool any = false;
+  for (uint8_t i = 0; i < KL_IFACE_COUNT; ++i) {
+    if (!(mask & (1u << i)) || !(iface_mask_ & (1u << i))) continue;
+    any |= transmit(pkt, i, KL_BROADCAST_ID, now_ms);
+  }
+  return any;
+}
+
 bool KlintoRouter::forward_downlink(kl_packet_t *pkt, uint32_t now_ms) {
   if (!pkt) return false;
   KlintoGuard guard(lock_);
@@ -512,6 +531,7 @@ void KlintoRouter::on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi
   KlintoGuard guard(lock_);
   if (pkt->src_id == cfg_.node_id) return;
   stats_.rx_packets++;
+  if (iface < KL_IFACE_COUNT) last_rx_ms_[iface] = now_ms ? now_ms : 1;
   last_rssi_ = (int8_t)(rssi < -128 ? -128 : rssi > 127 ? 127 : rssi);
 
   /* Дешёвый фильтр next_hop. Радиодрайверы делают это до копирования

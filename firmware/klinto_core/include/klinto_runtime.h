@@ -106,6 +106,13 @@ class KlintoNode {
   volatile bool started_;
   uint32_t boot_valid_ms_;
   bool ota_config_saved_ = false;
+  /* Проверка новой прошивки: связь по транспортам, которые работали до обновления. */
+  bool ota_pending_ = false;
+  uint8_t ota_need_ifc_ = 0;
+  uint32_t ota_relay_until_ = 0;
+  int8_t led_pin_ = -1;
+  void seedHw();
+  void otaValidateTick(uint32_t now);
 };
 
 #endif  // ESP32

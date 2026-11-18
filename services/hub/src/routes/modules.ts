@@ -274,7 +274,7 @@ async function liveKmeshNodeIds(): Promise<Set<number>> {
     for (const row of gateways) ids.add(Number(row.gateway_id));
     const presence = await query<{ node_id: string }>(
       `SELECT node_id::text FROM kmesh_v1_presence
-        WHERE expires_at > now() AND last_seen_at > now() - interval '4 minutes'`,
+        WHERE last_seen_at > now() - interval '30 minutes'`,
     );
     for (const row of presence) ids.add(Number(row.node_id));
   } catch {

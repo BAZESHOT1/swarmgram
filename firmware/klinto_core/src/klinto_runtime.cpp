@@ -403,6 +403,16 @@ bool KlintoNode::begin() {
   ota_.init(kl_ota_esp32_platform(), (uint8_t)KL_CHIP_ARCH, (uint16_t)KL_FIRMWARE_BUILD,
             kl_ota_esp32_stored_build());
   ota_.set_send(&KlintoNode::otaSend, this);
+  /* Шлюз и узел — разные сборки (Wi-Fi/HTTP против BLE): образ одного другому не подходит. */
+  ota_.set_variant((uint8_t)(KL_HAS_MQTT ? 1 : 0));
+  ota_.set_bad_build(kl_ota_esp32_bad_build());
+  ota_pending_ = kl_ota_esp32_pending();
+  ota_need_ifc_ = kl_ota_esp32_need_ifc();
+  if (ota_pending_) {
+    Serial.printf("[ota] new firmware %u: validating (need ifc mask=0x%02x%s)\n", (unsigned)KL_FIRMWARE_BUILD,
+                  (unsigned)ota_need_ifc_, cfg_.role == KL_ROLE_GATEWAY ? " + hub" : "");
+  }
+  if (led_pin_ >= 0) pinMode(led_pin_, OUTPUT);
   ota_.set_state_cb(&KlintoNode::otaState, this);
   {
     uint8_t radio_caps = 0;
@@ -509,6 +519,10 @@ void KlintoNode::startTasks() {
 
 void KlintoNode::loop() {
   if (restart_at_ms_ && (int32_t)(millis() - restart_at_ms_) >= 0) ESP.restart();
+  if (led_pin_ >= 0) {
+    const bool linked = router_.gateway_route()->valid || cfg_.role == KL_ROLE_GATEWAY;
+    digitalWrite(led_pin_, linked ? HIGH : (((millis() / 400) & 1) ? HIGH : LOW));
+  }
   vTaskDelay(pdMS_TO_TICKS(200));
 }
 
@@ -723,11 +737,11 @@ bool KlintoNode::otaSend(void *ctx, uint8_t type, const uint8_t *payload, size_t
        (self->cfg_.lora_present && self->lora_.queueDepth() > 0))) {
     return false;
   }
+  (void)broadcast;
   kl_packet_t pkt;
-  kl_packet_init(&pkt, type, self->cfg_.node_id,
-                 broadcast ? KL_BROADCAST_ID : KL_ANY_GATEWAY_ID, KL_BROADCAST_ID, 0);
+  kl_packet_init(&pkt, type, self->cfg_.node_id, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
   if (!kl_packet_set_payload(&pkt, payload, len)) return false;
-  return self->router_.send(&pkt, kl_uptime_ms(), 0xFF, false);
+  return self->router_.send_ota(&pkt, self->ota_.send_mask(), kl_uptime_ms());
 }
 
 void KlintoNode::otaState(void *ctx, uint8_t state) {
@@ -773,6 +787,9 @@ void KlintoNode::onOwnerChanged(void *ctx, const char *prefix, uint32_t net_id, 
  * Подписывает Hub (ключ OTA/владельца): sha256("KLINTO-CFG1|<mod6>|<epoch>|<p>"). Эпоха строго растёт. */
 struct HwParsed {
   bool has_b = false, has_c = false, has_l = false, has_e = false, has_w = false, has_r = false;
+  bool has_i = false, has_d = false;
+  int ifc = 3;
+  int led = -1;
   int b_pin = -1;
   int b_ratio = 200;
   int chip = 1;
@@ -832,6 +849,14 @@ static bool hw_parse(const char *p, HwParsed *o) {
         if (val[0] != 'c' && val[0] != 'r') return false;
         o->has_r = true; o->role = val[0] == 'r' ? 1 : 0;
         break;
+      case 'i':
+        if (!hw_parse_ints(val, v, 1) || v[0] < 1 || v[0] > 3) return false;
+        o->has_i = true; o->ifc = v[0];
+        break;
+      case 'd':
+        if (!hw_parse_ints(val, v, 1) || v[0] < -1 || v[0] > 48) return false;
+        o->has_d = true; o->led = v[0];
+        break;
       default:
         return false;
     }
@@ -839,7 +864,58 @@ static bool hw_parse(const char *p, HwParsed *o) {
   return true;
 }
 
+/* Том данных модуля (NVS «hw»): всё, что нужно, чтобы после OTA модуль работал с прежними
+ * настройками — транспорты, LoRa (чип, пины, мощность), делитель батареи, светодиод, мощность
+ * ESP-NOW, тип; Wi-Fi шлюза — в «wifi», владелец и имя — в «klinto3». При первом запуске
+ * значения берутся из сборки, дальше NVS главнее: OTA-образ одинаков для всех модулей. */
+void KlintoNode::seedHw() {
+  if (kl_nvs_get_uint("hw", "seed", 0)) return;
+  kl_nvs_set_uint("hw", "if", (uint32_t)((cfg_.espnow_enabled ? 1 : 0) | (cfg_.lora_present ? 2 : 0)));
+  if (cfg_.lora_present) {
+    kl_nvs_set_uint("hw", "lc", (uint32_t)(cfg_.lora.chip + 1));
+    char ls[48];
+    snprintf(ls, sizeof(ls), "%d,%d,%d,%d,%d,%d,%d", cfg_.lora.sck, cfg_.lora.miso, cfg_.lora.mosi,
+             cfg_.lora.cs, cfg_.lora.rst, cfg_.lora.dio0, cfg_.lora.busy);
+    kl_nvs_set_str("hw", "ls", ls);
+    kl_nvs_set_uint("hw", "lw", (uint32_t)cfg_.lora.power_dbm);
+  }
+  kl_nvs_set_uint("hw", "bp", (uint32_t)(cfg_.batt_pin + 1));
+  kl_nvs_set_uint("hw", "br", cfg_.batt_ratio_x100);
+#if defined(KL_LED_PIN)
+  kl_nvs_set_uint("hw", "ld", (uint32_t)(KL_LED_PIN + 1));
+#endif
+  if (cfg_.role != KL_ROLE_GATEWAY) kl_nvs_set_uint("hw", "rl", cfg_.role == KL_ROLE_ROUTER ? 2u : 1u);
+  if (cfg_.display_name[0]) {
+    char name[32] = {0};
+    if (!kl_nvs_get_str("klinto3", "name", name, sizeof(name)) || !name[0]) kl_nvs_set_str("klinto3", "name", cfg_.display_name);
+  }
+  if (cfg_.role == KL_ROLE_GATEWAY && strlen(KL_WIFI_SSID)) {
+    char ssid[64] = {0};
+    if (!kl_nvs_get_str("wifi", "ssid", ssid, sizeof(ssid)) || !ssid[0]) {
+      kl_nvs_set_str("wifi", "ssid", KL_WIFI_SSID);
+      kl_nvs_set_str("wifi", "pass", KL_WIFI_PASS);
+    }
+  }
+  kl_nvs_set_uint("hw", "seed", 1);
+  Serial.println("[klinto] hw: settings from build saved to NVS (data volume)");
+}
+
 void KlintoNode::loadHw() {
+  seedHw();
+  {
+    const uint32_t ifc = kl_nvs_get_uint("hw", "if", 0);
+    if (ifc) {
+      cfg_.espnow_enabled = (ifc & 1u) != 0;
+#if KL_HAS_LORA
+      cfg_.lora_present = (ifc & 2u) != 0;
+#else
+      cfg_.lora_present = false;
+#endif
+      cfg_.lora.present = cfg_.lora_present;
+    }
+    const uint32_t ld = kl_nvs_get_uint("hw", "ld", 0);
+    led_pin_ = ld ? (int8_t)((int)ld - 1) : -1;
+  }
   const uint32_t bp = kl_nvs_get_uint("hw", "bp", 0);
   if (bp) {
     cfg_.batt_pin = (int8_t)((int)bp - 1);
@@ -899,6 +975,8 @@ bool KlintoNode::applySignedHw(const char *p, uint32_t epoch, const uint8_t *sig
   if (hp.has_e) kl_nvs_set_uint("hw", "ep", (uint32_t)hp.e);
   if (hp.has_w) kl_nvs_set_uint("hw", "lw", (uint32_t)hp.w);
   if (hp.has_r) kl_nvs_set_uint("hw", "rl", hp.role ? 2u : 1u);
+  if (hp.has_i) kl_nvs_set_uint("hw", "if", (uint32_t)hp.ifc);
+  if (hp.has_d) kl_nvs_set_uint("hw", "ld", (uint32_t)(hp.led + 1));
   kl_nvs_set_uint("hw", "ev", epoch);
   cfg_.hw_epoch = epoch;
   Serial.printf("[klinto] hw config applied (epoch %lu): %s — restart\n", (unsigned long)epoch, p);
@@ -1000,19 +1078,70 @@ void KlintoNode::meshTaskEntry(void *arg) {
       }
     }
     /* 30 секунд стабильной работы: подтверждаем OTA-образ и фиксируем build. */
-    if (self->boot_valid_ms_ && now - self->boot_valid_ms_ >= 30000u) {
+    if (self->ota_pending_) {
+      self->otaValidateTick(now);
+    } else if (self->boot_valid_ms_ && now - self->boot_valid_ms_ >= 30000u) {
       self->boot_valid_ms_ = 0;
       self->ota_.mark_boot_valid();
       kl_ota_esp32_store_build((uint16_t)KL_FIRMWARE_BUILD);
+    }
+    if (self->ota_relay_until_ && (int32_t)(now - self->ota_relay_until_) >= 0) {
+      self->ota_relay_until_ = 0;
+      if (self->ota_.source_active()) self->ota_.stop_source();
+      Serial.println("[ota] relay finished");
     }
     /* Перед перезагрузкой после OTA сохраняем конфиг (Wi-Fi, владелец,
      * распиновка/тип) в NVS: OTA пишет только app-раздел, но фиксируем явно. */
     if (self->ota_.state() == KL_OTA_PENDING_REBOOT && !self->ota_config_saved_) {
       self->ota_config_saved_ = true;
       kl_config_save_nvs(&self->cfg_);
+      /* После перезагрузки проверим те транспорты, по которым модуль слышал сеть последние 10 минут. */
+      uint8_t need = 0;
+      for (uint8_t i = 0; i < KL_IFACE_COUNT; ++i) {
+        const uint32_t t = self->router_.last_rx_ms(i);
+        if (t && now - t < 600000u) need |= (uint8_t)(1u << i);
+      }
+      kl_ota_esp32_set_need_ifc(need);
+      Serial.printf("[ota] rebooting into new firmware, will validate ifc mask=0x%02x\n", (unsigned)need);
     }
     vTaskDelay(pdMS_TO_TICKS(5));
   }
+}
+
+extern volatile uint32_t g_kl_hub_ok_ms;
+
+/* Новая прошивка подтверждается, только когда модуль снова в кластере по каждому транспорту,
+ * который работал до обновления (и шлюз достучался до Hub). Нет связи 10 минут — откат на
+ * прошлый слот, сборка помечается сломанной и больше не ставится. */
+void KlintoNode::otaValidateTick(uint32_t now) {
+  static uint32_t last_log = 0;
+  bool ok = now >= 45000u;
+  for (uint8_t i = 0; i < KL_IFACE_COUNT; ++i) {
+    if (ota_need_ifc_ & (1u << i)) ok = ok && router_.last_rx_ms(i) != 0;
+  }
+  if (cfg_.role == KL_ROLE_GATEWAY) ok = ok && g_kl_hub_ok_ms != 0;
+  if (ok) {
+    ota_pending_ = false;
+    boot_valid_ms_ = 0;
+    ota_.mark_boot_valid();
+    kl_ota_esp32_store_build((uint16_t)KL_FIRMWARE_BUILD);
+    Serial.printf("[ota] firmware %u validated\n", (unsigned)KL_FIRMWARE_BUILD);
+    /* Каскад: обновившийся узел сам раздаёт свой образ соседям того же чипа и варианта. */
+    kl_ota_manifest_t m;
+    if (cfg_.role != KL_ROLE_GATEWAY && kl_ota_esp32_load_manifest(&m) && kl_ota_manifest_is_full(&m) &&
+        m.target_build == (uint16_t)KL_FIRMWARE_BUILD && ota_.start_source(m, KL_OTA_SRC_RUNNING)) {
+      ota_relay_until_ = now + 2400000u; /* полный образ раздаётся долго */
+      Serial.printf("[ota] relaying build %u to neighbours (ifc mask=0x%02x)\n", (unsigned)m.target_build,
+                    (unsigned)m.ifc_mask);
+    }
+    return;
+  }
+  if (now - last_log > 30000u) {
+    last_log = now;
+    Serial.printf("[ota] validating: espnow_rx=%lu lora_rx=%lu hub=%lu\n", (unsigned long)router_.last_rx_ms(KL_IFACE_ESPNOW),
+                  (unsigned long)router_.last_rx_ms(KL_IFACE_LORA), (unsigned long)g_kl_hub_ok_ms);
+  }
+  if (now > 600000u) kl_ota_esp32_rollback_now("no cluster link after update");
 }
 
 void KlintoNode::clientTaskEntry(void *arg) {
@@ -1030,22 +1159,27 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
   KlintoNode *self = (KlintoNode *)arg;
   uint32_t next_ota_check = 0;
   uint32_t source_started = 0;
+  /* Полный образ (~1.5 МБ) по ESP-NOW раздаётся ~10–15 минут: даём 40, патч — 6. */
+  uint32_t source_limit = KL_OTA_SOURCE_ROTATE_MS;
   for (;;) {
     const uint32_t now = kl_uptime_ms();
     self->gateway_.loop(now);
 
-    /* Раздача одного патча не должна длиться вечно: ротация по кластерам. */
-    if (self->ota_.source_active() && source_started && now - source_started > KL_OTA_SOURCE_ROTATE_MS) {
+    /* Раздача одного образа не должна длиться вечно: ротация по чипам/вариантам кластера. */
+    if (self->ota_.source_active() && source_started && now - source_started > source_limit) {
       self->ota_.stop_source();
+      kl_ota_esp32_remote_clear();
       source_started = 0;
       next_ota_check = 0;
     }
+    /* Окно чужого образа с Hub (HTTP Range) — только из этой задачи: она не держит радио. */
+    kl_ota_esp32_remote_service();
 
-    if (!self->ota_.source_active() && (next_ota_check == 0 || now >= next_ota_check)) {
-      next_ota_check = now + 300000u;
-      const char *url = strncmp(self->cfg_.hub_url, "http", 4) == 0
-                            ? self->cfg_.hub_url
-                            : "https://hub.kintoapp.xyz";
+    if (!self->ota_.source_active() && !self->ota_pending_ &&
+        (next_ota_check == 0 || now >= next_ota_check)) {
+      next_ota_check = now + 120000u;
+      const char *url = strncmp(self->cfg_.hub_url, "http", 4) == 0 ? self->cfg_.hub_url
+                                                                     : "https://hub.kintoapp.xyz";
       char token[80] = {0};
       if (self->cfg_.module_token[0]) {
         strncpy(token, self->cfg_.module_token, sizeof(token) - 1);
@@ -1053,45 +1187,58 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
         kl_hex_encode(self->cfg_.temp_mesh_key, 32, token, sizeof(token), false);
       }
       if (token[0]) {
-        kl_ota_manifest_t manifest;
-        bool started = false;
-        if (kl_ota_esp32_sync(url, token, (uint8_t)KL_CHIP_ARCH, (uint16_t)KL_FIRMWARE_BUILD,
-                              &manifest) &&
-            self->ota_.start_source(manifest)) {
-          source_started = now;
-          started = true;
-          Serial.printf("[klinto] ota source chip=%u build=%u patch=%lu\n",
-                        (unsigned)KL_CHIP_ARCH, (unsigned)manifest.target_build,
-                        (unsigned long)manifest.patch_size);
-        }
-        /* Массовый OTA: патчи для других чипов кластера (C3/S3/C6). */
-        char plan[512];
-        if (!started && kl_ota_esp32_plan(url, token, plan, sizeof(plan)) > 0) {
-          char *save = nullptr;
-          for (char *line = strtok_r(plan, "\r\n", &save); line;
-               line = strtok_r(nullptr, "\r\n", &save)) {
-            char *colon = strchr(line, ':');
-            if (!colon) continue;
-            *colon = '\0';
-            const char *chip = line;
-            const int base = atoi(colon + 1);
-            const uint8_t arch = !strcmp(chip, "esp32c3") ? 2
-                                 : !strcmp(chip, "esp32s3") ? 3
-                                 : !strcmp(chip, "esp32c6") ? 4
-                                 : !strcmp(chip, "esp32c5") ? 6
-                                 : !strcmp(chip, "esp32")    ? 1
-                                                             : 0;
-            if (!arch || base <= 0) continue;
-            if (arch == (uint8_t)KL_CHIP_ARCH && (uint16_t)base == (uint16_t)KL_FIRMWARE_BUILD) {
-              continue;
-            }
-            kl_ota_manifest_t other;
-            if (kl_ota_esp32_sync_chip(url, token, chip, arch, (uint16_t)base, &other) &&
-                self->ota_.start_source(other)) {
-              source_started = now;
-              Serial.printf("[klinto] ota source chip=%s base=%d build=%u patch=%lu\n", chip,
-                            base, (unsigned)other.target_build, (unsigned long)other.patch_size);
-              break;
+        const uint8_t my_arch = (uint8_t)KL_CHIP_ARCH;
+        const char *my_chip = my_arch == 2 ? "esp32c3" : my_arch == 3 ? "esp32s3" : my_arch == 4 ? "esp32c6"
+                              : my_arch == 6 ? "esp32c5" : "esp32";
+        kl_ota_manifest_t m;
+        char path[128];
+        bool full = false;
+        /* 1) Сначала обновляется сам шлюз (админ включил раздачу для его кластера). */
+        if (kl_ota_esp32_query(url, token, my_chip, my_arch, 1, (uint16_t)KL_FIRMWARE_BUILD,
+                               self->cfg_.node_id, true, &m, path, sizeof(path), &full) &&
+            full && m.target_build > (uint16_t)KL_FIRMWARE_BUILD && m.target_build != kl_ota_esp32_bad_build()) {
+          Serial.printf("[ota] gateway self-update %u -> %u (%lu bytes)\n", (unsigned)KL_FIRMWARE_BUILD,
+                        (unsigned)m.target_build, (unsigned long)m.patch_size);
+          uint8_t need = 0;
+          for (uint8_t i = 0; i < KL_IFACE_COUNT; ++i) {
+            const uint32_t t = self->router_.last_rx_ms(i);
+            if (t && now - t < 600000u) need |= (uint8_t)(1u << i);
+          }
+          kl_ota_esp32_set_need_ifc(need);
+          kl_config_save_nvs(&self->cfg_);
+          if (!kl_ota_esp32_install_full(url, token, path, &m)) Serial.println("[ota] gateway self-update failed");
+        } else {
+          /* 2) Затем узлы кластера: какие (чип, вариант, сборка) нужно обновить. */
+          char plan[512];
+          if (kl_ota_esp32_plan(url, token, self->cfg_.node_id, plan, sizeof(plan)) > 0) {
+            char *save = nullptr;
+            for (char *line = strtok_r(plan, "\r\n", &save); line; line = strtok_r(nullptr, "\r\n", &save)) {
+              char chip[16] = {0};
+              unsigned variant = 0, base = 0;
+              if (sscanf(line, "%15[^:]:%u:%u", chip, &variant, &base) != 3 || !base) continue;
+              const uint8_t arch = !strcmp(chip, "esp32c3") ? 2 : !strcmp(chip, "esp32s3") ? 3
+                                   : !strcmp(chip, "esp32c6") ? 4 : !strcmp(chip, "esp32c5") ? 6
+                                   : !strcmp(chip, "esp32") ? 1 : 0;
+              if (!arch) continue;
+              if (!kl_ota_esp32_query(url, token, chip, arch, (uint8_t)variant, (uint16_t)base, self->cfg_.node_id,
+                                      false, &m, path, sizeof(path), &full)) {
+                continue;
+              }
+              bool started = false;
+              if (full) {
+                kl_ota_esp32_remote_set(url, token, path, m.patch_size);
+                started = self->ota_.start_source(m, KL_OTA_SRC_REMOTE);
+              } else if (kl_ota_esp32_fetch_patch(url, token, path, m.patch_size)) {
+                started = self->ota_.start_source(m, KL_OTA_SRC_FILE);
+              }
+              if (started) {
+                source_started = now;
+                source_limit = full ? 2400000u : KL_OTA_SOURCE_ROTATE_MS;
+                Serial.printf("[ota] gateway sources %s v%u %u -> %u (%s, %lu bytes, ifc=0x%02x)\n", chip, variant,
+                              base, (unsigned)m.target_build, full ? "full" : "patch",
+                              (unsigned long)m.patch_size, (unsigned)m.ifc_mask);
+                break;
+              }
             }
           }
         }

@@ -1070,7 +1070,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const nodes = await query<{ node_id: string; gateway_id: string; rssi: number; battery: number; role: number;
       last_seen_at: string; online: boolean; display_name: string | null; node_role: number | null; battery_pct: number | null }>(
       `SELECT p.node_id::text, p.gateway_id::text, p.rssi, p.battery, p.role, p.last_seen_at,
-              p.expires_at > now() AS online, p.display_name, t.node_role, t.battery_pct
+              p.last_seen_at > now() - interval '30 minutes' AS online, p.display_name, t.node_role, t.battery_pct
          FROM kmesh_v1_presence p
          LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
         WHERE p.node_id = ANY($1::bigint[])`,
@@ -1558,12 +1558,12 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     try {
       const gateways = await query<{ gateway_id: string }>(
         `SELECT gateway_id::text FROM kmesh_v1_gateways
-          WHERE last_seen_at > now() - interval '4 minutes'`,
+          WHERE last_seen_at > now() - interval '30 minutes'`,
       );
       for (const row of gateways) liveNodes.add(Number(row.gateway_id));
       const presence = await query<{ node_id: string }>(
         `SELECT node_id::text FROM kmesh_v1_presence
-          WHERE expires_at > now() AND last_seen_at > now() - interval '4 minutes'`,
+          WHERE last_seen_at > now() - interval '30 minutes'`,
       );
       for (const row of presence) liveNodes.add(Number(row.node_id));
     } catch {
@@ -1694,11 +1694,45 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!existing) throw notFound('module');
     if (existing.owner_user_id !== auth.userId) throw forbidden('not_module_owner');
     const p = String((req.body as Record<string, unknown>)?.p ?? '');
-    if (!p || p.length > 90 || !/^([bcleswr]=[-0-9,cr]+)(;[bcleswr]=[-0-9,cr]+)*$/.test(p)) throw badRequest('invalid_config');
+    if (!p || p.length > 90 || !/^([bcleswrid]=[-0-9,cr]+)(;[bcleswrid]=[-0-9,cr]+)*$/.test(p)) throw badRequest('invalid_config');
     const epoch = Math.floor(Date.now() / 1000);
     const sig = signModuleConfig(moduleMod6(mac), epoch, p);
     if (!sig) throw badRequest('signing_unavailable');
-    return reply.send({ ok: true, moduleMac: mac, mod6: moduleMod6(mac), epoch, p, sig });
+    const deliver = String((req.body as Record<string, unknown>)?.deliver ?? '');
+    if (deliver !== 'hub') return reply.send({ ok: true, moduleMac: mac, mod6: moduleMod6(mac), epoch, p, sig });
+
+    // Через kMesh: шлюз кластера, в котором модуль был слышен за 30 минут, забирает пакет из downlink.
+    const nodeId = nodeIdFromMac(mac);
+    const seen = await one<{ gateway_id: string }>(
+      `SELECT gateway_id::text FROM kmesh_v1_presence
+        WHERE node_id = $1 AND gateway_id > 1 AND last_seen_at > now() - interval '30 minutes'
+        ORDER BY last_seen_at DESC LIMIT 1`,
+      [nodeId],
+    );
+    if (!seen) throw badRequest('module_not_reachable');
+    if (!config.tempMeshKey) throw badRequest('mesh_key_unavailable');
+    const sigBuf = Buffer.from(sig, 'hex');
+    const head = Buffer.alloc(9);
+    head[0] = 0x30; // KL_RPC_NODE_CONFIG
+    head[1] = 0;
+    head.writeUInt16LE(0xffff, 2);
+    head.writeUInt32LE(epoch >>> 0, 4);
+    head[8] = sigBuf.length;
+    const rpc = Buffer.concat([head, sigBuf, Buffer.from(p, 'utf8')]);
+    const gatewayId = Number(seen.gateway_id);
+    const packetId = randomBytes(4).readUInt32LE(0) || 1;
+    const msgUuid = randomBytes(8).readBigUInt64LE(0) || 1n;
+    const sealed = sealTemp(config.tempMeshKey, { packetId, msgUuid, srcId: gatewayId, dstId: nodeId, type: 1 }, rpc,
+      FLAG_FROM_INTERNET);
+    if (!sealed) throw badRequest('config_too_large');
+    const wire = buildPacket({ packetId, msgUuid, srcId: gatewayId, dstId: nodeId, nextHopId: nodeId, type: 1,
+      flags: sealed.flags, payload: sealed.payload });
+    await query(
+      `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64, expires_at)
+       VALUES ($1,$2,'packet',$3,$4,$5, now() + interval '30 minutes')`,
+      [gatewayId, nodeId, packetId, BigInt.asUintN(64, msgUuid).toString(16).padStart(16, '0'), wire.toString('base64')],
+    );
+    return reply.send({ ok: true, queued: true, moduleMac: mac, nodeId, gatewayId, epoch });
   });
 
   /** Удаление модуля из аккаунта (в том числе без данных о нём): снимает привязку по MAC. */
@@ -1902,96 +1936,96 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, id: contractId, status: 'cancelled' });
   });
 
-  /* --------------------------------------------- OTA для шлюзов ---------- */  app.get('/kmesh/v1/ota/latest', { onRequest: [requireOta] }, async (req, reply) => {
-    const q = req.query as { chip?: string; base_build?: string; current_build?: string };
+  /* --------------------------------------------- OTA по kMesh -------------- */
+  /** Активная раскатка, в которую входит кластер шлюза gw (NULL в gateways — все кластеры). */
+  async function activeRollout(gw: number): Promise<{ id: string; ifc_mask: number; target_build: number } | null> {
+    return one<{ id: string; ifc_mask: number; target_build: number }>(
+      `SELECT id::text, ifc_mask, target_build FROM kmesh_ota_rollouts
+        WHERE status = 'active' AND (gateways IS NULL OR $1::bigint = ANY(gateways))
+        ORDER BY created_at DESC LIMIT 1`,
+      [gw],
+    );
+  }
+
+  /**
+   * Что ставить модулю (chip, variant, base_build) в кластере шлюза gw. self=1 — сам шлюз:
+   * только полный образ (ставит по Wi-Fi). Для узлов — дельта-патч, если есть, иначе полный
+   * образ (шлюз раздаёт его окнами по HTTP Range, узлы пишут прямо в OTA-слот).
+   */
+  app.get('/kmesh/v1/ota/latest', { onRequest: [requireOta] }, async (req, reply) => {
+    const q = req.query as { chip?: string; base_build?: string; current_build?: string; variant?: string;
+      gw?: string; self?: string };
     const chip = String(q.chip ?? '').toLowerCase();
     if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');
     const base = Number(q.base_build ?? q.current_build ?? 0) || 0;
     if (!Number.isInteger(base) || base <= 0) throw badRequest('invalid_base_build');
+    const variant = Number(q.variant ?? 0) === 1 ? 1 : 0;
+    const gw = Number(q.gw ?? 0) || 0;
+    const self = String(q.self ?? '') === '1';
+    const rollout = await activeRollout(gw);
+    if (!rollout) return reply.send({ ok: true, up_to_date: true, chip, base_build: base, reason: 'no_rollout' });
 
-    const manifest = await one<{
-      patch_id: number; base_build: number; target_build: number; version: string;
-      total_chunks: number; patch_size: number; patch_sha256: string; target_sha256: string;
-      sig_alg: string; signature: string;
-    }>(
-      `SELECT patch_id, base_build, target_build, version, total_chunks, patch_size,
-              patch_sha256, target_sha256, sig_alg, signature
-         FROM kmesh_ota_manifests
-        WHERE chip = $1 AND base_build = $2
-        ORDER BY target_build DESC LIMIT 1`,
-      [chip, base],
-    );
-    if (manifest) {
-      return reply.send({
-        ok: true,
-        full: false,
-        chip,
-        patch_id: manifest.patch_id,
-        base_build: manifest.base_build,
-        target_build: manifest.target_build,
-        version: manifest.version,
-        total_chunks: manifest.total_chunks,
-        patch_size: manifest.patch_size,
-        patch_sha256: manifest.patch_sha256,
-        target_sha256: manifest.target_sha256,
-        sig_alg: manifest.sig_alg,
-        signature: manifest.signature,
-        patch_url: `/v1/kmesh/v1/ota/patch/${manifest.patch_id}`,
-      });
-    }
-    const full = await one<{
-      build_number: number; version: string; full_sha256: string; full_size: number;
-    }>(
-      `SELECT build_number, version, full_sha256, full_size
-         FROM kmesh_ota_releases
-        WHERE chip = $1 AND build_number > $2
+    const release = await one<{ id: string; build_number: number; version: string; full_sha256: string; full_size: number }>(
+      `SELECT id::text, build_number, version, full_sha256, full_size FROM kmesh_ota_releases
+        WHERE chip = $1 AND variant = $2 AND build_number > $3 AND build_number <= $4
         ORDER BY build_number DESC LIMIT 1`,
-      [chip, base],
+      [chip, variant, base, rollout.target_build],
     );
-    if (!full) return reply.send({ ok: true, up_to_date: true, chip, base_build: base });
-    const totalChunks = Math.ceil(full.full_size / 180);
+    if (!release) return reply.send({ ok: true, up_to_date: true, chip, base_build: base });
+
+    if (!self) {
+      const manifest = await one<{ patch_id: number; target_build: number; version: string; total_chunks: number;
+        patch_size: number; patch_sha256: string; target_sha256: string; signature: string }>(
+        `SELECT patch_id, target_build, version, total_chunks, patch_size, patch_sha256, target_sha256, signature
+           FROM kmesh_ota_manifests
+          WHERE chip = $1 AND variant = $2 AND base_build = $3 AND target_build = $4`,
+        [chip, variant, base, release.build_number],
+      );
+      if (manifest) {
+        return reply.send({
+          ok: true, full: false, chip, variant, ifc_mask: rollout.ifc_mask,
+          patch_id: manifest.patch_id, base_build: base, target_build: manifest.target_build,
+          version: manifest.version, total_chunks: manifest.total_chunks, patch_size: manifest.patch_size,
+          patch_sha256: manifest.patch_sha256, target_sha256: manifest.target_sha256,
+          signature: manifest.signature, patch_url: `/v1/kmesh/v1/ota/patch/${manifest.patch_id}`,
+        });
+      }
+    }
+    const totalChunks = Math.ceil(release.full_size / 180);
     const fullManifest: OtaManifest = {
-      chip,
-      baseBuild: base,
-      targetBuild: full.build_number,
-      version: full.version,
-      totalChunks,
-      patchSize: full.full_size,
-      patchSha256: full.full_sha256,
-      targetSha256: full.full_sha256,
-      signature: '',
-      sigAlg: 'ecdsa-p256',
+      chip, variant, baseBuild: base, targetBuild: release.build_number, version: release.version,
+      totalChunks, patchSize: release.full_size, patchSha256: release.full_sha256,
+      targetSha256: release.full_sha256, signature: '', sigAlg: 'ecdsa-p256',
     };
     fullManifest.signature = signManifest(fullManifest);
+    if (!fullManifest.signature) return reply.code(503).send({ ok: false, error: 'ota_signing_unavailable' });
     return reply.send({
-      ok: true,
-      full: true,
-      chip,
-      base_build: base,
-      target_build: full.build_number,
-      version: full.version,
-      full_size: full.full_size,
-      total_chunks: totalChunks,
-      patch_sha256: full.full_sha256,
-      target_sha256: full.full_sha256,
-      sig_alg: fullManifest.sigAlg,
+      ok: true, full: true, chip, variant, ifc_mask: rollout.ifc_mask,
+      patch_id: (Number(release.id) & 0x7fff) || 1, base_build: base, target_build: release.build_number,
+      version: release.version, total_chunks: totalChunks, full_size: release.full_size,
+      patch_sha256: release.full_sha256, target_sha256: release.full_sha256,
       signature: fullManifest.signature,
-      full_url: `/v1/kmesh/v1/ota/full/${chip}/${full.build_number}`,
+      full_url: `/v1/kmesh/v1/ota/full/${chip}/${release.build_number}?variant=${variant}`,
     });
   });
 
-  /** Какие пары (chip, base_build) сейчас реально нужны кластеру — для OTA-плана. */
-  app.get('/kmesh/v1/ota/plan', { onRequest: [requireOta] }, async (_req, reply) => {
-    const rows = await query<{ chip_arch: number; fw_build: number }>(
-      `SELECT DISTINCT t.chip_arch::int AS chip_arch, t.fw_build::int AS fw_build
+  /** План для шлюза: какие (чип, вариант, сборка) в его кластере ждут обновления. */
+  app.get('/kmesh/v1/ota/plan', { onRequest: [requireOta] }, async (req, reply) => {
+    const gw = Number((req.query as { gw?: string }).gw ?? 0) || 0;
+    const rollout = gw ? await activeRollout(gw) : null;
+    if (!rollout) return reply.header('content-type', 'text/plain').send('');
+    const rows = await query<{ chip_arch: number; variant: number; fw_build: number }>(
+      `SELECT DISTINCT t.chip_arch::int AS chip_arch, (CASE WHEN t.node_role = 3 THEN 1 ELSE 0 END)::int AS variant,
+              t.fw_build::int AS fw_build
          FROM kmesh_nodes_telemetry t
-         JOIN kmesh_v1_presence p ON p.node_id = t.node_id AND p.expires_at > now()
-        WHERE t.chip_arch BETWEEN 1 AND 4 AND t.fw_build > 0
-        ORDER BY 1, 2
-        LIMIT 16`,
+         JOIN kmesh_v1_presence p ON p.node_id = t.node_id
+        WHERE p.gateway_id = $1 AND p.node_id <> $1 AND p.last_seen_at > now() - interval '30 minutes'
+          AND t.chip_arch BETWEEN 1 AND 6 AND t.fw_build > 0 AND t.fw_build < $2
+        ORDER BY 1, 2, 3 LIMIT 16`,
+      [gw, rollout.target_build],
     );
     const lines = rows
-      .map((r) => `${CHIP_BY_ARCH[r.chip_arch] ?? ''}:${r.fw_build}`)
+      .map((r) => `${CHIP_BY_ARCH[r.chip_arch] ?? ''}:${r.variant}:${r.fw_build}`)
       .filter((line) => !line.startsWith(':'));
     return reply.header('content-type', 'text/plain').send(lines.join('\n'));
   });
@@ -2011,134 +2045,204 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       .send(Buffer.from(row.patch));
   });
 
+  /** Полный образ; поддерживает Range — шлюз раздаёт его по радио окнами, не храня целиком. */
   app.get('/kmesh/v1/ota/full/:chip/:build', { onRequest: [requireOta] }, async (req, reply) => {
     const chip = String((req.params as { chip?: string }).chip ?? '').toLowerCase();
     const build = Number((req.params as { build?: string }).build);
+    const variant = Number((req.query as { variant?: string }).variant ?? 0) === 1 ? 1 : 0;
     if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');
     if (!Number.isInteger(build) || build <= 0) throw badRequest('invalid_build');
     const row = await one<{ image: Buffer; full_sha256: string; full_size: number }>(
       `SELECT image, full_sha256, full_size FROM kmesh_ota_releases
-        WHERE chip = $1 AND build_number = $2`,
-      [chip, build],
+        WHERE chip = $1 AND variant = $2 AND build_number = $3`,
+      [chip, variant, build],
     );
     if (!row) throw notFound('release');
+    const image = Buffer.from(row.image);
+    const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ''));
+    if (range) {
+      const start = Number(range[1]);
+      const end = Math.min(range[2] ? Number(range[2]) : image.length - 1, image.length - 1);
+      if (start > end || start >= image.length) {
+        return reply.code(416).header('content-range', `bytes */${image.length}`).send();
+      }
+      return reply
+        .code(206)
+        .header('content-type', 'application/octet-stream')
+        .header('content-range', `bytes ${start}-${end}/${image.length}`)
+        .header('content-length', String(end - start + 1))
+        .send(image.subarray(start, end + 1));
+    }
     return reply
       .header('content-type', 'application/octet-stream')
       .header('content-length', String(row.full_size))
       .header('x-image-sha256', row.full_sha256)
-      .send(Buffer.from(row.image));
+      .send(image);
   });
 
-  /* ------------------------------- админ: загрузка релиза и генерация --- */
-  app.post(
-    '/kmesh/v1/admin/ota/release',
-    { onRequest: [requireAdmin()], bodyLimit: 24 * 1024 * 1024 },
-    async (req, reply) => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const chip = String(body.chip ?? '').toLowerCase();
-      const build = Number(body.build ?? body.build_number ?? 0);
-      const version = String(body.version ?? '').trim();
-      const imageB64 = String(body.image_b64 ?? '');
-      if (!ARCH_BY_CHIP[chip]) throw badRequest('invalid_chip');
-      if (!Number.isInteger(build) || build <= 0 || build > 65535) throw badRequest('invalid_build');
-      if (!/^\d+\.\d+(\.\d+)?$/.test(version)) throw badRequest('invalid_version');
-      if (!imageB64 || imageB64.length > 16 * 1024 * 1024) throw badRequest('invalid_image');
-      const image = Buffer.from(imageB64, 'base64');
-      if (image.length < 4096 || image.length > 8 * 1024 * 1024) throw badRequest('invalid_image');
-      if (!otaSigningAvailable()) {
-        return reply.code(503).send({ ok: false, error: 'ota_signing_unavailable' });
-      }
-      const latest = await one<{ build: string | null }>(
-        `SELECT max(build_number)::text AS build FROM kmesh_ota_releases WHERE chip = $1`,
-        [chip],
-      );
-      const latestBuild = Number(latest?.build ?? 0) || 0;
-      if (latestBuild && build < latestBuild) {
-        return reply.code(409).send({
-          ok: false,
-          error: 'build_not_monotonic',
-          latest_build: latestBuild,
-        });
-      }
+  /* ------------------------------- админ: релизы и раскатки OTA ---------- */
+  type ReleaseJob = { status: 'running' | 'done' | 'failed'; startedAt: string; log: string[]; build?: number };
+  const releaseJob: { current: ReleaseJob | null } = { current: null };
 
-      const imageSha = createHash('sha256').update(image).digest('hex');
+  async function storeRelease(chip: string, variant: number, build: number, version: string, image: Buffer): Promise<void> {
+    const sha = createHash('sha256').update(image).digest('hex');
+    await query(
+      `INSERT INTO kmesh_ota_releases (chip, variant, build_number, version, full_sha256, full_size, image)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (chip, variant, build_number) DO UPDATE SET
+         version = EXCLUDED.version, full_sha256 = EXCLUDED.full_sha256,
+         full_size = EXCLUDED.full_size, image = EXCLUDED.image`,
+      [chip, variant, build, version || '1.0', sha, image.length, image],
+    );
+    // Дельта-патчи от предыдущих канонических сборок того же чипа и варианта.
+    const previous = await query<{ build_number: number; image: Buffer }>(
+      `SELECT build_number, image FROM kmesh_ota_releases
+        WHERE chip = $1 AND variant = $2 AND build_number < $3 ORDER BY build_number DESC LIMIT 2`,
+      [chip, variant, build],
+    );
+    for (const prev of previous) {
+      const delta = buildDeltaPatch(Buffer.from(prev.image), image);
+      const totalChunks = Math.ceil(delta.patch.length / 180);
+      if (totalChunks <= 0 || totalChunks > 12288 || delta.patch.length >= image.length) continue;
+      const manifest: OtaManifest = {
+        chip, variant, baseBuild: prev.build_number, targetBuild: build, version, totalChunks,
+        patchSize: delta.patch.length, patchSha256: delta.patchSha256, targetSha256: delta.targetSha256,
+        signature: '', sigAlg: 'ecdsa-p256',
+      };
+      manifest.signature = signManifest(manifest);
       await query(
-        `INSERT INTO kmesh_ota_releases (chip, build_number, version, full_sha256, full_size, image)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (chip, build_number) DO UPDATE SET
-           version = EXCLUDED.version,
-           full_sha256 = EXCLUDED.full_sha256,
-           full_size = EXCLUDED.full_size,
-           image = EXCLUDED.image`,
-        [chip, build, version, imageSha, image.length, image],
+        `INSERT INTO kmesh_ota_manifests
+           (chip, variant, base_build, target_build, version, total_chunks, patch_size,
+            patch_sha256, target_sha256, sig_alg, signature, patch)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (chip, variant, base_build, target_build) DO UPDATE SET
+           total_chunks = EXCLUDED.total_chunks, patch_size = EXCLUDED.patch_size,
+           patch_sha256 = EXCLUDED.patch_sha256, target_sha256 = EXCLUDED.target_sha256,
+           signature = EXCLUDED.signature, patch = EXCLUDED.patch, created_at = now()`,
+        [chip, variant, prev.build_number, build, version, totalChunks, delta.patch.length,
+         delta.patchSha256, delta.targetSha256, manifest.sigAlg, manifest.signature, delta.patch],
       );
+    }
+  }
 
-      const previous = await query<{
-        build_number: number; version: string; image: Buffer;
-      }>(
-        `SELECT build_number, version, image FROM kmesh_ota_releases
-          WHERE chip = $1 AND build_number < $2
-          ORDER BY build_number DESC LIMIT 3`,
-        [chip, build],
-      );
-      const manifests: Array<Record<string, unknown>> = [];
-      for (const prev of previous) {
-        const delta = buildDeltaPatch(Buffer.from(prev.image), image);
-        const totalChunks = Math.ceil(delta.patch.length / 180);
-        if (totalChunks <= 0 || totalChunks > 4096) continue;
-        const manifest: OtaManifest = {
-          chip,
-          baseBuild: prev.build_number,
-          targetBuild: build,
-          version,
-          totalChunks,
-          patchSize: delta.patch.length,
-          patchSha256: delta.patchSha256,
-          targetSha256: delta.targetSha256,
-          signature: '',
-          sigAlg: 'ecdsa-p256',
-        };
-        manifest.signature = signManifest(manifest);
-        const row = await one<{ patch_id: number }>(
-          `INSERT INTO kmesh_ota_manifests
-             (chip, base_build, target_build, version, total_chunks, patch_size,
-              patch_sha256, target_sha256, sig_alg, signature, patch)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-           ON CONFLICT (chip, base_build, target_build) DO UPDATE SET
-             version = EXCLUDED.version,
-             total_chunks = EXCLUDED.total_chunks,
-             patch_size = EXCLUDED.patch_size,
-             patch_sha256 = EXCLUDED.patch_sha256,
-             target_sha256 = EXCLUDED.target_sha256,
-             sig_alg = EXCLUDED.sig_alg,
-             signature = EXCLUDED.signature,
-             patch = EXCLUDED.patch,
-             created_at = now()
-           RETURNING patch_id`,
-          [chip, prev.build_number, build, version, totalChunks, delta.patch.length,
-           delta.patchSha256, delta.targetSha256, manifest.sigAlg, manifest.signature,
-           delta.patch],
-        );
-        manifests.push({
-          base_build: prev.build_number,
-          target_build: build,
-          patch_id: row?.patch_id ?? 0,
-          patch_size: delta.patch.length,
-          total_chunks: totalChunks,
-          patch_sha256: delta.patchSha256,
-        });
+  /** Собрать канонические OTA-образы текущей прошивки (узел и шлюз) для выбранных чипов. */
+  app.post('/kmesh/v1/admin/ota/build-release', { onRequest: [requireAdmin()] }, async (req, reply) => {
+    if (releaseJob.current?.status === 'running') return reply.code(409).send({ ok: false, error: 'build_running' });
+    if (!otaSigningAvailable()) return reply.code(503).send({ ok: false, error: 'ota_signing_unavailable' });
+    const body = (req.body ?? {}) as { chips?: unknown };
+    const chips = (Array.isArray(body.chips) ? body.chips : ['esp32', 'esp32c3'])
+      .map((c) => String(c).toLowerCase())
+      .filter((c) => ARCH_BY_CHIP[c]);
+    if (!chips.length) throw badRequest('chips_required');
+    const job: ReleaseJob = { status: 'running', startedAt: new Date().toISOString(), log: [] };
+    releaseJob.current = job;
+    void (async () => {
+      try {
+        const { buildCanonicalOtaImage } = await import('./firmware.js');
+        for (const chip of chips) {
+          for (const variant of [0, 1] as const) {
+            job.log.push(`${chip} ${variant ? 'шлюз' : 'узел'}: сборка…`);
+            // Компиляция бывает дольше таймаута заголовков fetch (5 мин): сборщик кэширует результат,
+            // поэтому повторный запрос получает готовый образ.
+            let out: Awaited<ReturnType<typeof buildCanonicalOtaImage>> | null = null;
+            for (let attempt = 1; attempt <= 4 && !out; attempt += 1) {
+              try {
+                out = await buildCanonicalOtaImage(chip as never, variant);
+              } catch (e) {
+                if (attempt === 4) throw e;
+                job.log.push(`${chip} ${variant ? 'шлюз' : 'узел'}: повтор ${attempt} (${e instanceof Error ? e.message : e})`);
+                await new Promise((r) => setTimeout(r, 60_000));
+              }
+            }
+            if (!out) throw new Error('build_failed');
+            await storeRelease(chip, variant, out.build, out.version, out.image);
+            job.build = out.build;
+            job.log.push(`${chip} ${variant ? 'шлюз' : 'узел'}: сборка ${out.build}, ${out.image.length} байт`);
+          }
+        }
+        job.status = 'done';
+      } catch (e) {
+        job.status = 'failed';
+        job.log.push(`ошибка: ${e instanceof Error ? e.message : String(e)}`);
       }
-      return reply.send({
-        ok: true,
-        chip,
-        build,
-        version,
-        target_sha256: imageSha,
-        full_size: image.length,
-        manifests,
-      });
-    },
-  );
+    })();
+    return reply.send({ ok: true, chips });
+  });
+
+  app.get('/kmesh/v1/admin/ota/build-release', { onRequest: [requireAdmin()] }, async (_req, reply) => {
+    return reply.send({ ok: true, job: releaseJob.current });
+  });
+
+  /** Раскатки, релизы, кластеры (шлюзы) и прогресс обновления узлов. */
+  app.get('/kmesh/v1/admin/ota/rollouts', { onRequest: [requireAdmin()] }, async (_req, reply) => {
+    const releases = await query<{ chip: string; variant: number; build_number: number; full_size: number; created_at: string }>(
+      `SELECT chip, variant, build_number, full_size, created_at FROM kmesh_ota_releases
+        ORDER BY build_number DESC, chip, variant LIMIT 40`,
+    );
+    const rollouts = await query<{ id: string; gateways: string[] | null; ifc_mask: number; target_build: number;
+      status: string; created_at: string; stopped_at: string | null }>(
+      `SELECT id::text, gateways::text[] AS gateways, ifc_mask, target_build, status, created_at, stopped_at
+         FROM kmesh_ota_rollouts ORDER BY created_at DESC LIMIT 20`,
+    );
+    const gateways = await query<{ gateway_id: string; last_seen_at: string; nodes: number; name: string | null }>(
+      `SELECT g.gateway_id::text, g.last_seen_at,
+              (SELECT count(*)::int FROM kmesh_v1_presence p
+                WHERE p.gateway_id = g.gateway_id AND p.last_seen_at > now() - interval '30 minutes') AS nodes,
+              (SELECT display_name FROM kmesh_v1_presence p2 WHERE p2.node_id = g.gateway_id LIMIT 1) AS name
+         FROM kmesh_v1_gateways g
+        WHERE g.last_seen_at > now() - interval '1 day'
+        ORDER BY g.last_seen_at DESC LIMIT 50`,
+    );
+    const nodes = await query<{ node_id: string; chip_arch: number; node_role: number; fw_build: number;
+      ota_state: number; gateway_id: string; last_seen_at: string; name: string | null }>(
+      `SELECT t.node_id::text, t.chip_arch, t.node_role, t.fw_build, t.ota_state,
+              p.gateway_id::text, p.last_seen_at, p.display_name AS name
+         FROM kmesh_nodes_telemetry t JOIN kmesh_v1_presence p ON p.node_id = t.node_id
+        WHERE p.last_seen_at > now() - interval '30 minutes'
+        ORDER BY p.gateway_id, t.node_id LIMIT 300`,
+    );
+    return reply.send({
+      ok: true,
+      releases,
+      rollouts: rollouts.map((r) => ({ ...r, gateways: r.gateways ? r.gateways.map(Number) : null })),
+      gateways: gateways.map((g) => ({ gatewayId: Number(g.gateway_id), lastSeenAt: g.last_seen_at, nodes: g.nodes, name: g.name ?? '' })),
+      nodes: nodes.map((n) => ({
+        nodeId: Number(n.node_id), chip: CHIP_BY_ARCH[n.chip_arch] ?? 'unknown', variant: n.node_role === 3 ? 1 : 0,
+        fwBuild: n.fw_build, otaState: n.ota_state, gatewayId: Number(n.gateway_id), lastSeenAt: n.last_seen_at,
+        name: n.name ?? '',
+      })),
+      job: releaseJob.current,
+    });
+  });
+
+  /** Запустить раскатку: кластеры (NULL — все) и транспорты раздачи. Прошлые активные — остановить. */
+  app.post('/kmesh/v1/admin/ota/rollouts', { onRequest: [requireAdmin()] }, async (req, reply) => {
+    const body = (req.body ?? {}) as { gateways?: unknown; ifc_mask?: unknown; target_build?: unknown };
+    const gateways = Array.isArray(body.gateways)
+      ? body.gateways.map((g) => Number(g)).filter((g) => Number.isInteger(g) && g > 1)
+      : null;
+    const ifcMask = Number(body.ifc_mask ?? 1) & 3;
+    if (!ifcMask) throw badRequest('ifc_mask_required');
+    let target = Number(body.target_build ?? 0) || 0;
+    if (!target) {
+      const latest = await one<{ b: number | null }>('SELECT max(build_number) AS b FROM kmesh_ota_releases');
+      target = Number(latest?.b ?? 0);
+    }
+    if (!target) throw badRequest('no_release');
+    await query(`UPDATE kmesh_ota_rollouts SET status = 'stopped', stopped_at = now() WHERE status = 'active'`);
+    const row = await one<{ id: string }>(
+      `INSERT INTO kmesh_ota_rollouts (gateways, ifc_mask, target_build, created_by)
+       VALUES ($1,$2,$3,$4) RETURNING id::text`,
+      [gateways && gateways.length ? gateways : null, ifcMask, target, req.auth?.userId ?? null],
+    );
+    return reply.send({ ok: true, id: row?.id, target_build: target, ifc_mask: ifcMask, gateways });
+  });
+
+  app.post('/kmesh/v1/admin/ota/rollouts/:id/stop', { onRequest: [requireAdmin()] }, async (req, reply) => {
+    const id = String((req.params as { id?: string }).id ?? '');
+    await query(`UPDATE kmesh_ota_rollouts SET status = 'stopped', stopped_at = now() WHERE id = $1::bigint`, [id]);
+    return reply.send({ ok: true });
+  });
 
   /* ------------------------- админ: мониторинг версий всех узлов --------- */
   app.get('/kmesh/v1/admin/nodes/status', { onRequest: [requireAdmin()] }, async (req, reply) => {
@@ -2444,7 +2548,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!Number.isInteger(nodeId) || nodeId <= 1) throw badRequest('invalid_node_id');
     const row = await one<{ gateway_id: string; rssi: number; hops: number; last_seen_at: string; expires_at: string }>(
       `SELECT gateway_id, rssi, hops, last_seen_at, expires_at
-         FROM kmesh_v1_presence WHERE node_id = $1 AND expires_at > now()`,
+         FROM kmesh_v1_presence WHERE node_id = $1 AND last_seen_at > now() - interval '30 minutes'`,
       [nodeId],
     );
     if (!row) return reply.send({ nodeId, online: false, gatewayId: 0, fallbackGatewayIds: [] });

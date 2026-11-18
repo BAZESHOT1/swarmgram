@@ -135,6 +135,11 @@ class KlintoRouter {
   /** Application-originated packet. Fills src/ttl/packet_id/next_hop. */
   bool send(kl_packet_t *pkt, uint32_t now_ms, uint8_t iface_hint = 0xFF, bool need_ack = true);
 
+  /** OTA-пакет соседям (TTL 1, без ретрансляции) только через транспорты из mask. */
+  bool send_ota(kl_packet_t *pkt, uint8_t mask, uint32_t now_ms);
+  /** Когда последний раз что-то принято по транспорту (0 — ни разу с загрузки). */
+  uint32_t last_rx_ms(uint8_t iface) const { return iface < KL_IFACE_COUNT ? last_rx_ms_[iface] : 0; }
+
   /**
    * Пакет из интернета: маршрутизировать без перезаписи src_id и принудительно
    * выставить FROM_INTERNET. Используется NODE_GATEWAY для downlink.
@@ -246,6 +251,7 @@ class KlintoRouter {
   kl_config_t cfg_;
   kl_router_sink_t sink_;
   uint8_t iface_mask_;
+  uint32_t last_rx_ms_[KL_IFACE_COUNT] = {0};
   KlintoDedup dedup_;
 
   kl_route_entry_t routes_[KL_ROUTE_TABLE_SIZE];

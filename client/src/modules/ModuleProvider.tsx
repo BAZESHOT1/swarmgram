@@ -944,10 +944,26 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       };
       const v1 = v1ClientRef.current;
       const current = infoRef.current;
-      if (!v1 || !connectionRef.current?.isOpen || !current) {
-        return fail('Подключите носимый модуль по BLE/USB: команда уходит через него.');
-      }
       const mac12 = (value: string) => value.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
+      const hubDeliver = async (): Promise<boolean> => {
+        try {
+          await api.kmeshV1ModuleConfigViaHub(target.mac, p);
+          useStore.getState().pushToast({
+            kind: 'success',
+            message: 'Настройки отправлены через Hub и шлюз кластера. Модуль применит их и перезагрузится.',
+          });
+          return true;
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          return fail(
+            /module_not_reachable/.test(code)
+              ? 'Модуль не был слышен ни одним шлюзом за 30 минут — подключите к нему носимый модуль.'
+              : 'Hub не смог отправить настройки: нужен интернет и права владельца модуля.',
+          );
+        }
+      };
+      // Нет прямого подключения к модулям — доставляем через Hub → шлюз → kMesh.
+      if (!v1 || !connectionRef.current?.isOpen || !current) return hubDeliver();
       let token: { epoch: number; sig: string };
       try {
         token = await api.kmeshV1ModuleConfigToken(target.mac, p);
@@ -955,7 +971,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         return fail('Hub не выдал подпись: нужен интернет и права владельца модуля.');
       }
       const direct = mac12(current.hardwareId) === mac12(target.mac);
-      if (!direct && !target.nodeId) return fail('Не удалось определить узел модуля.');
+      if (!direct && !target.nodeId) return hubDeliver();
       const ok = direct
         ? await v1.sendHwConfig(p, token.epoch, token.sig)
         : await v1.sendNodeConfig(target.nodeId as number, p, token.epoch, token.sig);

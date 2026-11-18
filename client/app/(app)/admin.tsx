@@ -42,8 +42,9 @@ import { downloadObject, decryptPayload } from '../../src/data/chatkit';
 import { fromB64, toB64 } from '../../src/crypto/core';
 import { ModuleDebugPanel } from '../../src/components/admin/ModuleDebugPanel';
 import { DocsPanel } from '../../src/components/admin/DocsPanel';
+import { OtaPanel } from '../../src/components/admin/OtaPanel';
 
-type Tab = 'users' | 'nodes' | 'modules' | 'chats' | 'reports' | 'debug' | 'docs';
+type Tab = 'users' | 'nodes' | 'modules' | 'chats' | 'reports' | 'debug' | 'ota' | 'docs';
 
 type PendingAction = {
   title: string;
@@ -60,6 +61,7 @@ const TABS: { id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }[] =
   { id: 'chats', label: 'Чаты', icon: 'chatbubbles-outline' },
   { id: 'reports', label: 'Жалобы', icon: 'flag-outline' },
   { id: 'debug', label: 'Отладка', icon: 'terminal-outline' },
+  { id: 'ota', label: 'OTA', icon: 'cloud-download-outline' },
   { id: 'docs', label: 'База данных', icon: 'library-outline' },
 ];
 
@@ -635,6 +637,8 @@ export default function AdminScreen() {
       {tab === 'reports' ? <ReportsTab /> : null}
 
       {tab === 'debug' ? <ModuleDebugPanel /> : null}
+
+      {tab === 'ota' ? <OtaPanel /> : null}
 
       {tab === 'docs' ? <DocsPanel /> : null}
 

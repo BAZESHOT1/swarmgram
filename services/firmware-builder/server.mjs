@@ -286,7 +286,8 @@ function generateConfigHeader(config, version) {
     // Аппаратная архитектура и монотонный build_number для телеметрии/OTA.
     `#define KL_CHIP_ARCH ${CHIP_ARCH[board] || 1}`,
     `#define KL_FIRMWARE_BUILD ${FIRMWARE_BUILD}`,
-    `#define KL_HAS_LORA ${useLora ? 1 : 0}`,
+    // LoRa компилируется всегда: включается/выключается настройкой модуля (NVS), OTA-образ общий.
+    `#define KL_HAS_LORA 1`,
     `#define KL_HAS_BLE ${hasBle ? 1 : 0}`,
     `#define KL_HAS_MQTT ${role === 'gateway' ? 1 : 0}`,
     `#define KL_OTA_PUBKEY_HEX ${cString(OTA_PUBKEY)}`,
@@ -326,7 +327,7 @@ function generateConfigHeader(config, version) {
     '',
   ];
 
-  if (useLora) {
+  {
     lines.push(
       `#define KL_LORA_CHIP ${cString(chip)}`,
       `#define KL_LORA_CHIP_SX1262 ${isSx1262 ? 1 : 0}`,
@@ -663,7 +664,7 @@ async function compileFirmware(config, version) {
       '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-DNDEBUG',
       '-DCORE_DEBUG_LEVEL=0',
     ].join(' ');
-    const extraFlags = [sizeFlags, bleFlags, useLora ? radioExcludes : ''].filter(Boolean).join(' ');
+    const extraFlags = [sizeFlags, bleFlags, radioExcludes].filter(Boolean).join(' ');
     const slotBytes = board === 'esp32s3' ? 0x320000 : bigSlot ? 0x1e0000 : 0x1c0000;
     const compileArgs = [
       'compile',
@@ -800,7 +801,7 @@ async function handleBuild(config) {
       (useKmeshV1 ? await coreSourceHash() : ''),
   ).slice(0, 16);
   const version = FIRMWARE_VERSION;
-  const key = sha256(`merged4:v14-hwcfg:${templateHash}:${version}:${stableStringify(config)}`);
+  const key = sha256(`merged4:v15-ota-lora:${templateHash}:${version}:${stableStringify(config)}`);
   // Версия прошивки понятная (1.1, 1.2, ...) и общая для всех модулей,
   // собранных из текущего шаблона. Это нужно для OTA-бейджа и UI.
 

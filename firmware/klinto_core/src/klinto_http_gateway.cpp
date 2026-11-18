@@ -1,5 +1,8 @@
 #include "klinto_http_gateway.h"
 
+#include <stdint.h>
+extern volatile uint32_t g_kl_hub_ok_ms;
+
 #if defined(ESP32)
 
 #include <HTTPClient.h>
@@ -111,6 +114,7 @@ bool HttpGatewayTransport::post(const String &url, const char *body, size_t len)
   http.end();
   const bool ok = code >= 200 && code < 300;
   if (ok) {
+    g_kl_hub_ok_ms = millis() ? millis() : 1;
     Serial.printf("[TRACE 3/4] GW->HUB: uplink ok status=%d\n", code);
   } else {
     Serial.printf("[TRACE 3/4] GW->HUB: uplink failed status=%d\n", code);

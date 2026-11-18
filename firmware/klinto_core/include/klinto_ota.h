@@ -15,7 +15,7 @@
 #define KL_OTA_CHUNK_DATA 180
 #define KL_OTA_WINDOW 32
 #define KL_OTA_MAX_SIG 72
-#define KL_OTA_MAX_CHUNKS 4096
+#define KL_OTA_MAX_CHUNKS 12288 /* до 2.2 МБ: полный образ по радио */
 #define KL_OTA_BATTERY_MIN 40
 #define KL_OTA_NACK_INTERVAL_MS 2000u
 #define KL_OTA_ANNOUNCE_INTERVAL_MS 60000u
@@ -34,6 +34,19 @@ struct kl_ota_manifest_t {
   uint8_t target_sha256[32];
   uint8_t sig_len;
   uint8_t sig[KL_OTA_MAX_SIG];
+  /** 0 — узел (носимый/ретранслятор), 1 — шлюз: у них разные сборки. Подписывается. */
+  uint8_t variant;
+  /** Транспорты раздачи (бит 0 — ESP-NOW, бит 1 — LoRa). Не подписывается: выбирает админ. */
+  uint8_t ifc_mask;
+};
+
+/** Полный образ (а не дельта): sha патча совпадает с sha целевого образа. */
+bool kl_ota_manifest_is_full(const kl_ota_manifest_t *m);
+
+enum : uint8_t {
+  KL_OTA_SRC_FILE = 0,    /* патч в LittleFS */
+  KL_OTA_SRC_RUNNING = 1, /* свой работающий образ (каскад после обновления) */
+  KL_OTA_SRC_REMOTE = 2   /* образ с Hub окнами по HTTP Range (шлюз) */
 };
 
 size_t kl_ota_encode_announce(const kl_ota_manifest_t *m, uint8_t *out, size_t cap);
@@ -67,6 +80,15 @@ struct kl_ota_platform_t {
   /** Проверка подписи манифеста публичным ключом разработчика. */
   bool (*verify_signature)(void *ctx, const uint8_t digest[32], const uint8_t *sig, size_t sig_len);
   void (*mark_valid)(void *ctx);
+  /** Полный образ по радио: чанки пишутся прямо в неактивный слот (без LittleFS). */
+  bool (*slot_begin)(void *ctx, uint32_t size);
+  bool (*slot_write)(void *ctx, uint32_t offset, const uint8_t *data, size_t len);
+  /** Проверить подпись и SHA-256 слота, выставить загрузку с него (с ожиданием подтверждения). */
+  bool (*slot_finish)(void *ctx, const kl_ota_manifest_t *m);
+  /** Шлюз: чтение образа с Hub из окна кэша; false — окна ещё нет (запрошено). */
+  bool (*remote_read)(void *ctx, uint32_t offset, uint8_t *out, size_t len);
+  /** Запомнить применённый манифест (для каскадной раздачи после проверки). */
+  void (*store_manifest)(void *ctx, const kl_ota_manifest_t *m);
 };
 
 typedef bool (*kl_ota_send_t)(void *ctx, uint8_t type, const uint8_t *payload, size_t len,
@@ -88,6 +110,10 @@ class KlintoOta {
   }
   void set_battery(uint8_t percent, bool charging);
   void set_current_build(uint16_t build) { current_build_ = build; }
+  void set_variant(uint8_t v) { variant_ = v; }
+  void set_bad_build(uint16_t b) { bad_build_ = b; }
+  /** Через какие транспорты слать OTA-пакеты текущей раздачи/приёма. */
+  uint8_t send_mask() const { return has_manifest_ && manifest_.ifc_mask ? manifest_.ifc_mask : 0xFF; }
   uint16_t current_build() const { return current_build_; }
   uint16_t target_build() const { return manifest_.target_build; }
   uint8_t state() const { return state_; }
@@ -101,7 +127,7 @@ class KlintoOta {
   /** Пометить текущую прошивку рабочей после 30 секунд стабильной работы. */
   void mark_boot_valid();
   /** Источник: начать раздачу (патч уже записан в /ota/patch.bin). */
-  bool start_source(const kl_ota_manifest_t &m);
+  bool start_source(const kl_ota_manifest_t &m, uint8_t mode = KL_OTA_SRC_FILE);
   void stop_source() {
     source_ = false;
     has_manifest_ = false;
@@ -120,6 +146,7 @@ class KlintoOta {
                     uint32_t now_ms);
   void handle_nack(uint16_t patch_id, uint16_t window_start, uint32_t mask, uint32_t now_ms);
   bool chunk_received(uint16_t index) const;
+  bool src_read(uint32_t offset, uint8_t *out, size_t len);
   void set_chunk(uint16_t index);
 
   kl_ota_platform_t platform_;
@@ -130,6 +157,10 @@ class KlintoOta {
   void *state_ctx_;
 
   uint8_t chip_arch_;
+  uint8_t variant_ = 0;
+  uint16_t bad_build_ = 0;
+  uint8_t src_mode_ = KL_OTA_SRC_FILE;
+  bool full_ = false;
   uint16_t current_build_;
   uint16_t stored_build_;
   uint8_t battery_pct_;

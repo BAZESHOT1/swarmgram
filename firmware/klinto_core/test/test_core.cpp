@@ -1485,6 +1485,101 @@ static void test_owner_identity(void) {
   CHECK(!kl_owner_claim_parse(wire, 18, &parsed));
 }
 
+/* ------------------------------------------- мост ESP-NOW <-> LoRa ------- */
+/* A(ESP-NOW) -- R1(ESP-NOW+LoRa) ==LoRa== R2(ESP-NOW+LoRa) -- G(ESP-NOW):
+ * один тип пакетов, разные транспорты; R1 и R2 слышат друг друга только по LoRa. */
+struct SimLink {
+  int a, b;
+  uint8_t iface;
+};
+
+static void sim_pump(KlintoRouter *nodes, FakeWorld *worlds, int n, const SimLink *links, int nl,
+                     uint32_t *now, uint32_t until) {
+  while (*now < until) {
+    for (int round = 0; round < 4; ++round) {
+      for (int i = 0; i < n; ++i) {
+        FakeWorld snapshot = worlds[i];
+        worlds[i].sent_count = 0;
+        for (int k = 0; k < snapshot.sent_count; ++k) {
+          for (int l = 0; l < nl; ++l) {
+            if (links[l].iface != snapshot.sent_iface[k]) continue;
+            int peer = -1;
+            if (links[l].a == i) peer = links[l].b;
+            if (links[l].b == i) peer = links[l].a;
+            if (peer < 0) continue;
+            nodes[peer].on_packet(&snapshot.sent[k], snapshot.sent_iface[k], -60, *now);
+          }
+        }
+      }
+    }
+    for (int i = 0; i < n; ++i) nodes[i].tick(*now);
+    *now += 20;
+  }
+}
+
+static void test_multi_transport_bridge(void) {
+  enum { A = 0, R1 = 1, R2 = 2, G = 3, N = 4 };
+  static FakeWorld w[N];
+  memset(w, 0, sizeof(w));
+  static KlintoRouter r[N];
+  kl_config_t base;
+  kl_config_defaults(&base);
+  const uint32_t ids[N] = {11, 21, 22, 99};
+  for (int i = 0; i < N; ++i) {
+    kl_config_t c = base;
+    c.node_id = ids[i];
+    c.role = i == G ? KL_ROLE_GATEWAY : i == A ? KL_ROLE_CLIENT : KL_ROLE_ROUTER;
+    c.espnow_enabled = true;
+    c.lora_present = (i == R1 || i == R2);
+    c.lora.present = c.lora_present;
+    kl_router_sink_t sink = {&w[i], fake_send, fake_deliver, fake_status, fake_archive, NULL, NULL};
+    r[i].init(&c, &sink);
+  }
+  CHECK(r[R1].interface_mask() == (KL_IFACE_MASK_ESPNOW | KL_IFACE_MASK_LORA));
+  CHECK(r[A].interface_mask() == KL_IFACE_MASK_ESPNOW);
+  const SimLink links[] = {{A, R1, KL_IFACE_ESPNOW}, {R1, R2, KL_IFACE_LORA}, {R2, G, KL_IFACE_ESPNOW}};
+  uint32_t now = 1000;
+
+  r[G].emit_gateway_beacon(now);
+  sim_pump(r, w, N, links, 3, &now, now + 3000);
+  CHECK(r[A].gateway_route()->valid);
+  CHECK(r[A].gateway_route()->next_hop_id == ids[R1]);
+  CHECK(r[R1].gateway_route()->valid);
+  CHECK(r[R1].gateway_route()->iface == KL_IFACE_LORA);
+  CHECK(r[R1].gateway_route()->next_hop_id == ids[R2]);
+  CHECK(r[R2].gateway_route()->iface == KL_IFACE_ESPNOW);
+
+  /* Uplink A -> шлюз: ESP-NOW, затем LoRa, затем снова ESP-NOW. */
+  const int delivered_before = w[G].delivered;
+  kl_packet_t up;
+  kl_packet_init(&up, KL_TYPE_DATA, 0, KL_ANY_GATEWAY_ID, 0, KL_FLAG_TO_INTERNET);
+  up.msg_uuid = 0xA11;
+  kl_packet_set_payload(&up, "bridge", 6);
+  r[A].send(&up, now, 0xFF, false);
+  sim_pump(r, w, N, links, 3, &now, now + 2000);
+  CHECK(w[G].delivered > delivered_before);
+  CHECK(r[R1].stats()->relayed > 0);
+  CHECK(r[R2].stats()->relayed > 0);
+
+  /* Downlink шлюз -> A по обратному пути (маршрут выучен из uplink). */
+  const int a_before = w[A].delivered;
+  kl_packet_t down;
+  kl_packet_init(&down, KL_TYPE_DATA, 0, ids[A], 0, 0);
+  down.msg_uuid = 0xD0;
+  kl_packet_set_payload(&down, "down", 4);
+  r[G].send(&down, now, 0xFF, false);
+  sim_pump(r, w, N, links, 3, &now, now + 4000);
+  CHECK(w[A].delivered > a_before);
+
+  /* OTA-пакеты идут только по выбранным транспортам и не ретранслируются (TTL 1). */
+  w[R1].sent_count = 0;
+  kl_packet_t ota;
+  kl_packet_init(&ota, KL_TYPE_OTA_ANNOUNCE, 0, KL_BROADCAST_ID, KL_BROADCAST_ID, 0);
+  kl_packet_set_payload(&ota, "x", 1);
+  CHECK(r[R1].send_ota(&ota, KL_IFACE_MASK_LORA, now));
+  CHECK(w[R1].sent_count == 1 && w[R1].sent_iface[0] == KL_IFACE_LORA && w[R1].sent[0].ttl == 1);
+}
+
 int main(void) {
   setbuf(stdout, NULL);
   printf("Klinto mesh core tests\n");
@@ -1508,6 +1603,7 @@ int main(void) {
   test_ota();
   test_presence_telemetry();
   test_owner_identity();
+  test_multi_transport_bridge();
   printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

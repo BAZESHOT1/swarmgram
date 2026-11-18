@@ -62,35 +62,62 @@ bool LoraInterface::init(const kl_config_t &cfg) {
   /* Пины шины из конфигурации (раньше всегда шла SPI по умолчанию). */
   SPI.begin(cfg.lora.sck, cfg.lora.miso, cfg.lora.mosi, cfg.lora.cs);
   int16_t state = RADIOLIB_ERR_UNKNOWN;
+  chip_ = cfg.lora.chip;
+  irq_pin_ = (int)irq;
   if (cfg.lora.chip == KL_LORA_SX1262) {
     module_ = new Module(cs, irq, rst, busy, SPI);
     SX1262 *r = new SX1262(module_);
     phys_ = r;
+    radio_ = r;
+    /* TCXO: RadioLib сам пробует 1.6 В и откатывается на кварц, если TCXO нет. */
     state = r->begin(lc);
+    /* Большинство модулей SX1262 (E22, Heltec, RAK) переключают антенну через DIO2. */
+    if (state == RADIOLIB_ERR_NONE) r->setDio2AsRfSwitch(true);
   } else if (cfg.lora.chip == KL_LORA_LR2021) {
     module_ = new Module(cs, irq, rst, busy, SPI);
     LR2021 *r = new LR2021(module_);
     phys_ = r;
+    radio_ = r;
     state = r->begin(lc);
   } else if (cfg.lora.chip == KL_LORA_SX1276) {
     module_ = new Module(cs, irq, rst, (uint32_t)RADIOLIB_NC, SPI);
     SX1276 *r = new SX1276(module_);
     phys_ = r;
+    radio_ = r;
     state = r->begin(lc);
   } else {
     module_ = new Module(cs, irq, rst, (uint32_t)RADIOLIB_NC, SPI);
     SX1278 *r = new SX1278(module_);
     phys_ = r;
+    radio_ = r;
     state = r->begin(lc);
   }
+  init_state_ = state;
+  Serial.printf("[lora] init chip=%u state=%d freq=%.3f sf=%u bw=%.0f sync=0x%02X pins sck=%d miso=%d mosi=%d cs=%d rst=%d irq=%d busy=%d\n",
+                (unsigned)cfg.lora.chip, (int)state, (double)cfg.lora.freq_mhz, (unsigned)cfg.lora.sf,
+                (double)cfg.lora.bw_khz, (unsigned)cfg.lora.sync_word, (int)cfg.lora.sck, (int)cfg.lora.miso,
+                (int)cfg.lora.mosi, (int)cfg.lora.cs, (int)cfg.lora.rst, irq_pin_, (int)cfg.lora.busy);
   if (state != RADIOLIB_ERR_NONE || !phys_) {
     inited_ = false;
     return false;
   }
+  pinMode(irq_pin_, INPUT);
   phys_->startReceive();
   inited_ = true;
   xTaskCreatePinnedToCore(&LoraInterface::taskEntry, "kl_lora", 6144, this, 4, nullptr, 0);
   return true;
+}
+
+bool LoraInterface::setSync(uint8_t sync_word) {
+  if (!radio_) return false;
+  int16_t st = RADIOLIB_ERR_UNKNOWN;
+  switch (chip_) {
+    case KL_LORA_SX1262: st = static_cast<SX1262 *>(radio_)->setSyncWord(sync_word); break;
+    case KL_LORA_LR2021: st = static_cast<LR2021 *>(radio_)->setSyncWord(sync_word); break;
+    case KL_LORA_SX1276: st = static_cast<SX1276 *>(radio_)->setSyncWord(sync_word); break;
+    default: st = static_cast<SX1278 *>(radio_)->setSyncWord(sync_word); break;
+  }
+  return st == RADIOLIB_ERR_NONE;
 }
 
 bool LoraInterface::setChannel(uint8_t wifi_channel) {
@@ -104,12 +131,12 @@ bool LoraInterface::applyRadioConfig() {
   if (!inited_) return false;
   if (!phys_) return false;
   int16_t state = RADIOLIB_ERR_NONE;
-  uint8_t sw = cfg_.lora.sync_word;
+  phys_->standby();
   state |= phys_->setFrequency((uint32_t)(cfg_.lora.freq_mhz * 1000000.0f));
   state |= phys_->setBandwidth((uint32_t)(cfg_.lora.bw_khz * 1000.0f));
   state |= phys_->setSpreadingFactor(cfg_.lora.sf);
   state |= phys_->setCodingRate(cfg_.lora.cr);
-  state |= phys_->setSyncWord(&sw, 1);
+  if (!setSync(cfg_.lora.sync_word)) state |= RADIOLIB_ERR_INVALID_SYNC_WORD;
   phys_->startReceive();
   return state == RADIOLIB_ERR_NONE;
 }
@@ -205,6 +232,7 @@ bool LoraInterface::trySendNow(const TxItem &item, uint32_t air_ms) {
       transmitting_ = false;
       if (state == RADIOLIB_ERR_NONE) {
         airtime_used_ms_ += air_ms;
+        tx_packets_++;
         return true;
       }
       return false;
@@ -226,14 +254,20 @@ void LoraInterface::taskLoop() {
     }
 
     /* Drain a bounded number of received packets. */
-    if (phys_ && phys_->available()) {
-      uint8_t buf[KL_MAX_PACKET_SIZE];
-      size_t len = sizeof(buf);
-      const int16_t state = phys_->readData(buf, len);
-      if (state == RADIOLIB_ERR_NONE && len > 0) {
-        const int16_t rssi = (int16_t)phys_->getRSSI();
-        last_quality_ = (int8_t)kl_rssi_to_quality(rssi);
-        pushRx(buf, len, rssi);
+    /* RX_DONE выставляет IRQ-пин (DIO1 у SX126x/LR2021, DIO0 у SX127x). */
+    if (phys_ && irq_pin_ >= 0 && digitalRead(irq_pin_) == HIGH) {
+      uint8_t buf[256];
+      const size_t plen = phys_->getPacketLength();
+      if (plen > 0 && plen <= KL_MAX_PACKET_SIZE) {
+        const int16_t state = phys_->readData(buf, plen);
+        if (state == RADIOLIB_ERR_NONE) {
+          const int16_t rssi = (int16_t)phys_->getRSSI();
+          last_quality_ = (int8_t)kl_rssi_to_quality(rssi);
+          rx_packets_++;
+          pushRx(buf, plen, rssi);
+        }
+      } else {
+        (void)phys_->readData(buf, plen > 0 && plen <= sizeof(buf) ? plen : 1); /* сброс флагов IRQ */
       }
       phys_->startReceive();
     }

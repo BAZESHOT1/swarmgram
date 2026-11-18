@@ -37,6 +37,8 @@ export interface OtaManifest {
   targetSha256: string;
   signature: string;
   sigAlg: string;
+  /** 0 — узел (BLE), 1 — шлюз. Входит в подпись. */
+  variant?: number;
 }
 
 function gearTable(): Uint32Array {
@@ -156,9 +158,10 @@ export function manifestCanonical(m: {
   patchSize: number;
   patchSha256: string;
   targetSha256: string;
+  variant?: number;
 }): string {
   const chipId = { esp32: 1, esp32c3: 2, esp32s3: 3, esp32c6: 4, esp32c5: 6 }[m.chip] || 0;
-  return `KLINTO-OTA1|${chipId}|${m.baseBuild}|${m.targetBuild}|${m.patchSha256}|${m.targetSha256}|${m.totalChunks}|${m.patchSize}`;
+  return `KLINTO-OTA2|${chipId}|${m.variant ?? 0}|${m.baseBuild}|${m.targetBuild}|${m.patchSha256}|${m.targetSha256}|${m.totalChunks}|${m.patchSize}`;
 }
 
 /** Канонический digest манифеста (совпадает с C-кодом прошивки). */
@@ -170,6 +173,7 @@ export function manifestDigest(m: {
   patchSize: number;
   patchSha256: string;
   targetSha256: string;
+  variant?: number;
 }): string {
   return createHash('sha256').update(manifestCanonical(m), 'utf8').digest('hex');
 }

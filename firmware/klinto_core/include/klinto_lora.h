@@ -31,6 +31,9 @@ class LoraInterface : public INetInterface {
   bool setChannel(uint8_t wifi_channel) override;
 
   uint8_t queueDepth() const { return count_; }
+  uint32_t rxPackets() const { return rx_packets_; }
+  uint32_t txPackets() const { return tx_packets_; }
+  int16_t initState() const { return init_state_; }
   uint32_t cadBusy() const { return cad_busy_; }
   uint32_t cadTotal() const { return cad_total_; }
 
@@ -71,6 +74,13 @@ class LoraInterface : public INetInterface {
   KlintoLock queue_lock_;
   volatile bool channel_pending_;
   volatile uint8_t pending_channel_;
+  int irq_pin_ = -1;
+  uint8_t chip_ = 0;
+  void *radio_ = nullptr;
+  int16_t init_state_ = 0;
+  volatile uint32_t rx_packets_ = 0;
+  volatile uint32_t tx_packets_ = 0;
+  bool setSync(uint8_t sync_word);
 
 #if defined(ESP32)
   Module *module_;

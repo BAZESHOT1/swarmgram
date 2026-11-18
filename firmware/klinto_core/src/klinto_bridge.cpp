@@ -671,11 +671,12 @@ bool KlintoClientBridge::send_info() {
   esc[e] = '\0';
   int w = snprintf(info + used, sizeof(info) - used,
                    ",\"name\":\"%s\",\"hw\":{\"b\":%d,\"r\":%u,\"c\":%u,\"l\":[%d,%d,%d,%d,%d,%d,%d],"
-                   "\"e\":%d,\"w\":%d,\"lb\":%u,\"he\":%lu},\"nb\":[",
+                   "\"e\":%d,\"w\":%d,\"lb\":%u,\"i\":%u,\"he\":%lu},\"nb\":[",
                    esc, (int)cfg_.batt_pin, (unsigned)cfg_.batt_ratio_x100, (unsigned)cfg_.lora.chip,
                    (int)cfg_.lora.sck, (int)cfg_.lora.miso, (int)cfg_.lora.mosi, (int)cfg_.lora.cs,
                    (int)cfg_.lora.rst, (int)cfg_.lora.dio0, (int)cfg_.lora.busy, (int)cfg_.espnow_dbm,
-                   (int)cfg_.lora.power_dbm, (unsigned)(cfg_.lora_present ? 1 : 0),
+                   (int)cfg_.lora.power_dbm, (unsigned)(KL_HAS_LORA ? 1 : 0),
+                   (unsigned)((cfg_.espnow_enabled ? 1 : 0) | (cfg_.lora_present ? 2 : 0)),
                    (unsigned long)cfg_.hw_epoch);
   if (w <= 0) return false;
   used += (size_t)w;

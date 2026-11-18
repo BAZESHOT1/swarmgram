@@ -672,4 +672,58 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
   });
 };
 
+/**
+ * Канонический OTA-образ (один на чип и вариант): без имени, Wi-Fi, пинов и claim-токена.
+ * Все настройки модуля живут в NVS («том данных»), поэтому образ подходит любому модулю
+ * этого чипа и варианта (0 — узел с BLE, 1 — шлюз с Wi-Fi/HTTP).
+ */
+export async function buildCanonicalOtaImage(
+  board: FirmwareBoard,
+  variant: 0 | 1,
+): Promise<{ build: number; version: string; image: Buffer; sha256: string }> {
+  const cfg = validateConfig({
+    board,
+    role: variant ? 'gateway' : 'wearable',
+    connectivity: 'wifi',
+    battery: { enabled: false, pin: 0, ratio: 2, intervalSec: 300 },
+    ota: true,
+  });
+  const mesh = await getMeshConfig();
+  cfg.mesh = {
+    ssid: mesh.ssid,
+    password: mesh.password,
+    networkId: 'global',
+    hidden: true,
+    channel: mesh.channel,
+    loraFreqMhz: mesh.loraFreqMhz,
+    loraSf: mesh.loraSf,
+    loraBwKhz: mesh.loraBwKhz,
+    wifiHops: mesh.wifiHops,
+    loraHops: mesh.loraHops,
+  };
+  if (cfg.lora) {
+    cfg.lora.frequencyMhz = mesh.loraFreqMhz;
+    cfg.lora.spreadingFactor = mesh.loraSf;
+    cfg.lora.bandwidthKhz = mesh.loraBwKhz as 125 | 250 | 500;
+    cfg.lora.syncWord = 0x12;
+  }
+  if (!/^[0-9a-f]{64}$/.test(config.tempMeshKey)) throw new Error('temp_mesh_key_missing');
+  cfg.kmesh = { v1: true, tempKey: config.tempMeshKey };
+  const res = await fetch(`${builderUrl()}/build`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(cfg),
+    signal: AbortSignal.timeout(BUILD_HTTP_TIMEOUT_MS),
+  });
+  const data = (await res.json().catch(() => ({}))) as BuilderResponse & { firmwareBuild?: number };
+  if (!data.ok || !data.appBase64) throw new Error(data.error || `builder_${res.status}`);
+  const image = Buffer.from(data.appBase64, 'base64');
+  return {
+    build: Number(data.firmwareBuild ?? 0),
+    version: String(data.version ?? ''),
+    image,
+    sha256: createHash('sha256').update(image).digest('hex'),
+  };
+}
+
 export default firmwareRoutes;

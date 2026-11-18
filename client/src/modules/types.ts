@@ -133,6 +133,8 @@ export interface ModuleHw {
   e: number;
   w: number;
   lb: number;
+  /** Включённые транспорты: бит 0 — ESP-NOW, бит 1 — LoRa (прошивка 178+). */
+  i?: number;
   he: number;
 }
 

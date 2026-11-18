@@ -1756,9 +1756,37 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ p }) },
     ),
 
+  /** Hub сам доставит подписанную настройку через шлюз кластера (kMesh downlink). */
+  kmeshV1ModuleConfigViaHub: (moduleMac: string, p: string) =>
+    req<{ ok: true; queued: true; nodeId: number; gatewayId: number; epoch: number }>(
+      `/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}/config`,
+      { method: 'POST', body: JSON.stringify({ p, deliver: 'hub' }) },
+    ),
+
   /** Удалить модуль из аккаунта по MAC (работает и для модулей без данных на сервере). */
   kmeshV1DeleteModule: (moduleMac: string) =>
     req<{ ok: true; deleted: boolean }>(`/v1/kmesh/v1/modules/${encodeURIComponent(moduleMac)}`, { method: 'DELETE' }),
+
+  adminOtaOverview: () =>
+    req<{
+      ok: true;
+      releases: Array<{ chip: string; variant: number; build_number: number; full_size: number; created_at: string }>;
+      rollouts: Array<{ id: string; gateways: number[] | null; ifc_mask: number; target_build: number; status: string;
+        created_at: string; stopped_at: string | null }>;
+      gateways: Array<{ gatewayId: number; lastSeenAt: string; nodes: number; name: string }>;
+      nodes: Array<{ nodeId: number; chip: string; variant: number; fwBuild: number; otaState: number; gatewayId: number;
+        lastSeenAt: string; name: string }>;
+      job: { status: 'running' | 'done' | 'failed'; startedAt: string; log: string[]; build?: number } | null;
+    }>('/v1/kmesh/v1/admin/ota/rollouts'),
+  adminOtaBuildRelease: (chips: string[]) =>
+    req<{ ok: true }>('/v1/kmesh/v1/admin/ota/build-release', { method: 'POST', body: JSON.stringify({ chips }) }),
+  adminOtaStartRollout: (input: { gateways: number[] | null; ifc_mask: number; target_build?: number }) =>
+    req<{ ok: true; id: string; target_build: number }>('/v1/kmesh/v1/admin/ota/rollouts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  adminOtaStopRollout: (id: string) =>
+    req<{ ok: true }>(`/v1/kmesh/v1/admin/ota/rollouts/${encodeURIComponent(id)}/stop`, { method: 'POST', body: '{}' }),
 
   adminDocs: () => req<Array<{ name: string; title: string; size: number; updatedAt: string }>>('/v1/admin/docs'),
   adminDoc: (name: string) => req<{ name: string; content: string }>(`/v1/admin/docs/${encodeURIComponent(name)}`),

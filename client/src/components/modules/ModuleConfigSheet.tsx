@@ -69,6 +69,10 @@ export function ModuleConfigSheet({
   const [pins, setPins] = React.useState<string[]>(['', '', '', '', '', '', '']);
   const [espnow, setEspnow] = React.useState('');
   const [loraPower, setLoraPower] = React.useState('');
+  const [ifEspnow, setIfEspnow] = React.useState(true);
+  const [ifLora, setIfLora] = React.useState(false);
+  const [ifTouched, setIfTouched] = React.useState(false);
+  const [led, setLed] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
 
@@ -83,12 +87,26 @@ export function ModuleConfigSheet({
     setPins(hw && hw.lb ? hw.l.map(String) : ['', '', '', '', '', '', '']);
     setEspnow(hw && hw.e > 0 ? String(hw.e) : '');
     setLoraPower(hw && hw.lb ? String(hw.w) : '');
+    setIfEspnow(hw?.i !== undefined ? (hw.i & 1) !== 0 : true);
+    setIfLora(hw?.i !== undefined ? (hw.i & 2) !== 0 : false);
+    setIfTouched(false);
+    setLed('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.mac, hw?.he]);
 
   const build = (): string | null => {
     const parts: string[] = [];
     if (role) parts.push(`r=${role}`);
+    if (ifTouched) {
+      const mask = (ifEspnow ? 1 : 0) | (ifLora ? 2 : 0);
+      if (!mask) return null;
+      parts.push(`i=${mask}`);
+    }
+    if (led.trim()) {
+      const v = Number(led);
+      if (!Number.isInteger(v) || v < -1 || v > 48) return null;
+      parts.push(`d=${v}`);
+    }
     // Пин батареи: пусто при известном модуле = «нет батареи» (-1), иначе поле не трогаем.
     if (battPin.trim() !== '' || hw) {
       const pin = battPin.trim() === '' ? -1 : Number(battPin);
@@ -149,7 +167,7 @@ export function ModuleConfigSheet({
         <Text style={{ color: theme.textSecondary, fontSize: 11.5, lineHeight: 17 }}>
           {live
             ? 'Модуль подключён напрямую: текущие значения подставлены.'
-            : 'Модуль не подключён напрямую: команда уйдёт через ваш носимый модуль по mesh. Заполните только то, что меняете. Нужен интернет — подпись выдаёт Hub.'}
+            : 'Модуль не подключён напрямую: команда уйдёт через ваш носимый модуль по mesh, а если его нет — через Hub и шлюз кластера. Заполните только то, что меняете. Нужен интернет — подпись выдаёт Hub.'}
         </Text>
 
         {!isGateway ? (
@@ -165,6 +183,29 @@ export function ModuleConfigSheet({
             </Text>
           </>
         ) : null}
+
+        {label('Транспорты')}
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          <Chip
+            label="ESP-NOW"
+            active={ifEspnow}
+            onPress={() => {
+              setIfEspnow((v) => !v);
+              setIfTouched(true);
+            }}
+          />
+          <Chip
+            label="LoRa"
+            active={ifLora}
+            onPress={() => {
+              setIfLora((v) => !v);
+              setIfTouched(true);
+            }}
+          />
+        </View>
+        <Text style={{ color: theme.textDisabled, fontSize: 10.5, marginTop: 4 }}>
+          С обоими транспортами модуль работает мостом: пакеты переходят между ESP-NOW и LoRa.
+        </Text>
 
         {label('Делитель батареи')}
         <SettingsInput
@@ -186,7 +227,7 @@ export function ModuleConfigSheet({
         {label('LoRa')}
         {hw && !hw.lb ? (
           <Text style={{ color: theme.warning, fontSize: 11.5, lineHeight: 17 }}>
-            Эта прошивка собрана без LoRa: чип и пины менять нельзя, нужна перепрошивка с LoRa.
+            Прошивка этого модуля старше 178 и собрана без LoRa: чип и пины не применятся, нужна перепрошивка.
           </Text>
         ) : (
           <>
@@ -213,6 +254,16 @@ export function ModuleConfigSheet({
             </Text>
           </>
         )}
+
+        {label('Светодиод')}
+        <SettingsInput
+          label="Пин светодиода (-1 — нет)"
+          value={led}
+          onChangeText={(t) => setLed(digits(t))}
+          keyboardType="numeric"
+          placeholder="не менять"
+          accessibilityLabel="Пин светодиода"
+        />
 
         {label('Мощность сигнала')}
         <SettingsInput
