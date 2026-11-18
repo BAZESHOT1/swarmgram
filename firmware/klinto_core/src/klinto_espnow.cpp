@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_idf_version.h>
 #include <string.h>
 
 EspNowInterface *EspNowInterface::s_instance = nullptr;
@@ -62,6 +63,25 @@ bool EspNowInterface::init(const kl_config_t &cfg) {
     inited_ = false;
     return false;
   }
+  /* Long Range: широковещательные кадры уходят LR-PHY 250 кбит/с (чувствительность ×3-4,
+   * как в Esp-Wifi-Ble-Now). Оба конца — ESP32 с включённым LR; при отказе остаёмся на
+   * обычной скорости. */
+/* KL_ESPNOW_LR_RATE=1 включает LR-скорость для broadcast. На стенде (C3-шлюз + ESP32-носимый) с ней
+ * mesh-задача шлюза зависала через ~5 с, поэтому по умолчанию выключено: LR-PHY разрешён на STA
+ * (приём LR-кадров), а TX идёт обычной скоростью. */
+#ifndef KL_ESPNOW_LR_RATE
+#define KL_ESPNOW_LR_RATE 0
+#endif
+#if KL_ESPNOW_LR_RATE && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
+  {
+    esp_now_rate_config_t rate;
+    memset(&rate, 0, sizeof(rate));
+    rate.phymode = WIFI_PHY_MODE_LR;
+    rate.rate = WIFI_PHY_RATE_LORA_250K;
+    const esp_err_t rc = esp_now_set_peer_rate_config(kBroadcastMac, &rate);
+    Serial.printf("[radio] espnow LR rate cfg=%s\n", rc == ESP_OK ? "OK" : "FAIL");
+  }
+#endif
   inited_ = true;
   return true;
 }

@@ -97,7 +97,7 @@ void KlintoCellManager::start_scan(uint32_t now_ms, uint8_t reason) {
   /* Первый канал применяем сразу; tick() удержит его dwell_ms. */
   lock_now_ = false;
   pending_channel_ = 0;
-  apply(1);
+  apply(channel_at(0));
   scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
   arm_probes(now_ms);
 }
@@ -110,7 +110,7 @@ void KlintoCellManager::arm_probes(uint32_t now_ms) {
 void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi,
                                   uint32_t now_ms, uint8_t advertised_channel) {
   const bool channel_valid = advertised_channel >= 1 && advertised_channel <= KL_CHANNEL_COUNT;
-  if (state_ == KL_CELL_SCANNING) {
+  if (state_ == KL_CELL_SCANNING || state_ == KL_CELL_OFFLINE) {
     if (!found_ || rssi > best_rssi_ + 3 || (rssi >= best_rssi_ - 3 && hops < best_hops_)) {
       found_ = true;
       best_channel_ = channel_valid ? advertised_channel : current_channel_;
@@ -153,7 +153,7 @@ void KlintoCellManager::finish_scan(uint32_t now_ms) {
     return;
   }
   scan_index_ = 0;
-  apply(1);
+  apply(channel_at(0));
   scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
   arm_probes(now_ms);
 }
@@ -172,7 +172,9 @@ void KlintoCellManager::lock_best(uint32_t now_ms, uint8_t reason) {
 
 void KlintoCellManager::enter_offline(uint32_t now_ms) {
   state_ = KL_CELL_OFFLINE;
-  apply(cell_.fallback_channel);
+  reset_candidate();
+  lock_now_ = false;
+  apply(pref_channel_ ? pref_channel_ : cell_.fallback_channel);
   last_scan_ms_ = now_ms;
   missed_beacons_ = 0;
   weak_beacons_ = 0;
@@ -185,12 +187,30 @@ void KlintoCellManager::tick(uint32_t now_ms) {
     return;
   }
 
-  if (state_ == KL_CELL_SCANNING) {
-    if (found_ && lock_now_) {
-      lock_now_ = false;
-      lock_best(now_ms, scan_reason_);
-      return;
+  /* Маяк услышан в скане или в офлайне — фиксируемся сразу (apply() только здесь, вне блокировки роутера). */
+  if ((state_ == KL_CELL_SCANNING || state_ == KL_CELL_OFFLINE) && found_ && lock_now_) {
+    lock_now_ = false;
+    lock_best(now_ms, scan_reason_);
+    return;
+  }
+
+  /* Телефон подключён по BLE: радио не прыгает по каналам (скачки Wi-Fi отбирали эфир у BLE
+   * и рвали соединение через ~5 с, см. BitChatRelay/Esp-Wifi-Ble-Now — канал закреплён).
+   * Остаёмся на предпочтительном канале и раз в 3 с шлём пробу. */
+  if (quiet_ && state_ != KL_CELL_LOCKED) {
+    if (state_ == KL_CELL_SCANNING) {
+      state_ = KL_CELL_OFFLINE;
+      reset_candidate();
+      apply(pref_channel_ ? pref_channel_ : current_channel_);
     }
+    if (now_ms - quiet_probe_ms_ >= 3000) {
+      quiet_probe_ms_ = now_ms;
+      if (host_.send_probe) host_.send_probe(host_.ctx);
+    }
+    return;
+  }
+
+  if (state_ == KL_CELL_SCANNING) {
     if (probes_left_ > 0 && now_ms >= probe_next_ms_) {
       probes_left_--;
       probe_next_ms_ = now_ms + 70;
@@ -202,7 +222,7 @@ void KlintoCellManager::tick(uint32_t now_ms) {
       return;
     }
     scan_index_++;
-    apply((uint8_t)(scan_index_ + 1));
+    apply(channel_at(scan_index_));
     scan_deadline_ms_ = now_ms + cell_.scan_dwell_ms;
     arm_probes(now_ms);
     return;

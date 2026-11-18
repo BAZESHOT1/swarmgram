@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <esp_bt.h>
+#include <esp_coexist.h>
 #include <string.h>
 
 #define KL_BLE_SERVICE "0000a5c0-0000-1000-8000-00805f9b34fb"
@@ -26,15 +27,17 @@ class KlintoBleServerCallbacks : public NimBLEServerCallbacks {
  public:
   explicit KlintoBleServerCallbacks(BleClientLink *owner) : owner_(owner) {}
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
-    /* Интервал 15..30 мс, latency 0, supervision 4 с: стабильнее при
-     * соседстве с Wi-Fi/ESP-NOW и быстрее отклик записи/notify. */
-    server->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
+    /* Как в BitChatRelay: единственное соединение, реклама на время подключения выключена
+     * (меньше борьбы за эфир), интервал 20..50 мс, latency 0, supervision 5 с. Разрыв через
+     * ~5 с после подключения давали скачки Wi-Fi по каналам при поиске шлюза — теперь их нет. */
+    NimBLEDevice::getAdvertising()->stop();
+    server->updateConnParams(info.getConnHandle(), 16, 40, 0, 500);
     owner_->onConnected(info.getConnHandle(), info.getMTU());
   }
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
     (void)server;
     (void)info;
-    (void)reason;
+    Serial.printf("[ble] disconnect reason=%d (0x%02X)\n", reason, (unsigned)(reason & 0xFF));
     owner_->onDisconnected();
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo &info) override {
@@ -88,6 +91,7 @@ bool BleClientLink::begin(const char *deviceName) {
   const char *name = deviceName ? deviceName : "Klinto";
   NimBLEDevice::init(name);
   NimBLEDevice::setMTU(247);
+  NimBLEDevice::setPower(9); /* максимум BLE TX (как в BitChatRelay) */
   server_ = NimBLEDevice::createServer();
   server_->setCallbacks(new KlintoBleServerCallbacks(this));
   server_->advertiseOnDisconnect(true);
@@ -192,6 +196,8 @@ void BleClientLink::onConnected(uint16_t conn_id, uint16_t mtu) {
   connected_ = true;
   tx_subscribed_ = false;
   rx_subscribed_ = false;
+  /* Пока телефон подключён, эфир приоритетнее отдаём BLE. */
+  esp_coex_preference_set(ESP_COEX_PREFER_BT);
   Serial.printf("[ble] connected handle=%u mtu=%u\n", (unsigned)conn_id, (unsigned)mtu_);
   if (hook_) hook_(hook_ctx_, true);
 }
@@ -201,6 +207,7 @@ void BleClientLink::onDisconnected() {
   conn_id_ = 0;
   tx_subscribed_ = false;
   rx_subscribed_ = false;
+  esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
   Serial.println("[ble] disconnected");
   if (hook_) hook_(hook_ctx_, false);
 }

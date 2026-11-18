@@ -65,6 +65,12 @@ class KlintoCellManager {
   /** Периодический вызов из mesh-задачи. */
   void tick(uint32_t now_ms);
   /** Любой принятый GW_BEACON. advertised_channel = 0, если шлюз его не передал. */
+  /** Телефон подключён по BLE: поиск шлюза делаем редко и одним обходом, чтобы не рвать BLE. */
+  void set_quiet(bool quiet) { quiet_ = quiet; }
+  /** Последний рабочий канал (из NVS): скан начинается с него, а при BLE-клиенте мы остаёмся на нём. */
+  void set_preferred_channel(uint8_t channel) {
+    pref_channel_ = (channel >= 1 && channel <= KL_CHANNEL_COUNT) ? channel : 0;
+  }
   void on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rssi, uint32_t now_ms,
                  uint8_t advertised_channel = 0);
 
@@ -75,7 +81,7 @@ class KlintoCellManager {
   bool scanning() const { return state_ == KL_CELL_SCANNING; }
   uint8_t missed_beacons() const { return missed_beacons_; }
   /** Для диагностики/тестов: номер сканируемого канала. */
-  uint8_t scan_channel() const { return (uint8_t)(scan_index_ + 1); }
+  uint8_t scan_channel() const { return channel_at(scan_index_); }
 
  private:
   bool apply(uint8_t channel);
@@ -111,6 +117,15 @@ class KlintoCellManager {
   bool lock_now_ = false;
   uint8_t pending_channel_ = 0;
   void arm_probes(uint32_t now_ms);
+  /** i-й канал обхода: предпочтительный первым, остальные 1..13 по порядку. */
+  uint8_t channel_at(uint8_t index) const {
+    if (pref_channel_ == 0) return (uint8_t)(index + 1);
+    if (index == 0) return pref_channel_;
+    return index < pref_channel_ ? index : (uint8_t)(index + 1);
+  }
+  uint8_t pref_channel_ = 0;
+  bool quiet_ = false;
+  uint32_t quiet_probe_ms_ = 0;
 };
 
 #endif  // KLINTO_CELL_H

@@ -322,6 +322,9 @@ bool KlintoNode::begin() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
       WiFi.setTxPower(WIFI_POWER_8_5dBm);
 #endif
+      /* Wi-Fi mesh Long Range: LR-PHY рядом с b/g/n (роутер продолжает работать как обычно). */
+      esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N |
+                                             WIFI_PROTOCOL_LR);
       // Диагностика: какие сети реально видны ESP32 (только 2.4 ГГц).
       const int found = WiFi.scanNetworks();
       Serial.printf("[klinto3] wifi scan: %d networks\n", found);
@@ -357,6 +360,9 @@ bool KlintoNode::begin() {
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
     WiFi.setSleep(false);
     esp_wifi_set_ps(WIFI_PS_NONE);
+    /* Wi-Fi mesh Long Range (как в Esp-Wifi-Ble-Now): LR-PHY на STA в дополнение к b/g/n. */
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N |
+                                           WIFI_PROTOCOL_LR);
   }
 
   if (cfg_.espnow_enabled) {
@@ -412,6 +418,8 @@ bool KlintoNode::begin() {
     cell_.lock_gateway(channel, millis());
     router_.emit_gateway_beacon(millis());
   } else {
+    /* Последний рабочий канал: скан начинается с него (и с ним же живём, пока подключён телефон). */
+    cell_.set_preferred_channel((uint8_t)kl_nvs_get_uint("klinto3", "last_ch", 0));
     cell_.start_scan(millis(), KL_SCAN_BOOT);
   }
 
@@ -617,6 +625,12 @@ void KlintoNode::cellLocked(void *ctx, uint8_t channel, uint32_t gateway_id, int
                 (unsigned)channel, (unsigned long)gateway_id, (int)rssi, (unsigned)hops,
                 (unsigned)reason);
   self->router_.request_presence();
+  /* Запоминаем канал (не чаще, чем он меняется: NVS-цикл записи ограничен). */
+  static uint8_t saved_channel = 0;
+  if (saved_channel != channel) {
+    saved_channel = channel;
+    kl_nvs_set_uint("klinto3", "last_ch", channel);
+  }
 }
 
 void KlintoNode::cellProbe(void *ctx) {
@@ -762,6 +776,9 @@ void KlintoNode::meshTaskEntry(void *arg) {
     if (self->cfg_.espnow_enabled) self->espnow_.poll(now);
     if (self->cfg_.lora_present) self->lora_.poll(now);
     if (now - last_tick >= 10) {
+#if KL_HAS_BLE
+      self->cell_.set_quiet(self->ble_.connected());
+#endif
       self->cell_.tick(now);
       self->router_.tick(now);
       last_tick = now;
