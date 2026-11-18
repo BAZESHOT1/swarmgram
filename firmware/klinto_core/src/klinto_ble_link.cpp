@@ -109,7 +109,11 @@ bool BleClientLink::begin(const char *deviceName) {
 
   NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
   advertising->addServiceUUID(KL_BLE_SERVICE);
-  advertising->setName(name);
+  /* Имя KL-<префикс>-<mod6> — в scan response: приложение (iOS) определяет «своего» по localName,
+   * а без него показывало закэшированное старое SG-… */
+  NimBLEAdvertisementData scan_response;
+  scan_response.setName(name);
+  advertising->setScanResponseData(scan_response);
   advertising->enableScanResponse(true);
   advertising->start();
   Serial.printf("[ble] advertising name=%s\n", name);
@@ -183,7 +187,27 @@ uint16_t BleClientLink::mtu() const {
   return value < 23 ? 23 : value;
 }
 
-void BleClientLink::poll(uint32_t now_ms) { (void)now_ms; }
+void BleClientLink::poll(uint32_t now_ms) {
+  (void)now_ms;
+  /* Разбор принятых байтов — в контексте задачи клиента. */
+  uint8_t chunk[128];
+  for (;;) {
+    size_t tail = rx_tail_.load(std::memory_order_relaxed);
+    const size_t head = rx_head_.load(std::memory_order_acquire);
+    if (tail == head) break;
+    size_t n = 0;
+    while (tail != head && n < sizeof(chunk)) {
+      chunk[n++] = rx_ring_[tail];
+      tail = (tail + 1) % kRxRing;
+    }
+    rx_tail_.store(tail, std::memory_order_release);
+    if (cb_) cb_(cb_ctx_, chunk, n, 0, 0xFF);
+  }
+  if (rx_dropped_) {
+    Serial.printf("[ble] rx ring overflow, dropped=%lu\n", (unsigned long)rx_dropped_);
+    rx_dropped_ = 0;
+  }
+}
 
 void BleClientLink::notifyStatus(const char *text) {
   if (!connected_ || !status_ || !text) return;
@@ -220,7 +244,19 @@ void BleClientLink::onSubscribe(bool is_tx, uint16_t sub_value) {
 }
 
 void BleClientLink::onWrite(const uint8_t *data, size_t len) {
-  if (cb_) cb_(cb_ctx_, data, len, 0, 0xFF);
+  /* Колбэк GATT: только копируем в кольцо, без замков и без разбора. */
+  size_t head = rx_head_.load(std::memory_order_relaxed);
+  const size_t tail = rx_tail_.load(std::memory_order_acquire);
+  for (size_t i = 0; i < len; ++i) {
+    const size_t next = (head + 1) % kRxRing;
+    if (next == tail) {
+      rx_dropped_ += (uint32_t)(len - i);
+      break;
+    }
+    rx_ring_[head] = data[i];
+    head = next;
+  }
+  rx_head_.store(head, std::memory_order_release);
 }
 
 /* --------------------------------------------------------------- serial -- */

@@ -12,6 +12,11 @@
 #include <stdbool.h>
 #include <atomic>
 
+#if defined(ESP_PLATFORM)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
+
 #ifndef KL_PACKED
 #define KL_PACKED __attribute__((packed))
 #endif
@@ -37,7 +42,17 @@ class KlintoLock {
  public:
   KlintoLock() : flag_(false) {}
   void lock() {
+    uint32_t spins = 0;
     while (flag_.exchange(true, std::memory_order_acquire)) {
+#if defined(ESP_PLATFORM)
+      /* Держатель замка может быть ниже по приоритету и вытеснен нами: даём ему поработать. */
+      if (++spins > 64) {
+        vTaskDelay(1);
+        spins = 0;
+      }
+#else
+      (void)spins;
+#endif
     }
   }
   void unlock() { flag_.store(false, std::memory_order_release); }

@@ -10,6 +10,8 @@
 
 #include "klinto_bridge.h"
 
+#include <atomic>
+
 #if defined(ESP32)
 class NimBLEServer;
 class NimBLECharacteristic;
@@ -61,6 +63,13 @@ class BleClientLink : public IClientLink {
   char pending_name_[32] = {0};
   bool tx_subscribed_ = false;
   bool rx_subscribed_ = false;
+  /* Кольцо приёма (один писатель — NimBLE host, один читатель — задача клиента):
+   * разбор кадров в колбэке GATT брал замки роутера и вешал host-задачу. */
+  static const size_t kRxRing = 4096;
+  uint8_t rx_ring_[kRxRing];
+  std::atomic<size_t> rx_head_{0};
+  std::atomic<size_t> rx_tail_{0};
+  uint32_t rx_dropped_ = 0;
 
 #if defined(ESP32)
   NimBLEServer *server_;
