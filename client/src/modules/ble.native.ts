@@ -776,6 +776,8 @@ export class NativeBleTransport implements ModuleConnection {
         ownerPrefix: String(raw.ownerPrefix ?? '00000000').toLowerCase(),
         bleMod6: typeof raw.bleMod6 === 'string' ? raw.bleMod6.toLowerCase() : undefined,
         name: typeof raw.name === 'string' ? raw.name : undefined,
+        // Канал соты = кластер, в котором сейчас модуль.
+        cluster_id: raw.ch != null ? `ch${raw.ch}` : undefined,
         nb: Array.isArray(raw.nb) ? (raw.nb as Array<[number, number, number]>).slice(0, 16) : undefined,
         hw: raw.hw && typeof raw.hw === 'object' ? (raw.hw as ModuleHw) : undefined,
       });

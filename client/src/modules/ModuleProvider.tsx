@@ -998,6 +998,17 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  // Соседи подключённого модуля → Hub (карта кластера), не чаще раза в 30 с.
+  const linksSentRef = useRef(0);
+  useEffect(() => {
+    const nb = info?.nb;
+    const nodeId = info?.nodeId;
+    if (!nb || !nb.length || !nodeId || !useStore.getState().transportOnline) return;
+    if (Date.now() - linksSentRef.current < 30_000) return;
+    linksSentRef.current = Date.now();
+    void api.kmeshV1Links(nodeId, nb).catch(() => undefined);
+  }, [info]);
+
   // Место сообщения в очереди отправки в модуль: «Очередь: N» вместо безымянных часов.
   useEffect(
     () =>

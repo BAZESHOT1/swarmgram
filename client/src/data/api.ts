@@ -1694,6 +1694,9 @@ export const api = {
       body: JSON.stringify({ chat_id: chatId }),
     }),
 
+  kmeshV1Links: (nodeId: number, nb: Array<[number, number, number]>) =>
+    req<{ ok: true }>('/v1/kmesh/v1/links', { method: 'POST', body: JSON.stringify({ node_id: nodeId, nb }) }),
+
   kmeshV1Modules: () =>
     req<{
       ok: true;

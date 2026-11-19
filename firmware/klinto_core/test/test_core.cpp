@@ -916,25 +916,25 @@ static void test_cell_manager(void) {
   CHECK(!cell.scanning());
   CHECK(cell.channel() == 3);
 
-  /* Маяки пропали: 30 с переподключения на том же канале с пробами, без смены канала. */
+  /* Маяки пропали: 3 пробы по 2 с на том же канале, без смены канала. */
   const int probes_before = host.probes;
-  cell.tick(6001 + 21000);
+  cell.tick(6001 + 12000);
   CHECK(!cell.scanning());
   CHECK(cell.channel() == 3);
-  cell.tick(6001 + 25000);
+  cell.tick(6001 + 14000);
   CHECK(host.probes > probes_before);
   /* Шлюз ответил на пробу на том же канале — остаёмся. */
-  cell.on_beacon(2003u, 1, -60, 6001 + 26000);
-  cell.tick(6001 + 60000);
+  cell.on_beacon(2003u, 1, -60, 6001 + 15000);
+  cell.tick(6001 + 20000);
   CHECK(!cell.scanning());
   CHECK(cell.channel() == 3);
 
-  /* Шлюз пропал совсем: после 30 с на прежнем канале начинается поиск. */
-  cell.tick(6001 + 26000 + 21000);
-  cell.tick(6001 + 26000 + 21000 + 30500);
+  /* Шлюз пропал совсем: после 6 с на прежнем канале начинается поиск. */
+  cell.tick(6001 + 15000 + 12000);
+  cell.tick(6001 + 15000 + 12000 + 6500);
   CHECK(cell.scanning());
 
-  t = 6001 + 26000 + 21000 + 30500;
+  t = 6001 + 15000 + 12000 + 6500;
   for (int step = 0; step < 60 && cell.scanning(); ++step) {
     t += 90;
     cell.tick(t);

@@ -104,7 +104,7 @@ bool LoraInterface::init(const kl_config_t &cfg) {
   pinMode(irq_pin_, INPUT);
   phys_->startReceive();
   inited_ = true;
-  xTaskCreatePinnedToCore(&LoraInterface::taskEntry, "kl_lora", 6144, this, 4, nullptr, 0);
+  xTaskCreatePinnedToCore(&LoraInterface::taskEntry, "kl_lora", 6144, this, 2, nullptr, 0);
   return true;
 }
 
@@ -258,18 +258,34 @@ void LoraInterface::taskLoop() {
     if (phys_ && irq_pin_ >= 0 && digitalRead(irq_pin_) == HIGH) {
       uint8_t buf[256];
       const size_t plen = phys_->getPacketLength();
+      bool good = false;
       if (plen > 0 && plen <= KL_MAX_PACKET_SIZE) {
         const int16_t state = phys_->readData(buf, plen);
         if (state == RADIOLIB_ERR_NONE) {
           const int16_t rssi = (int16_t)phys_->getRSSI();
           last_quality_ = (int8_t)kl_rssi_to_quality(rssi);
           rx_packets_++;
+          good = true;
           pushRx(buf, plen, rssi);
         }
       } else {
         (void)phys_->readData(buf, plen > 0 && plen <= sizeof(buf) ? plen : 1); /* сброс флагов IRQ */
       }
       phys_->startReceive();
+      /* IRQ-пин висит в «1» без пакетов (не тот пин, не подключён, нет подтяжки): без паузы этот
+       * цикл забирал весь процессор, и шлюз переставал работать. Даём остальным задачам время. */
+      if (good) {
+        irq_noise_ = 0;
+      } else if (++irq_noise_ >= 20) {
+        irq_noise_ = 0;
+        const uint32_t now = millis();
+        if (now - irq_noise_log_ms_ > 60000u) {
+          irq_noise_log_ms_ = now;
+          Serial.printf("[lora] IRQ pin %d stuck high without packets: check IRQ/DIO wiring\n", irq_pin_);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     TxItem item;

@@ -45,7 +45,8 @@ function HubAccessIcon({ hub, clusterKey }: { hub: boolean; clusterKey: string }
     const t = setTimeout(() => setSettling(false), 6000);
     return () => clearTimeout(t);
   }, [connection.connection]);
-  if (connection.busy || settling) {
+  // Только реальная смена состояния (подключение, другой кластер); фоновый поиск модулей не в счёт.
+  if (settling && !hub) {
     return (
       <MotiView
         accessibilityLabel="Подключение к кластеру kMesh"

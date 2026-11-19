@@ -1273,6 +1273,30 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return reply.code(202).send({ ok: true, msg_uuid: result.uuid, status: result.status });
   });
 
+  /**
+   * Соседи подключённого к телефону модуля (из его INFO): карта кластера работает, даже когда
+   * модуль ходит в Hub через телефон, а не через шлюз. nb: [[nodeId, rssi, flags], ...].
+   */
+  app.post('/kmesh/v1/links', { onRequest: [requireAuth()] }, async (req, reply) => {
+    rateLimit(`kmesh-v1-links:${req.auth!.userId}`, 30, 60_000);
+    const body = (req.body ?? {}) as { node_id?: unknown; nb?: unknown };
+    const nodeId = num(body.node_id);
+    if (!Number.isInteger(nodeId) || nodeId <= 1) throw badRequest('node_id_required');
+    const nb = Array.isArray(body.nb) ? body.nb.slice(0, 16) : [];
+    for (const entry of nb) {
+      if (!Array.isArray(entry)) continue;
+      const [id, rssi, flags] = entry.map((v) => Number(v));
+      if (!Number.isInteger(id) || id <= 1 || id === nodeId) continue;
+      await query(
+        `INSERT INTO kmesh_v1_links (node_id, neighbor_id, rssi, flags, seen_at)
+         VALUES ($1,$2,$3,$4, now())
+         ON CONFLICT (node_id, neighbor_id) DO UPDATE SET rssi = EXCLUDED.rssi, flags = EXCLUDED.flags, seen_at = now()`,
+        [nodeId, id, Number.isFinite(rssi) ? rssi : 0, Number.isFinite(flags) ? flags : 0],
+      );
+    }
+    return reply.send({ ok: true, stored: nb.length });
+  });
+
   app.post('/kmesh/v1/mobile/presence', { onRequest: [requireAuth()] }, async (req, reply) => {
     const auth = req.auth!;
     const body = (req.body ?? {}) as Record<string, unknown>;

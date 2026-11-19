@@ -1059,7 +1059,23 @@ export default function ModulesScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                     <Ionicons name="git-network-outline" size={12} color={theme.textSecondary} />
                     <Text style={{ color: theme.textSecondary, fontSize: 11.5, flex: 1 }} numberOfLines={1}>
-                      {r.mesh?.clusterName ? `Кластер: ${r.mesh.clusterName}` : 'Кластер неизвестен'}
+                      {(() => {
+                        // Подключённый модуль: кластер видно сразу из его INFO, Hub не нужен.
+                        const live =
+                          directInfo &&
+                          r.mac &&
+                          directInfo.hardwareId.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '') ===
+                            r.mac.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '')
+                            ? directInfo
+                            : null;
+                        if (live) {
+                          const ch = live.clusterId ? ` · канал ${live.clusterId.replace(/^ch/, '')}` : '';
+                          if (live.gateway) return `Кластер: со шлюзом${ch}`;
+                          if (live.mobile) return `Кластер: мобильный шлюз (телефон)${ch}`;
+                          return `Кластер: ищет шлюз${ch}`;
+                        }
+                        return r.mesh?.clusterName ? `Кластер: ${r.mesh.clusterName}` : 'Кластер неизвестен';
+                      })()}
                       {statusAt ? ` · статус ${formatRelative(statusAt)}` : ' · статуса ещё не было'}
                     </Text>
                   </View>

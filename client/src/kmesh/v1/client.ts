@@ -388,7 +388,7 @@ export class KMeshV1Client {
       // сообщение вечно: по таймауту считаем попытку неуспешной, очередь повторит.
       const ok = await Promise.race([
         sendOnce.catch(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 30_000)),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 12_000)),
       ]);
       if (!ok) {
         console.log('[kmesh]', 'sendFrame timeout/failed', frame.length);

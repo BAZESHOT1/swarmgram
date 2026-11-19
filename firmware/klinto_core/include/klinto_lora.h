@@ -75,6 +75,8 @@ class LoraInterface : public INetInterface {
   volatile bool channel_pending_;
   volatile uint8_t pending_channel_;
   int irq_pin_ = -1;
+  uint16_t irq_noise_ = 0;
+  uint32_t irq_noise_log_ms_ = 0;
   uint8_t chip_ = 0;
   void *radio_ = nullptr;
   int16_t init_state_ = 0;

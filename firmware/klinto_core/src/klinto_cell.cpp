@@ -34,7 +34,7 @@ void KlintoCellManager::init(const kl_config_t *cfg, const kl_cell_host_t *host)
   cell_.offline_rescan_ms = 6000;    /* быстрый возврат к поиску шлюза */
   cell_.handover_rssi = -85;
   cell_.beacon_miss_limit = 3;
-  cell_.beacon_timeout_ms = 20000;   /* четыре пропущенных маяка по 5 с */
+  cell_.beacon_timeout_ms = 11000;   /* два пропущенных маяка по 5 с */
   cell_.max_scan_cycles = 3;
 
   state_ = cfg_.role == KL_ROLE_GATEWAY ? KL_CELL_LOCKED : KL_CELL_SCANNING;
@@ -247,7 +247,8 @@ void KlintoCellManager::tick(uint32_t now_ms) {
         recover_probe_ms_ = now_ms;
         if (host_.send_probe) host_.send_probe(host_.ctx);
       }
-      if (now_ms - recover_started_ms_ >= 30000u) {
+      /* 3 попытки по 2 с на прежнем канале, затем поиск кластеров вокруг. */
+      if (now_ms - recover_started_ms_ >= 6000u) {
         recover_started_ms_ = 0;
         start_scan(now_ms, KL_SCAN_BEACON_LOST);
       }

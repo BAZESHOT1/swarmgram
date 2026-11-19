@@ -67,7 +67,7 @@ function emitQueue(): void {
 }
 
 /** Одна отправка в модуль не дольше 45 с: зависшая не блокирует всю очередь. */
-const V1_SEND_TIMEOUT_MS = 45_000;
+const V1_SEND_TIMEOUT_MS = 20_000;
 
 let flushingV1 = false;
 let flushTimer: ReturnType<typeof setInterval> | null = null;
