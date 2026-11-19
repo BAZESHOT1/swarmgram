@@ -124,6 +124,15 @@ export function canSendViaMesh(): boolean {
   return sender !== null || v1Sender !== null || pendingV1.length > 0;
 }
 
+/**
+ * Забрать тексты, которые ещё не ушли в модуль (модуль отключён или не принял). Вызывается при
+ * появлении интернета: такие сообщения надёжнее отправить сразу по HTTP, чем ждать модуль.
+ */
+export function takeUnsentMeshTexts(): Array<{ chatId: string; text: string; clientId?: string }> {
+  const out = pendingV1.splice(0, pendingV1.length).map(({ chatId, text, clientId }) => ({ chatId, text, clientId }));
+  return out;
+}
+
 /** Отправка текста только через KMesh_v1 (без legacy-конверта). */
 export async function sendTextViaMesh(
   chatId: string,
@@ -138,7 +147,20 @@ export async function sendTextViaMesh(
     return true;
   }
   try {
-    const ok = await v1Sender(chatId, text, clientId);
+    const attempt = v1Sender(chatId, text, clientId);
+    const ok = await Promise.race([
+      attempt,
+      new Promise<'slow'>((resolve) => setTimeout(() => resolve('slow'), 4000)),
+    ]);
+    if (ok === 'slow') {
+      // Модуль отвечает медленно: не держим ленту, результат дождёмся в фоне.
+      void attempt
+        .then((done) => {
+          if (!done) pendingV1.push({ chatId, text, clientId, attempts: 1 });
+        })
+        .catch(() => pendingV1.push({ chatId, text, clientId, attempts: 1 }));
+      return true;
+    }
     if (!ok) {
       pendingV1.push({ chatId, text, clientId, attempts: 1 });
       return true;

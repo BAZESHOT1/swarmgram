@@ -124,6 +124,9 @@ class KlintoCellManager {
     return index < pref_channel_ ? index : (uint8_t)(index + 1);
   }
   uint8_t pref_channel_ = 0;
+  /** Связь с кластером пропала: сначала переподключаемся на том же канале (пробами). */
+  uint32_t recover_started_ms_ = 0;
+  uint32_t recover_probe_ms_ = 0;
   bool quiet_ = false;
   uint32_t quiet_probe_ms_ = 0;
 };

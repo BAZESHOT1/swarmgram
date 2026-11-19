@@ -183,8 +183,9 @@ export function useChatMessages(chat: Chat | null) {
     refetchOnReconnect: true,
     refetchOnWindowFocus: true,
     gcTime: 30 * 60_000,
-    // Открытый чат не должен «зависать», даже если сокет потерял событие.
-    refetchInterval: 12_000,
+    // Новые сообщения приходят по сокету и вставляются сразу (см. onEnvelope); полная
+    // перезагрузка ленты — только страховка на случай потерянного события.
+    refetchInterval: 60_000,
     placeholderData: (prev) => prev ?? (chat ? (getCachedMessages(chat.id) as ViewMessage[] | undefined) : undefined),
   });
 }

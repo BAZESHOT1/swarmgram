@@ -1,4 +1,7 @@
 import React from 'react';
+import { Image as BrandImage } from 'react-native';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const BRAND_LOGO = require('../../assets/logo.png');
 import { Modal, Pressable, View, Text, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { usePathname, router } from 'expo-router';
@@ -135,9 +138,9 @@ export function AppNavbar() {
           onPress={() => setMenuOpen((v) => !v)}
           accessibilityRole="button"
           accessibilityLabel="Меню приложения"
-          style={{ width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.accent }}
+          style={{ width: 34, height: 34, borderRadius: 11, overflow: 'hidden' }}
         >
-          <Ionicons name="git-network" size={20} color={theme.onAccent} />
+          <BrandImage source={BRAND_LOGO} style={{ width: 34, height: 34 }} accessibilityLabel="Klinto" />
         </PressableScale>
         <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 15 }}>Klinto</Text>
       </View>

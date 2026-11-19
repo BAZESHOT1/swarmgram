@@ -50,8 +50,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   attachAndSendWithProgress,
   decryptEnvelopeAuto,
+  decryptMany,
   type ViewMessage,
 } from '../../../src/data/messaging';
+
+/** Уже подгруженные старые страницы по чатам: повторный вход и прокрутка вверх — без сети. */
+const olderCache = new Map<string, ViewMessage[]>();
 import { getServerChatKey, loadChatKey, topUpAllKeys } from '../../../src/data/chatkit';
 import { storage } from '../../../src/crypto/core';
 import * as api from '../../../src/data/api';
@@ -403,7 +407,7 @@ export default function ChatScreen() {
   // Смена чата: чистим локальные сообщения, пагинацию и незавершённые загрузки.
   useEffect(() => {
     setOptimistic({});
-    setOlder([]);
+    setOlder(olderCache.get(chatId) ?? []);
     setHasMore(true);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
@@ -788,15 +792,8 @@ export default function ChatScreen() {
     const anchor = { height: contentHeightRef.current, offset: lastScrollYRef.current };
     try {
       const envs = await api.api.listMessages(chatId, { before: oldestSeq, limit: 40 });
-      const decrypted: ViewMessage[] = [];
-      for (const env of envs) {
-        try {
-          // Без квитанций и topUp: пагинация не должна менять состояние чата.
-          decrypted.push(await decryptEnvelopeAuto(env, chat, myUsername));
-        } catch {
-          /* отдельный конверт не расшифровался — пропускаем */
-        }
-      }
+      // Без квитанций и topUp: пагинация не должна менять состояние чата. Расшифровка — параллельно.
+      const decrypted: ViewMessage[] = await decryptMany(envs, chat, myUsername).catch(() => []);
       decrypted.sort((a, b) => a.seq - b.seq);
       if (decrypted.length < 40) setHasMore(false);
       const existing = new Set([...data, ...older].map((m) => m.id));
@@ -806,7 +803,9 @@ export default function ChatScreen() {
         setOlder((prev) => {
           const seen = new Set([...data, ...prev].map((m) => m.id));
           const fresh = decrypted.filter((m) => !seen.has(m.id));
-          return fresh.length ? [...fresh, ...prev] : prev;
+          const next = fresh.length ? [...fresh, ...prev] : prev;
+          olderCache.set(chatId, next);
+          return next;
         });
       } else if (decrypted.length) {
         // Сервер вернул только уже известные сообщения — старше двигаться некуда.
@@ -1019,7 +1018,7 @@ export default function ChatScreen() {
     }
 
     // Список не inverted: верх = старые сообщения, догружаем историю заранее.
-    if (!searchActive && y < 90 && !bottom) void loadOlder();
+    if (!searchActive && y < 1600 && !bottom) void loadOlder();
   }
 
   /* ------------------------------------------- прокрутка к сообщению/индексу */

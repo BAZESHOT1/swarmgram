@@ -20,7 +20,8 @@ export default function Root({ children }: PropsWithChildren) {
         <meta name="mobile-web-app-capable" content="yes" />
         <link rel="manifest" href="/manifest.json" />
         <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-        <link rel="apple-touch-icon" href="/icon.svg" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <style
       id="bg-root"
       dangerouslySetInnerHTML={{

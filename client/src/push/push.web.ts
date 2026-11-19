@@ -24,7 +24,7 @@ const FIREBASE_CONFIG = {
 /** Service worker лежит в public/ и попадает в dist как /firebase-messaging-sw.js. */
 const KL_PATH = '/firebase-messaging-sw.js';
 
-const ICON = '/icon.svg';
+const ICON = '/icon-192.png';
 
 export type WebPushCleanup = () => void;
 

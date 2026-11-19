@@ -222,8 +222,12 @@ bool KlintoOta::handle_packet(const kl_packet_t *pkt, uint32_t now_ms) {
 
 void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
   if (!has_platform_) return;
+  last_reject_target_ = m.target_build;
+  /* Коды причин: 1 чип/вариант, 2 сломанная сборка, 3 не новее, 4 размер, 5 подпись, 6 батарея, 7 слот. */
+  last_reject_ = 1;
   if (m.chip != chip_arch_ || m.variant != variant_) return;
   /* Сборка, которая уже откатывалась на этом модуле, повторно не ставится. */
+  last_reject_ = 2;
   if (bad_build_ && m.target_build == bad_build_) return;
   /* Повторный анонс той же раздачи (каждые 60 с) не должен сбрасывать загрузку. */
   if (has_manifest_ && (state_ == KL_OTA_DOWNLOADING || state_ == KL_OTA_VERIFYING) &&
@@ -234,12 +238,15 @@ void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
     return;
   }
   /* Анти-откат: только монотонно растущий build_number. */
+  last_reject_ = 3;
   if (m.target_build <= current_build_ || m.target_build <= stored_build_) return;
+  last_reject_ = 4;
   if (m.total_chunks == 0 || m.total_chunks > kMaxChunks || m.patch_size == 0) return;
   const uint32_t expected = ((m.patch_size + KL_OTA_CHUNK_DATA - 1) / KL_OTA_CHUNK_DATA);
   if (expected != m.total_chunks) return;
 
   uint8_t digest[32];
+  last_reject_ = 5;
   kl_ota_manifest_digest(&m, digest);
   if (!platform_.verify_signature ||
       !platform_.verify_signature(platform_.ctx, digest, m.sig, m.sig_len)) {
@@ -249,12 +256,14 @@ void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
   manifest_ = m;
   has_manifest_ = true;
 
+  last_reject_ = 6;
   if (battery_pct_ < KL_OTA_BATTERY_MIN && !charging_) {
     deferred_ = true;
     set_state(KL_OTA_IDLE);
     return;
   }
   deferred_ = false;
+  last_reject_ = 7;
   full_ = kl_ota_manifest_is_full(&m);
   if (full_) {
     /* Полный образ: место — неактивный OTA-слот, LittleFS не нужна. */
@@ -266,6 +275,7 @@ void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
     platform_.patch_erase(platform_.ctx);
   }
   memset(received_bits_, 0, sizeof(received_bits_));
+  last_reject_ = 0;
   received_count_ = 0;
   window_start_ = 0;
   last_packet_ms_ = now_ms;

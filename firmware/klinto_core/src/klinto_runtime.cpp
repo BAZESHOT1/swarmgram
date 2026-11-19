@@ -17,6 +17,7 @@
 #include "klinto_ota_esp32.h"
 #include "klinto_owner.h"
 #include "klinto_util.h"
+#include "klinto_channel_plan.h"
 
 #if __has_include("config.h")
 #include "config.h"
@@ -293,6 +294,16 @@ bool KlintoNode::loadConfig() {
   cfg_.batt_ratio_x100 = (uint16_t)(KL_BATT_RATIO * 100.0f + 0.5f);
 #endif
   loadHw();
+  /* Диапазон LoRa определяется чипом: SX1278 работает только в 433 МГц (137–525), остальные —
+   * в 868. Частота и sync word берутся из плана каналов для текущего канала соты. Узлы разных
+   * диапазонов (433 и 868) по LoRa друг друга не слышат — мостом между ними служит ESP-NOW. */
+  if (cfg_.lora_present) {
+    const bool want433 = cfg_.lora.chip == KL_LORA_SX1278;
+    const bool is433 = cfg_.lora.freq_mhz > 0.0f && cfg_.lora.freq_mhz < 500.0f;
+    if (want433 != is433) cfg_.lora.freq_mhz = want433 ? 433.0625f : 868.1f;
+    const uint8_t ch = cfg_.wifi_channel >= 1 && cfg_.wifi_channel <= KL_CHANNEL_COUNT ? cfg_.wifi_channel : 1;
+    kl_channel_plan_apply(&cfg_, ch);
+  }
   if (cfg_.role == KL_ROLE_GATEWAY) cfg_.gateway_id = cfg_.node_id;
   kl_config_validate(&cfg_);
   return true;
@@ -1070,6 +1081,21 @@ void KlintoNode::meshTaskEntry(void *arg) {
                     (unsigned long)st->tx_packets, (unsigned long)self->router_.beacons_rx(),
                     (unsigned long)st->beacons_sent, (long)self->router_.gateway_age_ms(now),
                     (unsigned)ESP.getFreeHeap());
+      /* OTA: прогресс загрузки и причина отказа от анонса — без этого раскатку не отладить. */
+      {
+        static uint8_t logged_reject = 0;
+        const uint8_t rej = self->ota_.last_reject();
+        if (rej && rej != logged_reject) {
+          static const char *const kWhy[] = {"", "other chip/variant", "build marked bad", "not newer",
+                                             "bad size", "bad signature", "battery < 40%", "slot erase failed"};
+          Serial.printf("[ota] announce for build %u ignored: %s\n", (unsigned)self->ota_.last_reject_target(),
+                        rej < 8 ? kWhy[rej] : "?");
+        }
+        logged_reject = rej;
+        if (self->ota_.state() == KL_OTA_DOWNLOADING) {
+          Serial.printf("[ota] downloading %u/%u chunks\n", (unsigned)self->ota_.received(), (unsigned)self->ota_.total());
+        }
+      }
       if (self->cfg_.espnow_enabled) {
         Serial.printf("[radio] espnow rx_raw=%lu bad=%lu not_us=%lu tx_ok=%lu tx_err=%lu last_err=%d\n",
                       (unsigned long)self->espnow_.rxRaw(), (unsigned long)self->espnow_.rxMagicBad(),
@@ -1210,7 +1236,9 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
         } else {
           /* 2) Затем узлы кластера: какие (чип, вариант, сборка) нужно обновить. */
           char plan[512];
-          if (kl_ota_esp32_plan(url, token, self->cfg_.node_id, plan, sizeof(plan)) > 0) {
+          const int plan_len = kl_ota_esp32_plan(url, token, self->cfg_.node_id, plan, sizeof(plan));
+          Serial.printf("[ota] check: gateway up to date, cluster plan %d bytes\n", plan_len);
+          if (plan_len > 0) {
             char *save = nullptr;
             for (char *line = strtok_r(plan, "\r\n", &save); line; line = strtok_r(nullptr, "\r\n", &save)) {
               char chip[16] = {0};
@@ -1222,6 +1250,7 @@ void KlintoNode::gatewayTaskEntry(void *arg) {
               if (!arch) continue;
               if (!kl_ota_esp32_query(url, token, chip, arch, (uint8_t)variant, (uint16_t)base, self->cfg_.node_id,
                                       false, &m, path, sizeof(path), &full)) {
+                Serial.printf("[ota] no image for %s v%u base %u\n", chip, variant, base);
                 continue;
               }
               bool started = false;

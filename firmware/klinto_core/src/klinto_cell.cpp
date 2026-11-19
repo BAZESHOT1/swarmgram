@@ -79,6 +79,8 @@ void KlintoCellManager::lock_gateway(uint8_t channel, uint32_t now_ms) {
   if (channel < 1 || channel > KL_CHANNEL_COUNT) channel = cell_.fallback_channel;
   state_ = KL_CELL_LOCKED;
   apply(channel);
+  pref_channel_ = channel;
+  recover_started_ms_ = 0;
   last_beacon_ms_ = now_ms;
   last_scan_ms_ = now_ms;
   missed_beacons_ = 0;
@@ -131,11 +133,11 @@ void KlintoCellManager::on_beacon(uint32_t gateway_id, uint8_t hops, int16_t rss
     if (channel_valid && advertised_channel != current_channel_) {
       pending_channel_ = advertised_channel;
     }
+    recover_started_ms_ = 0;
+    /* Слабый сигнал — не повод менять канал: связь с кластером есть. Канал меняется,
+     * только если кластер пропал и на прежнем канале переподключиться не удалось. */
     if (rssi < cell_.handover_rssi) {
       if (weak_beacons_ < 0xFF) weak_beacons_++;
-      if (weak_beacons_ >= 2) {
-        start_scan(now_ms, KL_SCAN_WEAK_RSSI);
-      }
     } else {
       weak_beacons_ = 0;
     }
@@ -161,6 +163,8 @@ void KlintoCellManager::finish_scan(uint32_t now_ms) {
 void KlintoCellManager::lock_best(uint32_t now_ms, uint8_t reason) {
   state_ = KL_CELL_LOCKED;
   apply(best_channel_);
+  pref_channel_ = best_channel_;
+  recover_started_ms_ = 0;
   last_beacon_ms_ = now_ms;
   last_scan_ms_ = now_ms;
   missed_beacons_ = 0;
@@ -198,7 +202,7 @@ void KlintoCellManager::tick(uint32_t now_ms) {
    * и рвали соединение через ~5 с, см. BitChatRelay/Esp-Wifi-Ble-Now — канал закреплён).
    * Остаёмся на предпочтительном канале и раз в 3 с шлём пробу. */
   if (quiet_ && state_ != KL_CELL_LOCKED) {
-    if (state_ == KL_CELL_SCANNING) {
+    if (state_ == KL_CELL_SCANNING || (pref_channel_ && current_channel_ != pref_channel_)) {
       state_ = KL_CELL_OFFLINE;
       reset_candidate();
       apply(pref_channel_ ? pref_channel_ : current_channel_);
@@ -235,7 +239,18 @@ void KlintoCellManager::tick(uint32_t now_ms) {
       apply(ch);
     }
     if (now_ms - last_beacon_ms_ > cell_.beacon_timeout_ms) {
-      start_scan(now_ms, KL_SCAN_BEACON_LOST);
+      if (!recover_started_ms_) {
+        recover_started_ms_ = now_ms;
+        recover_probe_ms_ = 0;
+      }
+      if (now_ms - recover_probe_ms_ >= 2000) {
+        recover_probe_ms_ = now_ms;
+        if (host_.send_probe) host_.send_probe(host_.ctx);
+      }
+      if (now_ms - recover_started_ms_ >= 30000u) {
+        recover_started_ms_ = 0;
+        start_scan(now_ms, KL_SCAN_BEACON_LOST);
+      }
       return;
     }
     if (cell_.rescan_interval_ms > 0 && now_ms - last_scan_ms_ > cell_.rescan_interval_ms) {

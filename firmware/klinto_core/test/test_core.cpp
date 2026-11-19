@@ -910,12 +910,31 @@ static void test_cell_manager(void) {
   CHECK(host.locked_gateway == 2003u);
   CHECK(host.probes >= 2); /* на каждом канале уходят пробы GW_PROBE */
 
-  /* Два слабых маяка подряд запускают хэндовер. */
+  /* Слабый сигнал не уводит модуль с канала кластера: связь есть. */
   cell.on_beacon(2003u, 1, -95, 6000);
   cell.on_beacon(2003u, 1, -96, 6001);
+  CHECK(!cell.scanning());
+  CHECK(cell.channel() == 3);
+
+  /* Маяки пропали: 30 с переподключения на том же канале с пробами, без смены канала. */
+  const int probes_before = host.probes;
+  cell.tick(6001 + 21000);
+  CHECK(!cell.scanning());
+  CHECK(cell.channel() == 3);
+  cell.tick(6001 + 25000);
+  CHECK(host.probes > probes_before);
+  /* Шлюз ответил на пробу на том же канале — остаёмся. */
+  cell.on_beacon(2003u, 1, -60, 6001 + 26000);
+  cell.tick(6001 + 60000);
+  CHECK(!cell.scanning());
+  CHECK(cell.channel() == 3);
+
+  /* Шлюз пропал совсем: после 30 с на прежнем канале начинается поиск. */
+  cell.tick(6001 + 26000 + 21000);
+  cell.tick(6001 + 26000 + 21000 + 30500);
   CHECK(cell.scanning());
 
-  t = 6001;
+  t = 6001 + 26000 + 21000 + 30500;
   for (int step = 0; step < 60 && cell.scanning(); ++step) {
     t += 90;
     cell.tick(t);

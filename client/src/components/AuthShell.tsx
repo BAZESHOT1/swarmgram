@@ -1,6 +1,9 @@
 import React from 'react';
 import { ScrollView, View, StyleSheet, useWindowDimensions } from 'react-native';
+import { Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const LOGO = require('../../assets/logo.png');
 import { MotiView } from 'moti';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/useTheme';
@@ -62,9 +65,9 @@ export function AuthShell({ children, maxWidth = 460 }: { children: React.ReactN
             <MotiView
               animate={reduced ? { scale: 1 } : { scale: [1, 1.06, 1] }}
               transition={{ type: 'timing', duration: 1600, repeat: reduced ? 0 : Infinity, repeatReverse: true }}
-              style={[styles.logo, compact && styles.logoCompact, theme.shadow, { backgroundColor: theme.accent }]}
+              style={[styles.logo, compact && styles.logoCompact, theme.shadow, { overflow: 'hidden' }]}
             >
-              <Ionicons name="git-network" size={compact ? 22 : 26} color={theme.onAccent} />
+              <Image source={LOGO} style={{ width: '100%', height: '100%' }} accessibilityLabel="Klinto" />
             </MotiView>
           </View>
         </MotiView>

@@ -670,19 +670,40 @@ export async function decryptEnvelopeAuto(env: Envelope, chat: Chat, myUsername:
   return decryptWithKey(env, rawKey, myUsername);
 }
 
+/**
+ * Расшифровка пачки конвертов: первый — отдельно (прогревает кэш ключа чата), остальные —
+ * параллельно. Раньше 60 сообщений расшифровывались строго по очереди.
+ */
+export async function decryptMany(envs: Envelope[], chat: Chat, myUsername: string): Promise<ViewMessage[]> {
+  if (!envs.length) return [];
+  const first = await decryptEnvelopeAuto(envs[0], chat, myUsername);
+  const rest = await Promise.all(
+    envs.slice(1).map((env) => decryptEnvelopeAuto(env, chat, myUsername).catch(() => null)),
+  );
+  return [first, ...rest.filter((m): m is ViewMessage => m !== null)];
+}
+
+/** Квитанции о доставке: один раз на сообщение и в фоне — лента не ждёт сеть. */
+const receiptSent = new Set<string>();
+export function postReceiptsInBackground(chatId: string, envs: Envelope[], meId: string | null): void {
+  const todo = envs.filter((env) => env.senderUserId && env.senderUserId !== meId && !receiptSent.has(env.id));
+  for (const env of todo) receiptSent.add(env.id);
+  if (receiptSent.size > 20000) receiptSent.clear();
+  void (async () => {
+    for (const env of todo) {
+      await api.api.postReceipt(chatId, env.id).catch(() => undefined);
+    }
+  })();
+}
+
 export async function loadChatMessages(chat: Chat, myUsername: string, limit = 60): Promise<ViewMessage[]> {
   const keys = await requireKeys();
   // Ошибку сети не глотаем: вызывающий слой подставит сохранённую ленту,
   // а не затрёт кэш пустым массивом.
   const envs = await api.api.listMessages(chat.id, { limit });
   const meId = await currentUserId();
-  const out: ViewMessage[] = [];
-  for (const env of envs) {
-    out.push(await decryptEnvelopeAuto(env, chat, myUsername));
-    if (env.senderUserId && env.senderUserId !== meId) {
-      await api.api.postReceipt(chat.id, env.id).catch(() => undefined);
-    }
-  }
+  const out: ViewMessage[] = await decryptMany(envs, chat, myUsername);
+  postReceiptsInBackground(chat.id, envs, meId);
 
   // серверные ключи не требуют локального E2E-ключа; topUp делаем только для E2E
   const hasE2e = envs.some((env) => envelopeMeta(env).scheme === 'e2e');

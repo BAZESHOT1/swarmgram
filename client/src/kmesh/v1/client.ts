@@ -859,8 +859,9 @@ export class KMeshV1Client {
         item.serverSeq = response.server_seq;
         item.permanentSignature = response.permanent_signature;
         item.attempts = 0;
+        // Не удаляем сразу: обработчик статуса ищет запись, чтобы снять «отправляется» в ленте.
+        // Подтверждённые записи удаляются в начале следующего прохода syncOutbox.
         await kmeshV1Update(item);
-        await kmeshV1Remove(item.msgUuid);
         this.opts.onStatus?.({
           msgUuid: item.msgUuid,
           packetId: 0,

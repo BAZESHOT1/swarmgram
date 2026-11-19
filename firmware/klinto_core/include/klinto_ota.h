@@ -113,6 +113,11 @@ class KlintoOta {
   void set_variant(uint8_t v) { variant_ = v; }
   void set_bad_build(uint16_t b) { bad_build_ = b; }
   /** Через какие транспорты слать OTA-пакеты текущей раздачи/приёма. */
+  /** Почему отклонён последний анонс (для лога): 0 — принят, иначе код. */
+  uint8_t last_reject() const { return last_reject_; }
+  uint16_t received() const { return received_count_; }
+  uint16_t total() const { return has_manifest_ ? manifest_.total_chunks : 0; }
+  uint16_t last_reject_target() const { return last_reject_target_; }
   uint8_t send_mask() const { return has_manifest_ && manifest_.ifc_mask ? manifest_.ifc_mask : 0xFF; }
   uint16_t current_build() const { return current_build_; }
   uint16_t target_build() const { return manifest_.target_build; }
@@ -158,6 +163,8 @@ class KlintoOta {
 
   uint8_t chip_arch_;
   uint8_t variant_ = 0;
+  uint8_t last_reject_ = 0;
+  uint16_t last_reject_target_ = 0;
   uint16_t bad_build_ = 0;
   uint8_t src_mode_ = KL_OTA_SRC_FILE;
   bool full_ = false;

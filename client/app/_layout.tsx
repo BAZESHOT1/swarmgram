@@ -7,6 +7,9 @@ import { installAppLog } from '../src/debug/appLog';
 
 installAppLog();
 import React, { useEffect } from 'react';
+import { Image as BrandImage } from 'react-native';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const BRAND_LOGO = require('../assets/logo.png');
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, usePathname, useRouter, useSegments } from 'expo-router';
 import { MotiView } from 'moti';
@@ -27,7 +30,8 @@ import { GlobalHotkeys } from '../src/components/GlobalHotkeys';
 import { useSounds } from '../src/components/useSounds';
 import { useHaptics } from '../src/components/useHaptics';
 import { onMeshEnvelope } from '../src/modules/meshLink';
-import { decryptEnvelopeAuto, flushOutbox } from '../src/data/messaging';
+import { decryptEnvelopeAuto, flushOutbox, postReceiptsInBackground, sendMessage } from '../src/data/messaging';
+import { takeUnsentMeshTexts } from '../src/modules/meshLink';
 import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
@@ -312,6 +316,32 @@ function RealtimeBridge() {
       if (id) void qc.invalidateQueries({ queryKey: ['chat', id] });
     };
 
+    /**
+     * Появился интернет: тексты, которые так и не ушли в модуль kMesh, отправляем по HTTP
+     * (Hub дедуплицирует по clientId) и обновляем их в ленте — без «вечной» отправки.
+     */
+    const deliverStrandedMeshTexts = async () => {
+      const items = takeUnsentMeshTexts();
+      if (!items.length) return;
+      const me = useStore.getState().me?.username ?? getSession()?.username ?? '';
+      for (const item of items) {
+        try {
+          const saved = await sendMessage(item.chatId, { text: item.text }, 'text', me, { clientId: item.clientId });
+          qc.setQueryData<any[]>(['messages', item.chatId], (prev) =>
+            Array.isArray(prev)
+              ? prev.map((m) =>
+                  m && item.clientId && m.clientId === item.clientId
+                    ? { ...m, ...saved, pending: !saved.delivered, delivered: saved.delivered, kmeshLabel: undefined }
+                    : m,
+                )
+              : prev,
+          );
+        } catch {
+          /* останется в outbox: уйдёт при следующем подключении */
+        }
+      }
+    };
+
     /** Exponential backoff 2s в†’ 30s СЃ РґР¶РёС‚С‚РµСЂРѕРј В±20%. */
     const scheduleReconnect = () => {
       if (disposed) return;
@@ -345,6 +375,7 @@ function RealtimeBridge() {
           useStore.getState().setTransportOnline(true);
           if (wasOffline) {
             void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '').catch(() => undefined);
+            void deliverStrandedMeshTexts();
           }
           catchUp();
         } catch {
@@ -384,6 +415,7 @@ function RealtimeBridge() {
       ws.onopen = () => {
         reconnectAttempt = 0;
         stopPolling();
+        void deliverStrandedMeshTexts();
         useStore.getState().setTransportKnown(true);
         useStore.getState().setTransportOnline(true);
         // Р”РѕРіРѕРЅ РїРѕСЃР»Рµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёСЏ: РїРѕРєР° СЃРІСЏР·Рё РЅРµ Р±С‹Р»Рѕ, СЃРѕР±С‹С‚РёСЏ РјРѕРіР»Рё РїРѕС‚РµСЂСЏС‚СЊСЃСЏ.
@@ -746,6 +778,34 @@ function RealtimeBridge() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.deviceId, session?.userId]);
 
+  /** Расшифровать входящий конверт и вставить в открытую ленту по seq (без дублей). */
+  async function insertIncoming(env: Envelope) {
+    try {
+      const meName = useStore.getState().me?.username ?? getSession()?.username ?? '';
+      const chat =
+        queryClient.getQueryData<any>(['chat', env.chatId]) ??
+        findCachedChat(meName, env.chatId) ??
+        ({ id: env.chatId, type: 'direct', encryption: 'server', title: '', members: [] } as any);
+      const vm = await decryptEnvelopeAuto(env as never, chat as never, meName);
+      queryClient.setQueryData<any[]>(['messages', env.chatId], (prev) => {
+        if (!Array.isArray(prev)) return prev;
+        if (prev.some((m) => m && (m.id === vm.id || (vm.clientId && m.clientId === vm.clientId)))) return prev;
+        const next = [...prev, vm];
+        next.sort((a, b) => {
+          const sa = a?.seq || Number.MAX_SAFE_INTEGER;
+          const sb = b?.seq || Number.MAX_SAFE_INTEGER;
+          return sa !== sb ? sa - sb : new Date(a?.createdAt ?? 0).getTime() - new Date(b?.createdAt ?? 0).getTime();
+        });
+        return next;
+      });
+      const meId = getSession()?.userId ?? null;
+      postReceiptsInBackground(env.chatId, [env], meId);
+    } catch {
+      // Не расшифровали (нет ключа и т. п.) — тогда уже перечитаем ленту целиком.
+      void queryClient.invalidateQueries({ queryKey: ['messages', env.chatId] });
+    }
+  }
+
   async function onEnvelope(env: Envelope) {
     useStore.getState().setPushEvent({ kind: 'message', payload: env });
     const meId = getSession()?.userId;
@@ -773,8 +833,9 @@ function RealtimeBridge() {
         };
         queryClient.setQueryData(['messages', env.chatId], next);
       } else {
-        // РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РЅСѓР¶РЅРѕ СЂР°СЃС€РёС„СЂРѕРІР°С‚СЊ вЂ” С‚РѕС‡РµС‡РЅС‹Р№ refetch СЌС‚РѕРіРѕ С‡Р°С‚Р°.
-        void queryClient.invalidateQueries({ queryKey: ['messages', env.chatId] });
+        // Новое сообщение: расшифровываем один конверт и вставляем в ленту сразу —
+        // как в Telegram/Discord, без перезагрузки всей истории.
+        void insertIncoming(env);
       }
     }
 
@@ -1113,12 +1174,10 @@ function FullSkeleton() {
             width: 68,
             height: 68,
             borderRadius: 22,
-            backgroundColor: theme.accent,
-            alignItems: 'center',
-            justifyContent: 'center',
+            overflow: 'hidden',
           }}
         >
-          <Ionicons name="git-network" size={34} color={theme.onAccent} />
+          <BrandImage source={BRAND_LOGO} style={{ width: 68, height: 68 }} accessibilityLabel="Klinto" />
         </MotiView>
         <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>Klinto</Text>
         <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>{APP_VERSION_LABEL}</Text>
