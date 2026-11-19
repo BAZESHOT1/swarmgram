@@ -76,10 +76,10 @@ const FQBN_KMESH = {
  */
 function readFirmwareVersion() {
   const fromEnv = String(process.env.KLINTO_FIRMWARE_VERSION || '').trim();
-  if (/^\d+\.\d+$/.test(fromEnv)) return fromEnv;
+  if (/^\d+\.\d+(\.\d+)?$/.test(fromEnv)) return fromEnv;
   try {
     const value = readFileSync(join(CORE_DIR, 'VERSION'), 'utf8').trim();
-    if (/^\d+\.\d+$/.test(value)) return value;
+    if (/^\d+\.\d+(\.\d+)?$/.test(value)) return value;
   } catch {
     /* файл не скопирован — используем безопасный fallback */
   }

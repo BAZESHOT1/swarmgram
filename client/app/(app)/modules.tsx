@@ -59,6 +59,7 @@ import {
   moduleRoleLabel,
   moduleStatusView,
   firmwareUpdateAvailable,
+  firmwareLabel,
 } from '../../src/components/modules/moduleUi';
 import { useModuleConnection } from '../../src/modules/ModuleProvider';
 import { ModuleConfigSheet } from '../../src/components/modules/ModuleConfigSheet';
@@ -823,7 +824,10 @@ export default function ModulesScreen() {
         key: macKey(m.moduleMac),
         name: m.customName || node?.name || `Модуль ${m.mod6}`,
         mac: m.moduleMac,
-        role: node?.layer === 0 ? 'носимый' : node?.gateway ? 'шлюз' : '',
+        role:
+          ({ client: 'носимый', hybrid: 'носимый', router: 'ретранслятор', gateway: 'шлюз' } as Record<string, string>)[
+            m.roleName ?? ''
+          ] ?? (node?.layer === 0 ? 'носимый' : node?.gateway ? 'шлюз' : ''),
         online: Boolean(m.online || node?.online),
         rssi: node?.rssi ?? null,
         battery: node?.battery ?? null,
@@ -980,6 +984,12 @@ export default function ModulesScreen() {
               const hasUpdate = firmwareUpdateAvailable(latest, fw);
               const isGw = (r.legacy?.role ?? '') === 'gateway';
               const lastSeen = r.legacy?.lastSeenAt ?? r.legacy?.last_seen_at;
+              // Свежее из двух: статус kMesh (Hub слышал модуль) и запись сервера.
+              const statusAt = [r.mesh?.lastSeenAt, lastSeen]
+                .filter((v): v is string => typeof v === 'string' && !!v)
+                .sort()
+                .pop();
+              const fwText = fw ? firmwareLabel(fw) : r.mesh?.fwBuild ? `сборка ${r.mesh.fwBuild}` : '';
               const iconBtn = (
                 icon: keyof typeof Ionicons.glyphMap,
                 label: string,
@@ -1044,12 +1054,26 @@ export default function ModulesScreen() {
                       {r.battery != null ? `${r.battery}%` : ''}
                     </Text>
                   </View>
-                  <Text style={{ color: theme.textDisabled, fontSize: 10.5 }} numberOfLines={1}>
-                    {r.mac || '—'}
-                    {fw ? ` · прошивка ${fw}` : ''}
-                    {!r.online && lastSeen ? ` · был(а) ${formatRelative(lastSeen)}` : ''}
-                    {r.mesh ? ` · ${r.mesh.bleName}` : ''}
-                  </Text>
+                  {/* Где модуль и когда о нём было слышно. */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Ionicons name="git-network-outline" size={12} color={theme.textSecondary} />
+                    <Text style={{ color: theme.textSecondary, fontSize: 11.5, flex: 1 }} numberOfLines={1}>
+                      {r.mesh?.clusterName ? `Кластер: ${r.mesh.clusterName}` : 'Кластер неизвестен'}
+                      {statusAt ? ` · статус ${formatRelative(statusAt)}` : ' · статуса ещё не было'}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <Ionicons name="hardware-chip-outline" size={12} color={theme.textDisabled} />
+                    <Text style={{ color: theme.textDisabled, fontSize: 10.5, flex: 1 }} numberOfLines={1}>
+                      {[
+                        fwText ? `прошивка ${fwText}` : null,
+                        r.mesh?.chip || null,
+                        r.mac || null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     {r.mesh ? (
                       <TextInput

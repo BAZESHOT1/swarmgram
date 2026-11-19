@@ -168,7 +168,7 @@ void KlintoClientBridge::flush_legacy_reply() {
   const int n = snprintf(
       json, sizeof(json),
       "{\"v\":1,\"kind\":\"info\",\"hardwareId\":\"%s\",\"bleMac\":\"%s\","
-      "\"nodeId\":%lu,\"role\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,"
+      "\"nodeId\":%lu,\"role\":\"%s\",\"firmware\":\"" KL_FIRMWARE_VERSION "\",\"build\":%u,\"battery\":%u,"
       "\"gateway\":%s,\"queue\":%u,\"rssi\":-50,\"attached\":true,\"ownerNetId\":%lu,"
       "\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\",\"mobile\":%u,\"bcn\":%lu,\"gwAge\":%ld}",
       cfg_.hardware_id, cfg_.ble_mod6, (unsigned long)cfg_.node_id, role,
@@ -646,7 +646,7 @@ bool KlintoClientBridge::send_info() {
       info, sizeof(info),
       "{\"v\":3,\"kind\":\"info\",\"nodeId\":%lu,\"role\":%u,\"mtu\":%u,\"queue\":%u,"
       "\"gateway\":%s,\"ownerNetId\":%lu,\"ownerPrefix\":\"%s\",\"bleMod6\":\"%s\","
-      "\"hardwareId\":\"%s\",\"firmware\":\"1.4/%u\",\"battery\":%u,\"attached\":true,"
+      "\"hardwareId\":\"%s\",\"firmware\":\"" KL_FIRMWARE_VERSION "\",\"build\":%u,\"battery\":%u,\"attached\":true,"
       "\"bcn\":%lu,\"gwAge\":%ld,\"ch\":%u,\"mobile\":%u}",
       (unsigned long)cfg_.node_id, (unsigned)cfg_.role,
       (unsigned)(link_ ? link_->mtu() : 0), (unsigned)(outbox_ ? outbox_->count() : 0),

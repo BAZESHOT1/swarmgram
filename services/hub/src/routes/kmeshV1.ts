@@ -1569,6 +1569,38 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     } catch {
       /* таблицы могут быть пустыми */
     }
+    // Статус для карточек: кластер (шлюз), когда модуль последний раз был слышен, прошивка, тип.
+    const statusByNode = new Map<number, Record<string, unknown>>();
+    try {
+      const ids = modules.map((m) => nodeIdFromMac(m.module_mac)).filter((id) => id > 1);
+      if (ids.length) {
+        const rows = await query<{ node_id: string; gateway_id: string; last_seen_at: string; gw_name: string | null;
+          fw_build: number | null; fw_version_str: string | null; node_role: number | null; chip_arch: number | null }>(
+          `SELECT p.node_id::text, p.gateway_id::text, p.last_seen_at,
+                  (SELECT display_name FROM kmesh_v1_presence g WHERE g.node_id = p.gateway_id LIMIT 1) AS gw_name,
+                  t.fw_build, t.fw_version_str, t.node_role, t.chip_arch
+             FROM kmesh_v1_presence p LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
+            WHERE p.node_id = ANY($1::bigint[])`,
+          [ids],
+        );
+        for (const r of rows) {
+          const gw = Number(r.gateway_id);
+          const self = gw === Number(r.node_id);
+          statusByNode.set(Number(r.node_id), {
+            nodeId: Number(r.node_id),
+            gatewayId: gw,
+            clusterName: self ? (r.node_role === 3 ? 'свой кластер (шлюз)' : 'через телефон') : (r.gw_name || `шлюз ${gw}`),
+            lastSeenAt: r.last_seen_at,
+            fwBuild: r.fw_build ?? 0,
+            fwVersion: r.fw_version_str ?? '',
+            chip: CHIP_BY_ARCH[Number(r.chip_arch)] ?? '',
+            roleName: ROLE_NAME[Number(r.node_role)] ?? '',
+          });
+        }
+      }
+    } catch {
+      /* статус необязателен */
+    }
     return reply.send({
       ok: true,
       identity,
@@ -1579,6 +1611,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         claimedAt: m.claimed_at,
         bleName: `KL-${identity.blePrefix}-${m.mod6.trim()}`,
         online: liveNodes.has(nodeIdFromMac(m.module_mac)),
+        ...(statusByNode.get(nodeIdFromMac(m.module_mac)) ?? {}),
       })),
       incoming: incoming.map((c) => ({
         id: c.id,
@@ -1938,9 +1971,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
 
   /* --------------------------------------------- OTA по kMesh -------------- */
   /** Активная раскатка, в которую входит кластер шлюза gw (NULL в gateways — все кластеры). */
-  async function activeRollout(gw: number): Promise<{ id: string; ifc_mask: number; target_build: number } | null> {
-    return one<{ id: string; ifc_mask: number; target_build: number }>(
-      `SELECT id::text, ifc_mask, target_build FROM kmesh_ota_rollouts
+  async function activeRollout(gw: number): Promise<{ id: string; ifc_mask: number; target_build: number; chips: string[] | null } | null> {
+    return one<{ id: string; ifc_mask: number; target_build: number; chips: string[] | null }>(
+      `SELECT id::text, ifc_mask, target_build, chips FROM kmesh_ota_rollouts
         WHERE status = 'active' AND (gateways IS NULL OR $1::bigint = ANY(gateways))
         ORDER BY created_at DESC LIMIT 1`,
       [gw],
@@ -1963,7 +1996,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const gw = Number(q.gw ?? 0) || 0;
     const self = String(q.self ?? '') === '1';
     const rollout = await activeRollout(gw);
-    if (!rollout) return reply.send({ ok: true, up_to_date: true, chip, base_build: base, reason: 'no_rollout' });
+    if (!rollout || (rollout.chips && !rollout.chips.includes(chip))) {
+      return reply.send({ ok: true, up_to_date: true, chip, base_build: base, reason: 'no_rollout' });
+    }
 
     const release = await one<{ id: string; build_number: number; version: string; full_sha256: string; full_size: number }>(
       `SELECT id::text, build_number, version, full_sha256, full_size FROM kmesh_ota_releases
@@ -2019,12 +2054,17 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
               t.fw_build::int AS fw_build
          FROM kmesh_nodes_telemetry t
          JOIN kmesh_v1_presence p ON p.node_id = t.node_id
-        WHERE p.gateway_id = $1 AND p.node_id <> $1 AND p.last_seen_at > now() - interval '30 minutes'
+        WHERE p.node_id <> $1 AND p.last_seen_at > now() - interval '30 minutes'
+          AND (p.gateway_id = $1 OR t.last_gateway_id = $1 OR EXISTS (
+                SELECT 1 FROM kmesh_v1_links l
+                 WHERE l.seen_at > now() - interval '1 day'
+                   AND ((l.node_id = p.node_id AND l.neighbor_id = $1) OR (l.node_id = $1 AND l.neighbor_id = p.node_id))))
           AND t.chip_arch BETWEEN 1 AND 6 AND t.fw_build > 0 AND t.fw_build < $2
         ORDER BY 1, 2, 3 LIMIT 16`,
       [gw, rollout.target_build],
     );
     const lines = rows
+      .filter((r) => !rollout.chips || rollout.chips.includes(CHIP_BY_ARCH[r.chip_arch] ?? ''))
       .map((r) => `${CHIP_BY_ARCH[r.chip_arch] ?? ''}:${r.variant}:${r.fw_build}`)
       .filter((line) => !line.startsWith(':'));
     return reply.header('content-type', 'text/plain').send(lines.join('\n'));
@@ -2180,8 +2220,8 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         ORDER BY build_number DESC, chip, variant LIMIT 40`,
     );
     const rollouts = await query<{ id: string; gateways: string[] | null; ifc_mask: number; target_build: number;
-      status: string; created_at: string; stopped_at: string | null }>(
-      `SELECT id::text, gateways::text[] AS gateways, ifc_mask, target_build, status, created_at, stopped_at
+      status: string; created_at: string; stopped_at: string | null; chips: string[] | null }>(
+      `SELECT id::text, gateways::text[] AS gateways, ifc_mask, target_build, status, created_at, stopped_at, chips
          FROM kmesh_ota_rollouts ORDER BY created_at DESC LIMIT 20`,
     );
     const gateways = await query<{ gateway_id: string; last_seen_at: string; nodes: number; name: string | null }>(
@@ -2217,7 +2257,10 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
 
   /** Запустить раскатку: кластеры (NULL — все) и транспорты раздачи. Прошлые активные — остановить. */
   app.post('/kmesh/v1/admin/ota/rollouts', { onRequest: [requireAdmin()] }, async (req, reply) => {
-    const body = (req.body ?? {}) as { gateways?: unknown; ifc_mask?: unknown; target_build?: unknown };
+    const body = (req.body ?? {}) as { gateways?: unknown; ifc_mask?: unknown; target_build?: unknown; chips?: unknown };
+    const chips = Array.isArray(body.chips)
+      ? body.chips.map((c) => String(c).toLowerCase()).filter((c) => ARCH_BY_CHIP[c])
+      : null;
     const gateways = Array.isArray(body.gateways)
       ? body.gateways.map((g) => Number(g)).filter((g) => Number.isInteger(g) && g > 1)
       : null;
@@ -2231,9 +2274,10 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!target) throw badRequest('no_release');
     await query(`UPDATE kmesh_ota_rollouts SET status = 'stopped', stopped_at = now() WHERE status = 'active'`);
     const row = await one<{ id: string }>(
-      `INSERT INTO kmesh_ota_rollouts (gateways, ifc_mask, target_build, created_by)
-       VALUES ($1,$2,$3,$4) RETURNING id::text`,
-      [gateways && gateways.length ? gateways : null, ifcMask, target, req.auth?.userId ?? null],
+      `INSERT INTO kmesh_ota_rollouts (gateways, ifc_mask, target_build, created_by, chips)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id::text`,
+      [gateways && gateways.length ? gateways : null, ifcMask, target, req.auth?.userId ?? null,
+       chips && chips.length ? chips : null],
     );
     return reply.send({ ok: true, id: row?.id, target_build: target, ifc_mask: ifcMask, gateways });
   });

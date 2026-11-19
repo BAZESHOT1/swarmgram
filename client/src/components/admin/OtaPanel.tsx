@@ -51,6 +51,8 @@ export function OtaPanel() {
   const [clusters, setClusters] = useState<number[]>([]);
   const [espnow, setEspnow] = useState(true);
   const [lora, setLora] = useState(false);
+  /** Пусто — все чипы; иначе поэтапно, например сначала только esp32c3. */
+  const [rollChips, setRollChips] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const data = overview.data;
@@ -77,7 +79,11 @@ export function OtaPanel() {
     if (!allClusters && clusters.length === 0) return toast('error', 'Выберите кластеры или «Все кластеры».');
     setBusy(true);
     try {
-      const res = await api.adminOtaStartRollout({ gateways: allClusters ? null : clusters, ifc_mask: mask });
+      const res = await api.adminOtaStartRollout({
+        gateways: allClusters ? null : clusters,
+        ifc_mask: mask,
+        chips: rollChips.length ? rollChips : null,
+      });
       toast('success', `Раскатка сборки ${res.target_build} запущена.`);
       void overview.refetch();
     } catch (e) {
@@ -165,6 +171,19 @@ export function OtaPanel() {
                 />
               ))
             : null}
+          <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700', marginTop: 4 }}>
+            Чипы (ничего не выбрано — все)
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {CHIPS.map((c) => (
+              <Check
+                key={c}
+                label={c}
+                value={rollChips.includes(c)}
+                onChange={(v) => setRollChips((prev) => (v ? [...prev, c] : prev.filter((x) => x !== c)))}
+              />
+            ))}
+          </View>
           <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700', marginTop: 4 }}>Транспорт раздачи</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
             <Check label="ESP-NOW" value={espnow} onChange={setEspnow} />
@@ -176,6 +195,7 @@ export function OtaPanel() {
               <StatusBadge text={r.status === 'active' ? 'идёт' : 'остановлена'} tone={r.status === 'active' ? 'accent' : 'neutral'} />
               <Text style={{ color: theme.textSecondary, fontSize: 11.5, flex: 1 }} numberOfLines={2}>
                 сборка {r.target_build} · {r.gateways ? `кластеры ${r.gateways.join(', ')}` : 'все кластеры'} ·{' '}
+                {r.chips?.length ? `${r.chips.join(', ')} · ` : ''}
                 {[(r.ifc_mask & 1) && 'ESP-NOW', (r.ifc_mask & 2) && 'LoRa'].filter(Boolean).join(' + ')}
               </Text>
               {r.status === 'active' ? <Btn title="Стоп" size="s" variant="ghost" onPress={() => void stop(r.id)} /> : null}

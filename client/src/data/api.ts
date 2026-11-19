@@ -1705,6 +1705,16 @@ export const api = {
         claimedAt: string;
         bleName: string;
         online?: boolean;
+        nodeId?: number;
+        gatewayId?: number;
+        /** Кластер: имя шлюза, «через телефон» или «свой кластер». */
+        clusterName?: string;
+        /** Когда модуль последний раз был слышен в kMesh. */
+        lastSeenAt?: string;
+        fwBuild?: number;
+        fwVersion?: string;
+        chip?: string;
+        roleName?: string;
       }>;
       incoming: Array<{
         id: string;
@@ -1772,7 +1782,7 @@ export const api = {
       ok: true;
       releases: Array<{ chip: string; variant: number; build_number: number; full_size: number; created_at: string }>;
       rollouts: Array<{ id: string; gateways: number[] | null; ifc_mask: number; target_build: number; status: string;
-        created_at: string; stopped_at: string | null }>;
+        created_at: string; stopped_at: string | null; chips?: string[] | null }>;
       gateways: Array<{ gatewayId: number; lastSeenAt: string; nodes: number; name: string }>;
       nodes: Array<{ nodeId: number; chip: string; variant: number; fwBuild: number; otaState: number; gatewayId: number;
         lastSeenAt: string; name: string }>;
@@ -1780,7 +1790,7 @@ export const api = {
     }>('/v1/kmesh/v1/admin/ota/rollouts'),
   adminOtaBuildRelease: (chips: string[]) =>
     req<{ ok: true }>('/v1/kmesh/v1/admin/ota/build-release', { method: 'POST', body: JSON.stringify({ chips }) }),
-  adminOtaStartRollout: (input: { gateways: number[] | null; ifc_mask: number; target_build?: number }) =>
+  adminOtaStartRollout: (input: { gateways: number[] | null; ifc_mask: number; target_build?: number; chips?: string[] | null }) =>
     req<{ ok: true; id: string; target_build: number }>('/v1/kmesh/v1/admin/ota/rollouts', {
       method: 'POST',
       body: JSON.stringify(input),

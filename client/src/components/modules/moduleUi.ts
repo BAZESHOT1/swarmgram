@@ -78,13 +78,31 @@ export function qualityFromRssi(rssi: number | undefined | null): number | null 
 
 
 /**
- * Есть ли новая прошивка. Модуль сообщает «<версия>/<сборка>» (например 1.4/176), релиз на сервере
- * хранится в том же формате; старые записи без сборки сравниваем только по версии.
+ * Есть ли новая прошивка. Версии прошивки — как у приложения: 1.4.3, 1.4.4 … Старые модули
+ * (до 1.4.3) сообщали «1.4/<сборка>» — любая версия в новом формате для них новее.
  */
 export function firmwareUpdateAvailable(latest: string | undefined | null, current: string | undefined | null): boolean {
   if (!latest || !current) return false;
+  const semver = (v: string) => (/^\d+(\.\d+){1,3}$/.test(v) ? v.split('.').map(Number) : null);
+  const l = semver(latest);
+  const c = semver(current);
+  if (l && c) {
+    for (let i = 0; i < Math.max(l.length, c.length); i += 1) {
+      const d = (l[i] ?? 0) - (c[i] ?? 0);
+      if (d !== 0) return d > 0;
+    }
+    return false;
+  }
+  if (l && current.includes('/')) return true;
   const [lv, lb] = latest.split('/');
   const [cv, cb] = current.split('/');
   if (lb && cb) return Number(lb) > Number(cb);
   return lv !== cv;
+}
+
+/** Человекочитаемая версия прошивки: «1.4/179» (старый формат) → «1.4 (сборка 179)». */
+export function firmwareLabel(v: string | undefined | null): string {
+  if (!v) return '—';
+  const [ver, build] = v.split('/');
+  return build ? `${ver} (сборка ${build})` : v;
 }

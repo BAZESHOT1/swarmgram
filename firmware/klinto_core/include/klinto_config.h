@@ -88,6 +88,9 @@ enum kl_ota_state_t : uint8_t {
 #ifndef KL_HAS_MQTT
 #define KL_HAS_MQTT 0
 #endif
+#ifndef KL_FIRMWARE_VERSION
+#define KL_FIRMWARE_VERSION "1.4.3"
+#endif
 #ifndef KL_FIRMWARE_BUILD
 #define KL_FIRMWARE_BUILD 1
 #endif

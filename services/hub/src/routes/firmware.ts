@@ -312,6 +312,8 @@ interface BuilderHealth {
   freeMb?: number | null;
   coreVersion?: string | null;
   boards?: string[];
+  firmwareVersion?: string;
+  firmwareBuild?: number;
 }
 
 /**
@@ -470,7 +472,7 @@ async function runBuild(id: string, cfg: FirmwareConfig): Promise<void> {
        VALUES ($1,$2,now())
        ON CONFLICT (board) DO UPDATE SET version = EXCLUDED.version, updated_at = now()`,
       // Модуль сообщает прошивку как «<версия>/<номер сборки>» — релиз пишем в том же формате.
-      [cfg.board, data.firmwareBuild ? `${String(data.version ?? '')}/${data.firmwareBuild}` : String(data.version ?? '')],
+      [cfg.board, String(data.version ?? '')],
     ).catch(() => undefined);
   } catch (e) {
     const err = e as Error & { buildLog?: string };
@@ -574,9 +576,10 @@ const firmwareRoutes: FastifyPluginAsync = async (app) => {
 
     const id = randomUUID();
     await query(
-      `INSERT INTO firmware_builds (id, user_id, status, phase, progress, config)
-       VALUES ($1, $2, 'queued', 'queued', 0, $3)`,
-      [id, me, JSON.stringify(cfg)],
+      `INSERT INTO firmware_builds (id, user_id, status, phase, progress, config, version)
+       VALUES ($1, $2, 'queued', 'queued', 0, $3, $4)`,
+      // Версия известна сразу (сборщик читает VERSION) — мастер показывает её с первой секунды.
+      [id, me, JSON.stringify(cfg), String(health.firmwareVersion ?? '')],
     );
 
     // Не блокируем HTTP: сборка живёт в фоне, клиент поллит статус.
