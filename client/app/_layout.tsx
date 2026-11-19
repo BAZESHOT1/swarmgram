@@ -1,5 +1,5 @@
 /**
- * Klinto client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
+ * Kinto client root: query/provider, realtime, auth-СЂРµРґРёСЂРµРєС‚С‹,
  * РїРµСЂСЃРёСЃС‚ С‚РµРјС‹ Рё СЃРµСЃСЃРёРё.
  */
 import 'react-native-get-random-values';
@@ -32,6 +32,8 @@ import { useHaptics } from '../src/components/useHaptics';
 import { onMeshEnvelope } from '../src/modules/meshLink';
 import { decryptEnvelopeAuto, flushOutbox, postReceiptsInBackground, sendMessage } from '../src/data/messaging';
 import { takeUnsentMeshTexts } from '../src/modules/meshLink';
+import { isNonceSeen, loadSeenNonces } from '../src/data/seenNonces';
+void loadSeenNonces();
 import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
 import { kv } from '../src/crypto/storage';
@@ -681,6 +683,8 @@ function RealtimeBridge() {
       const ciphertext = typeof item.envelopeB64 === 'string' ? item.envelopeB64 : '';
       if (!chatId || !ciphertext) return;
       if (item.senderUserId && item.senderUserId === getSession()?.userId) return;
+      // Это сообщение уже показано (пришло по сети или раньше через kMesh) — не дублируем.
+      if (isNonceSeen(item.nonce)) return;
       void (async () => {
         const meName = useStore.getState().me?.username || '';
         const chat =
@@ -1177,9 +1181,9 @@ function FullSkeleton() {
             overflow: 'hidden',
           }}
         >
-          <BrandImage source={BRAND_LOGO} style={{ width: 68, height: 68 }} accessibilityLabel="Klinto" />
+          <BrandImage source={BRAND_LOGO} style={{ width: 68, height: 68 }} accessibilityLabel="Kinto" />
         </MotiView>
-        <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>Klinto</Text>
+        <Text style={{ color: theme.textPrimary, fontSize: 22, fontWeight: '800', letterSpacing: 0.3 }}>Kinto</Text>
         <Text style={{ color: theme.textSecondary, fontSize: 12.5, fontWeight: '600' }}>{APP_VERSION_LABEL}</Text>
         <View style={{ marginTop: 8 }}>
           <ActivityIndicator color={theme.accent} />

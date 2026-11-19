@@ -35,7 +35,7 @@ export function ModuleAutoBanner() {
   const connected = data.phase === 'connected';
   const connecting = data.phase === 'connecting';
   const failed = data.phase === 'failed';
-  const title = connected ? 'Модуль подключён' : failed ? 'Не удалось подключить' : connecting ? 'Подключение модуля' : 'Найден модуль Klinto';
+  const title = connected ? 'Модуль подключён' : failed ? 'Не удалось подключить' : connecting ? 'Подключение модуля' : 'Найден модуль Kinto';
 
   return (
     <MotiView

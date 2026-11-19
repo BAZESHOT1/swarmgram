@@ -67,7 +67,7 @@ export function AuthShell({ children, maxWidth = 460 }: { children: React.ReactN
               transition={{ type: 'timing', duration: 1600, repeat: reduced ? 0 : Infinity, repeatReverse: true }}
               style={[styles.logo, compact && styles.logoCompact, theme.shadow, { overflow: 'hidden' }]}
             >
-              <Image source={LOGO} style={{ width: '100%', height: '100%' }} accessibilityLabel="Klinto" />
+              <Image source={LOGO} style={{ width: '100%', height: '100%' }} accessibilityLabel="Kinto" />
             </MotiView>
           </View>
         </MotiView>

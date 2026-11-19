@@ -890,11 +890,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         });
       }
       // Узел вернулся: отдаём ему не доставленные ранее пакеты.
+      // Узел снова на связи: недавно доставленные пакеты (до 15 мин) повторяем, но не больше
+      // 3 попыток и без продления срока — иначе старые сообщения приходили бы бесконечно.
       await query(
         `UPDATE kmesh_v1_downlink
-            SET delivered_at = NULL, expires_at = now() + interval '24 hours'
-          WHERE dst_node_id = $1 AND kind = 'packet'
-            AND delivered_at IS NOT NULL AND delivered_at < now() - interval '1 minute'`,
+            SET delivered_at = NULL
+          WHERE dst_node_id = $1 AND kind = 'packet' AND attempts < 3
+            AND delivered_at IS NOT NULL AND delivered_at < now() - interval '1 minute'
+            AND delivered_at > now() - interval '15 minutes'`,
         [nodeId],
       );
       return reply.send({ ok: true, status: 200, kind: 'presence', node_id: nodeId });
@@ -1203,7 +1206,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (rows.length) {
       const ids = rows.map((r) => r.id);
       await query(
-        'UPDATE kmesh_v1_downlink SET delivered_at = now() WHERE id = ANY($1::bigint[])',
+        'UPDATE kmesh_v1_downlink SET delivered_at = now(), attempts = attempts + 1 WHERE id = ANY($1::bigint[])',
         [ids],
       );
     }
@@ -1243,7 +1246,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (rows.length) {
       const ids = rows.map((r) => r.id);
       await query(
-        `UPDATE kmesh_v1_downlink SET delivered_at = now() WHERE id = ANY($1::bigint[])`,
+        `UPDATE kmesh_v1_downlink SET delivered_at = now(), attempts = attempts + 1 WHERE id = ANY($1::bigint[])`,
         [ids],
       );
     }
@@ -2455,9 +2458,27 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       typeof clientHeader.clientId === 'string' && clientHeader.clientId
         ? clientHeader.clientId
         : null;
+    // Без схемы клиент считает сообщение E2E и показывает «Зашифрованное сообщение»: обычные
+    // (серверные) чаты шифруются серверным ключом — указываем схему и версию ключа явно.
+    const chatEnc = await one<{ encryption: string; key_version: number | null }>(
+      `SELECT c.encryption,
+              (SELECT max(version) FROM chat_key_versions v WHERE v.chat_id = c.id) AS key_version
+         FROM chats c WHERE c.id = $1`,
+      [chatId],
+    );
+    const scheme =
+      clientHeader.scheme === 'server' || clientHeader.scheme === 'e2e'
+        ? (clientHeader.scheme as string)
+        : chatEnc?.encryption === 'e2e' ? 'e2e' : 'server';
+    const keyVersion =
+      Number.isFinite(Number(clientHeader.keyVersion)) && Number(clientHeader.keyVersion) > 0
+        ? Number(clientHeader.keyVersion)
+        : chatEnc?.key_version ?? undefined;
     const header = {
       kmeshV1: true,
       msgUuid: uuid,
+      scheme,
+      ...(scheme === 'server' && keyVersion ? { keyVersion } : {}),
       permanentSignature,
       sigAlg: storedAlg,
       resignMode,

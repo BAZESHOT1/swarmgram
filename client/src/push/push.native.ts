@@ -178,7 +178,7 @@ export async function displayPushNotification(options: PushDisplayOptions): Prom
 
     await notifee.displayNotification({
       id: options.id,
-      title: options.title || 'Klinto',
+      title: options.title || 'Kinto',
       body: options.body || '',
       data,
       android: {
@@ -207,14 +207,14 @@ function notificationFromMessage(message: RemoteMessage, hidden = false): PushDi
   const data = normalizeData(message.data);
   if (hidden) {
     return {
-      title: 'Klinto',
+      title: 'Kinto',
       body: data.kind === 'media' ? 'Медиа' : 'Новое сообщение',
       data: { chatId: data.chatId, messageId: data.messageId, kind: data.kind },
       channelId: channelForData(data),
     };
   }
   return {
-    title: message.notification?.title || data.title || data.senderDisplayName || data.senderUsername || 'Klinto',
+    title: message.notification?.title || data.title || data.senderDisplayName || data.senderUsername || 'Kinto',
     body: message.notification?.body || data.body || data.text || '',
     data,
     channelId: channelForData(data),
@@ -480,7 +480,7 @@ export async function pollPending(): Promise<number> {
         if (chatId) data.chatId = chatId;
       }
 
-      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'Klinto';
+      const title = typeof raw.title === 'string' && raw.title ? raw.title : 'Kinto';
       const body =
         (typeof raw.body === 'string' && raw.body) ||
         (typeof raw.message === 'string' && raw.message) ||
@@ -490,7 +490,7 @@ export async function pollPending(): Promise<number> {
 
       await displayPushNotification({
         id: `pending-${notificationId}`,
-        title: hidden ? 'Klinto' : title,
+        title: hidden ? 'Kinto' : title,
         body: hidden ? 'Новое сообщение' : body,
         data: hidden ? { chatId: data.chatId, messageId: data.messageId, kind: data.kind } : data,
       });

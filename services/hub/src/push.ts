@@ -188,7 +188,7 @@ export async function sendNotification(id: string): Promise<void> {
       const hidden = Boolean(group[0]?.hide_content);
       const variant = hidden
         ? {
-            title: 'Klinto',
+            title: 'Kinto',
             body: notification.kind === 'message' ? 'Новое сообщение' : 'Системное уведомление',
           }
         : { title: notification.title, body: notification.body };

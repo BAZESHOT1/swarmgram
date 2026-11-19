@@ -1,5 +1,5 @@
 /**
- * Klinto KMesh_v1 — бинарный протокол (TypeScript-зеркало klinto_core).
+ * Kinto KMesh_v1 — бинарный протокол (TypeScript-зеркало klinto_core).
  *
  * На радиотракте нет JSON. Телефон собирает RPC и MeshPacket; узел сжимает
  * (Unishox2) и шифрует перед передачей и выполняет обратные операции на

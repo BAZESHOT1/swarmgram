@@ -98,7 +98,7 @@ export async function startMeshForegroundService(info?: MeshServiceInfo): Promis
     const suffix = info?.publicId ? ` · ${info.publicId}` : info?.role ? ` · ${info.role}` : '';
     await notifee.displayNotification({
       id: SERVICE_NOTIFICATION_ID,
-      title: 'Klinto',
+      title: 'Kinto',
       body: `Mesh-соединение активно${suffix}`,
       android: {
         channelId: MESH_CHANNEL_ID,

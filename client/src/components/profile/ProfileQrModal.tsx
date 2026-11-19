@@ -133,7 +133,7 @@ export function ProfileQrModal({
     if (busy) return;
     setBusy('share');
     try {
-      const result = await shareUrl(url, displayName ? `${displayName} · Klinto` : `@${username} · Klinto`, `Профиль @${username} в Klinto`);
+      const result = await shareUrl(url, displayName ? `${displayName} · Kinto` : `@${username} · Kinto`, `Профиль @${username} в Kinto`);
       if (result === 'copied') pushToast({ kind: 'success', message: 'Ссылка на профиль скопирована' });
     } catch {
       pushToast({ kind: 'error', message: 'Не удалось поделиться' });

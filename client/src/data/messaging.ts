@@ -30,6 +30,7 @@ import { dbGet, dbSet, enqueueOutbox, listOutbox, removeOutbox, updateOutboxStat
 import { compressImage, uploadBytesWithProgress, type UploadStage } from './uploader';
 import { sendViaMesh, sendTextViaMesh, canSendViaMesh, isMeshCongested } from '../modules/meshLink';
 import { loadCachedMessages } from './cache';
+import { markNonce } from './seenNonces';
 import { useStore } from '../state/useStore';
 
 /**
@@ -546,7 +547,9 @@ interface EnvelopeMeta {
 /** Схема/версия/признак правки: старые конверты без scheme читаются как E2E. */
 function envelopeMeta(env: Envelope): EnvelopeMeta {
   const h = parseHeader(env.header);
-  const scheme: 'server' | 'e2e' = env.scheme ?? (h.scheme === 'server' ? 'server' : 'e2e');
+  // kMesh-сообщения из обычных чатов раньше синхронизировались без схемы: они под серверным ключом.
+  const scheme: 'server' | 'e2e' =
+    env.scheme ?? (h.scheme === 'server' ? 'server' : h.scheme === 'e2e' ? 'e2e' : h.kmeshV1 ? 'server' : 'e2e');
   let keyVersion = env.keyVersion;
   if (keyVersion === undefined && h.keyVersion !== undefined) {
     const n = Number(h.keyVersion);
@@ -667,6 +670,8 @@ export async function decryptEnvelopeAuto(env: Envelope, chat: Chat, myUsername:
   } catch {
     rawKey = null;
   }
+  // Запоминаем nonce: та же копия, пришедшая потом через kMesh, не станет дублем.
+  markNonce(env.nonce);
   return decryptWithKey(env, rawKey, myUsername);
 }
 

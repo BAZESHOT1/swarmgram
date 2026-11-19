@@ -140,9 +140,9 @@ export function AppNavbar() {
           accessibilityLabel="Меню приложения"
           style={{ width: 34, height: 34, borderRadius: 11, overflow: 'hidden' }}
         >
-          <BrandImage source={BRAND_LOGO} style={{ width: 34, height: 34 }} accessibilityLabel="Klinto" />
+          <BrandImage source={BRAND_LOGO} style={{ width: 34, height: 34 }} accessibilityLabel="Kinto" />
         </PressableScale>
-        <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 15 }}>Klinto</Text>
+        <Text style={{ color: theme.textPrimary, fontWeight: '800', fontSize: 15 }}>Kinto</Text>
       </View>
 
       {menuOpen && pathname ? <PCMenuDropdown onHide={() => setMenuOpen(false)} /> : null}

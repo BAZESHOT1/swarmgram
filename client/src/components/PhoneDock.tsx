@@ -1,5 +1,5 @@
 /**
- * Нижняя парящая навигация Klinto (OLED-стиль).
+ * Нижняя парящая навигация Kinto (OLED-стиль).
  *
  * Центральная капсула «Чаты / Настройки», слева — статус соединения,
  * справа — капсула носимого модуля KMesh_v1. Боковые капсулы появляются
@@ -263,7 +263,7 @@ export function PhoneDock() {
               router.navigate('/modules' as never);
             }}
             accessibilityRole="button"
-            accessibilityLabel={`Модуль Klinto подключён, узлов ${routeCount}`}
+            accessibilityLabel={`Модуль Kinto подключён, узлов ${routeCount}`}
             style={[styles.sideCapsule, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)', maxWidth: narrow ? 52 : compact ? 58 : 68 }]}
           >
             <View style={[styles.dot, { backgroundColor: '#30D158' }]} />

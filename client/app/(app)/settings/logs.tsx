@@ -50,7 +50,7 @@ export default function LogsScreen() {
 
   const share = () => {
     const text = all.filter((e) => matches(e, filter)).map(formatLogLine).join('\n');
-    void Share.share({ message: text || 'Журнал пуст', title: 'Журнал Klinto' }).catch(() => undefined);
+    void Share.share({ message: text || 'Журнал пуст', title: 'Журнал Kinto' }).catch(() => undefined);
   };
 
   return (

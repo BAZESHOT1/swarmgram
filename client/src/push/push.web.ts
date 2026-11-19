@@ -138,7 +138,7 @@ export async function registerWebPush(
     const unsubscribe = onMessage(messaging, (payload) => {
       void (async () => {
       const hidden = await isPushContentHidden();
-      const title = hidden ? 'Klinto' : (payload.notification?.title ?? payload.data?.title ?? 'Klinto');
+      const title = hidden ? 'Kinto' : (payload.notification?.title ?? payload.data?.title ?? 'Kinto');
       const body = hidden ? 'Новое сообщение' : (payload.notification?.body ?? payload.data?.body ?? '');
       const data = payload.data;
 

@@ -106,9 +106,9 @@ export default function UserProfileScreen() {
   const canChat = Boolean(profile) && !isSelf && !blockedByMe;
 
   const share = React.useCallback(async () => {
-    const title = profile?.displayName ? `${profile.displayName} · Klinto` : `@${username} · Klinto`;
+    const title = profile?.displayName ? `${profile.displayName} · Kinto` : `@${username} · Kinto`;
     try {
-      const result = await shareUrl(profileUrl(username), title, `Профиль @${username} в Klinto`);
+      const result = await shareUrl(profileUrl(username), title, `Профиль @${username} в Kinto`);
       if (result === 'copied') pushToast({ kind: 'success', message: 'Ссылка на профиль скопирована' });
     } catch {
       pushToast({ kind: 'error', message: 'Не удалось поделиться' });
@@ -556,7 +556,7 @@ function OverviewSelf({
             right={<Ionicons name="qr-code-outline" size={15} color={theme.textSecondary} />}
           />
           <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18 }}>
-            Поделитесь профилем: ссылка и QR открывают @{profile.username} в Klinto.
+            Поделитесь профилем: ссылка и QR открывают @{profile.username} в Kinto.
           </Text>
           <View
             style={[

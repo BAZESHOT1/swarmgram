@@ -13,6 +13,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState, Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePathname } from 'expo-router';
+import { isNonceSeen, markNonce } from '../data/seenNonces';
 import { api, isPendingTransfer } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
@@ -504,6 +505,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onSecureMessage: (message) => {
             void (async () => {
               if (message.srcNodeId === v1.getNodeId()) return;
+              // Повторная доставка той же копии (очередь Hub, ретрансляция) или уже показанное
+              // по сети сообщение: nonce шифрования совпадает — не показываем второй раз.
+              if (isNonceSeen(message.nonce)) return;
+              markNonce(message.nonce);
               const text = await v1.decryptMessage(
                 message.chatId,
                 message.ciphertext,
