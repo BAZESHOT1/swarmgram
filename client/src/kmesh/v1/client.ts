@@ -112,7 +112,7 @@ export interface KMeshV1ClientOptions {
     chatId: string;
     sent: number;
     total: number;
-    phase?: 'preparing' | 'key' | 'sending' | 'sent';
+    phase?: 'preparing' | 'key' | 'sending' | 'sent' | 'nokey';
   }) => void;
   /** Hub вернул постоянный ключ серверного чата через KMesh. */
   onChatKey?: (chatId: string, version: number, key: Uint8Array) => void;
@@ -444,6 +444,7 @@ export class KMeshV1Client {
       // с серверным ключом, как только Hub станет доступен (через интернет или шлюз KMesh).
       item.state = 'LOCAL_MESH_ONLY';
       await kmeshV1Update(item);
+      this.opts.onSendProgress?.({ msgUuid: uuidHex, clientId: input.clientId, chatId: input.chatId, sent: 0, total: 0, phase: 'nokey' });
       console.log('[kmesh]', 'no confidential key, kept in outbox', { chatId: input.chatId });
       return { msgUuid: uuidHex, state: item.state };
     }

@@ -210,6 +210,7 @@ export function useSendChatMessage(chatId: string) {
         clientId: input.clientId,
         replyTo: input.replyId,
         asChannel: input.asChannel,
+        scheme: input.scheme,
       }),
     onMutate: async (input) => {
       await qc.cancelQueries({ queryKey: ['messages', chatId] });

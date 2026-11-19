@@ -14,6 +14,8 @@ import { AppState, Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePathname } from 'expo-router';
 import { isNonceSeen, markNonce } from '../data/seenNonces';
+import { onMeshQueue } from './meshLink';
+import { bumpChatInList } from '../data/chatListPatch';
 import { api, isPendingTransfer } from '../data/api';
 import { kv } from '../crypto/storage';
 import { useStore } from '../state/useStore';
@@ -391,7 +393,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   return row;
                 }
                 const label =
-                  event.phase === 'preparing'
+                  event.phase === 'nokey'
+                    ? 'Нет ключа чата · отправится, когда будет связь с Hub'
+                    : event.phase === 'preparing'
                     ? 'Подготовка KMesh…'
                     : event.phase === 'key'
                       ? 'Получаем постоянный ключ чата…'
@@ -565,7 +569,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 mine: false,
                 at: createdAt,
               });
-              void qc.invalidateQueries({ queryKey: ['chats'] });
+              bumpChatInList(qc, message.chatId, createdAt, false);
+              if (useStore.getState().transportOnline) void qc.invalidateQueries({ queryKey: ['chats'] });
             })();
           },
           onMessage: (message) => {
@@ -598,7 +603,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               mine: false,
               at: createdAt,
             });
-            void qc.invalidateQueries({ queryKey: ['chats'] });
+            bumpChatInList(qc, chatId, createdAt, false);
+            if (useStore.getState().transportOnline) void qc.invalidateQueries({ queryKey: ['chats'] });
           },
         });
         v1ClientRef.current = v1;
@@ -990,6 +996,37 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       return true;
     },
     [],
+  );
+
+  // Место сообщения в очереди отправки в модуль: «Очередь: N» вместо безымянных часов.
+  useEffect(
+    () =>
+      onMeshQueue((items) => {
+        const byChat = new Map<string, Map<string, number>>();
+        for (const it of items) {
+          if (!it.clientId) continue;
+          if (!byChat.has(it.chatId)) byChat.set(it.chatId, new Map());
+          byChat.get(it.chatId)!.set(it.clientId, it.position);
+        }
+        for (const [chatId, positions] of byChat) {
+          qc.setQueryData<unknown[]>(['messages', chatId], (prev) => {
+            if (!Array.isArray(prev)) return prev;
+            let changed = false;
+            const next = prev.map((row) => {
+              const m = row as { clientId?: string; pending?: boolean; kmeshLabel?: string };
+              if (!m.clientId || !m.pending || !positions.has(m.clientId)) return row;
+              const pos = positions.get(m.clientId)!;
+              if (pos === 0) return row; // отправляется сейчас — прогресс покажет onSendProgress
+              const label = `Очередь: ${pos}`;
+              if (m.kmeshLabel === label) return row;
+              changed = true;
+              return { ...(row as object), kmeshLabel: label, kmeshSent: 0, kmeshTotal: 0 };
+            });
+            return changed ? next : prev;
+          });
+        }
+      }),
+    [qc],
   );
 
   /** Автовосстановление последнего модуля без запроса нового порта/устройства. */

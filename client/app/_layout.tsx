@@ -33,6 +33,7 @@ import { onMeshEnvelope } from '../src/modules/meshLink';
 import { decryptEnvelopeAuto, flushOutbox, postReceiptsInBackground, sendMessage } from '../src/data/messaging';
 import { takeUnsentMeshTexts } from '../src/modules/meshLink';
 import { isNonceSeen, loadSeenNonces } from '../src/data/seenNonces';
+import { bumpChatInList } from '../src/data/chatListPatch';
 void loadSeenNonces();
 import { APP_VERSION_LABEL } from '../src/version';
 import { useStore } from '../src/state/useStore';
@@ -715,9 +716,9 @@ function RealtimeBridge() {
             (a, b) => new Date(a?.createdAt ?? 0).getTime() - new Date(b?.createdAt ?? 0).getTime(),
           );
         });
-        // Список чатов обновляем всегда, даже если этот чат не открыт:
-        // иначе превью/время/непрочитанные остаются старыми до refetch.
-        void queryClient.invalidateQueries({ queryKey: ['chats'] });
+        // Список чатов обновляем сразу и локально (без интернета HTTP-перезагрузка падает).
+        bumpChatInList(queryClient, chatId, message.createdAt, false);
+        if (useStore.getState().transportOnline) void queryClient.invalidateQueries({ queryKey: ['chats'] });
         const meId = getSession()?.userId;
         if (!item.senderUserId || item.senderUserId !== meId) {
           const previewText = String(message.text ?? '').trim();

@@ -13,6 +13,72 @@ import { useModuleConnection } from '../modules/ModuleProvider';
 import { useModules } from '../data/queries';
 import { useStore } from '../state/useStore';
 
+/**
+ * Доступ к Hub через kMesh: пульсирующий зелёный глобус — есть (шлюз в кластере или соседнем,
+ * либо мобильный шлюз), мигающий красный крест — нет. При подключении носимого модуля, его
+ * переподключении или смене кластера — индикатор загрузки, пока состояние не устоится.
+ */
+function HubAccessIcon({ hub, clusterKey }: { hub: boolean; clusterKey: string }) {
+  const theme = useTheme();
+  const reduced = useReducedMotion();
+  const connection = useModuleConnection();
+  const [settling, setSettling] = React.useState(true);
+  const lastKey = React.useRef<string | null>(null);
+  const connectedAt = React.useRef(Date.now());
+  React.useEffect(() => {
+    // Новое подключение или другой кластер — показываем загрузку несколько секунд.
+    if (lastKey.current !== clusterKey) {
+      lastKey.current = clusterKey;
+      setSettling(true);
+      const t = setTimeout(() => setSettling(false), 6000);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [clusterKey]);
+  React.useEffect(() => {
+    if (hub) setSettling(false);
+  }, [hub]);
+  React.useEffect(() => {
+    // Переподключение носимого модуля — тоже «загрузка», пока не придёт состояние кластера.
+    connectedAt.current = Date.now();
+    setSettling(true);
+    const t = setTimeout(() => setSettling(false), 6000);
+    return () => clearTimeout(t);
+  }, [connection.connection]);
+  if (connection.busy || settling) {
+    return (
+      <MotiView
+        accessibilityLabel="Подключение к кластеру kMesh"
+        animate={reduced ? { rotate: '0deg' } : { rotate: '360deg' }}
+        from={{ rotate: '0deg' }}
+        transition={reduced ? { type: 'timing', duration: 0 } : { loop: true, repeatReverse: false, type: 'timing', duration: 900 }}
+      >
+        <Ionicons name="sync" size={15} color={theme.accent} />
+      </MotiView>
+    );
+  }
+  if (hub) {
+    return (
+      <MotiView
+        accessibilityLabel="Есть доступ к Hub через kMesh"
+        animate={reduced ? { scale: 1, opacity: 1 } : { scale: [0.9, 1.12, 0.9], opacity: [0.7, 1, 0.7] }}
+        transition={reduced ? { type: 'timing', duration: 0 } : { loop: true, type: 'timing', duration: 1500 }}
+      >
+        <Ionicons name="globe" size={15} color={theme.success} />
+      </MotiView>
+    );
+  }
+  return (
+    <MotiView
+      accessibilityLabel="Нет доступа к Hub через kMesh"
+      animate={reduced ? { opacity: 1 } : { opacity: [1, 0.25, 1] }}
+      transition={reduced ? { type: 'timing', duration: 0 } : { loop: true, type: 'timing', duration: 900 }}
+    >
+      <Ionicons name="close-circle" size={15} color={theme.danger} />
+    </MotiView>
+  );
+}
+
 export function ModuleStatusPill() {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -42,12 +108,6 @@ export function ModuleStatusPill() {
   // Интернет: websocket или путь через шлюз mesh-сети.
   const internet = transportOnline;
   const viaGateway = Boolean(info.gateway);
-  const netIcon: keyof typeof Ionicons.glyphMap = internet
-    ? 'wifi'
-    : viaGateway
-      ? 'git-network-outline'
-      : 'cloud-offline-outline';
-  const netColor = internet ? theme.success : viaGateway ? theme.warning : theme.textDisabled;
 
   return (
     <View
@@ -74,7 +134,7 @@ export function ModuleStatusPill() {
           {rssi}
         </Text>
       ) : null}
-      <Ionicons name={netIcon} size={15} color={netColor} />
+      <HubAccessIcon hub={viaGateway || Boolean(info.mobile)} clusterKey={`${info.hardwareId}:${info.clusterId ?? ''}`} />
     </View>
   );
 }

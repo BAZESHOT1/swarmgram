@@ -1711,6 +1711,7 @@ export const api = {
         clusterName?: string;
         /** Когда модуль последний раз был слышен в kMesh. */
         lastSeenAt?: string;
+        rssi?: number | null;
         fwBuild?: number;
         fwVersion?: string;
         chip?: string;

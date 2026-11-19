@@ -38,6 +38,37 @@ function giveUp(item: { chatId: string; text: string; clientId?: string }): void
     }
   }
 }
+/** Очередь отправки в модуль: кто сейчас отправляется и какие места у остальных. */
+type QueueSnapshot = Array<{ chatId: string; clientId?: string; position: number }>;
+const queueListeners = new Set<(items: QueueSnapshot) => void>();
+let activeClientId: string | undefined;
+
+export function onMeshQueue(listener: (items: QueueSnapshot) => void): () => void {
+  queueListeners.add(listener);
+  return () => queueListeners.delete(listener);
+}
+
+function emitQueue(): void {
+  // position 0 — отправляется сейчас; 1, 2… — место в очереди.
+  let pos = 0;
+  const items: QueueSnapshot = [];
+  for (const entry of pendingV1) {
+    if (entry.paused) continue;
+    const isActive = entry.clientId !== undefined && entry.clientId === activeClientId;
+    items.push({ chatId: entry.chatId, clientId: entry.clientId, position: isActive ? 0 : ++pos });
+  }
+  for (const listener of queueListeners) {
+    try {
+      listener(items);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Одна отправка в модуль не дольше 45 с: зависшая не блокирует всю очередь. */
+const V1_SEND_TIMEOUT_MS = 45_000;
+
 let flushingV1 = false;
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -48,8 +79,13 @@ async function flushV1Queue(): Promise<void> {
     while (pendingV1.length) {
       const item = pendingV1.find((entry) => !entry.paused);
       if (!item) break;
+      activeClientId = item.clientId;
+      emitQueue();
       try {
-        const ok = await v1Sender(item.chatId, item.text, item.clientId);
+        const ok = await Promise.race([
+          v1Sender(item.chatId, item.text, item.clientId),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), V1_SEND_TIMEOUT_MS)),
+        ]);
         if (!ok) {
           item.attempts += 1;
           if (item.attempts >= MAX_V1_ATTEMPTS) {
@@ -61,6 +97,8 @@ async function flushV1Queue(): Promise<void> {
           break;
         }
         pendingV1.splice(pendingV1.indexOf(item), 1);
+        activeClientId = undefined;
+        emitQueue();
         console.log('[kmesh]', 'queued text sent', item.chatId);
       } catch {
         item.attempts += 1;
@@ -74,6 +112,8 @@ async function flushV1Queue(): Promise<void> {
     }
   } finally {
     flushingV1 = false;
+    activeClientId = undefined;
+    emitQueue();
   }
 }
 
@@ -140,12 +180,22 @@ export async function sendTextViaMesh(
   clientId?: string,
 ): Promise<boolean> {
   if (!text) return false;
+  // Все тексты идут через одну очередь строго по порядку: параллельные записи в BLE мешали друг
+  // другу, а пользователь не видел, что сообщение ждёт. Модуль не подключён — ждём подключения.
+  pendingV1.push({ chatId, text, clientId, attempts: 0 });
+  emitQueue();
   if (!v1Sender) {
-    // Модуль переподключается: не теряем сообщение, отправим после connect.
-    pendingV1.push({ chatId, text, clientId, attempts: 0 });
     console.log('[kmesh]', 'text queued until module connects', chatId);
     return true;
   }
+  ensureFlushTimer();
+  void flushV1Queue();
+  return true;
+}
+
+/** Прежняя прямая отправка (не используется): оставлена для совместимости. */
+async function sendTextDirect(chatId: string, text: string, clientId?: string): Promise<boolean> {
+  if (!v1Sender) return false;
   try {
     const attempt = v1Sender(chatId, text, clientId);
     const ok = await Promise.race([

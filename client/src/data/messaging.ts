@@ -211,6 +211,8 @@ export async function sendMessage(
     signal?: AbortSignal;
     /** Опубликовать от имени канала. */
     asChannel?: boolean;
+    /** Схема чата: замок показываем только у секретных (E2E) чатов. */
+    scheme?: 'e2e' | 'server';
   } = {},
 ): Promise<ViewMessage> {
   const clientId = opts.clientId ?? `loc-${Math.random().toString(16).slice(2, 10)}-${Date.now()}`;
@@ -248,7 +250,8 @@ export async function sendMessage(
         text: payload.text,
         file: payload.file,
         replyTo: opts.replyTo ?? null,
-        scheme: 'e2e',
+        // Обычный чат остаётся серверным и через kMesh: замка у сообщения быть не должно.
+        scheme: opts.scheme ?? 'server',
         reactions: [],
         delivered: false,
         failed: false,

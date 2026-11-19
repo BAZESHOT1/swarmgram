@@ -1589,6 +1589,19 @@ export default function ChatsScreen() {
     if (refreshing) return;
     setRefreshing(true);
     try {
+      // Без интернета обновляем через kMesh: шлюз кластера отдаёт свежие сообщения (лента),
+      // HTTP-запросы не делаем — они только ждут таймаут и показывают ошибку.
+      if (!useStore.getState().transportOnline) {
+        const since = Math.floor((Date.now() - 24 * 3600_000) / 1000);
+        const ok = await requestKmeshFeed(since).catch(() => false);
+        if (!ok) {
+          useStore.getState().pushToast({
+            kind: 'info',
+            message: 'Нет интернета и связи с Hub через kMesh — показаны сохранённые чаты.',
+          });
+        }
+        return;
+      }
       await Promise.allSettled([
         chats.refetch(),
         archivedQ.refetch(),

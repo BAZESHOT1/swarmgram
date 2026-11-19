@@ -829,7 +829,8 @@ export default function ModulesScreen() {
             m.roleName ?? ''
           ] ?? (node?.layer === 0 ? 'носимый' : node?.gateway ? 'шлюз' : ''),
         online: Boolean(m.online || node?.online),
-        rssi: node?.rssi ?? null,
+        // 0 дБм — «нет данных», а не реальный сигнал: берём из карты связей или статуса Hub.
+        rssi: (node?.rssi || (m as { rssi?: number | null }).rssi) || null,
         battery: node?.battery ?? null,
         mesh: m,
       });

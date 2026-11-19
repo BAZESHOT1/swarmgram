@@ -1072,7 +1072,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     for (const l of links) { ids.add(Number(l.node_id)); ids.add(Number(l.neighbor_id)); }
     const nodes = await query<{ node_id: string; gateway_id: string; rssi: number; battery: number; role: number;
       last_seen_at: string; online: boolean; display_name: string | null; node_role: number | null; battery_pct: number | null }>(
-      `SELECT p.node_id::text, p.gateway_id::text, p.rssi, p.battery, p.role, p.last_seen_at,
+      `SELECT p.node_id::text, p.gateway_id::text, COALESCE(NULLIF(p.rssi, 0), (SELECT max(l.rssi) FROM kmesh_v1_links l
+                   WHERE l.seen_at > now() - interval '30 minutes' AND l.rssi <> 0
+                     AND (l.node_id = p.node_id OR l.neighbor_id = p.node_id)), 0) AS rssi, p.battery, p.role, p.last_seen_at,
               p.last_seen_at > now() - interval '30 minutes' AS online, p.display_name, t.node_role, t.battery_pct
          FROM kmesh_v1_presence p
          LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
@@ -1577,9 +1579,12 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     try {
       const ids = modules.map((m) => nodeIdFromMac(m.module_mac)).filter((id) => id > 1);
       if (ids.length) {
-        const rows = await query<{ node_id: string; gateway_id: string; last_seen_at: string; gw_name: string | null;
+        const rows = await query<{ node_id: string; gateway_id: string; last_seen_at: string; rssi: number | null; gw_name: string | null;
           fw_build: number | null; fw_version_str: string | null; node_role: number | null; chip_arch: number | null }>(
           `SELECT p.node_id::text, p.gateway_id::text, p.last_seen_at,
+                  COALESCE(NULLIF(p.rssi, 0), (SELECT max(l.rssi) FROM kmesh_v1_links l
+                   WHERE l.seen_at > now() - interval '30 minutes' AND l.rssi <> 0
+                     AND (l.node_id = p.node_id OR l.neighbor_id = p.node_id))) AS rssi,
                   (SELECT display_name FROM kmesh_v1_presence g WHERE g.node_id = p.gateway_id LIMIT 1) AS gw_name,
                   t.fw_build, t.fw_version_str, t.node_role, t.chip_arch
              FROM kmesh_v1_presence p LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
@@ -1594,6 +1599,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
             gatewayId: gw,
             clusterName: self ? (r.node_role === 3 ? 'свой кластер (шлюз)' : 'через телефон') : (r.gw_name || `шлюз ${gw}`),
             lastSeenAt: r.last_seen_at,
+            rssi: r.rssi ?? null,
             fwBuild: r.fw_build ?? 0,
             fwVersion: r.fw_version_str ?? '',
             chip: CHIP_BY_ARCH[Number(r.chip_arch)] ?? '',
