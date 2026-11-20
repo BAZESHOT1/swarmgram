@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import * as api from './api';
 import type { Chat, Envelope, UserProfile } from './api';
 import { loadChatMessages, sendMessage, type ViewMessage } from './messaging';
+import { kmeshV1List } from './db';
 import { useStore } from '../state/useStore';
 import {
   getCachedChats,
@@ -164,8 +165,25 @@ export function useChatMessages(chat: Chat | null) {
       const me = useStore.getState().me;
       try {
         const messages = await loadChatMessages(chat, me?.username ?? api.getSession()?.username ?? '');
-        saveMessages(chat.id, messages);
-        return messages;
+        // Старые «часики» из кэша: если сообщение уже не ждёт в outbox kMesh,
+        // значит Hub его принял (или оно ушло по HTTP) — снимаем ожидание.
+        const hasPending = messages.some((m) => m.pending && m.clientId);
+        let reconciled = messages;
+        if (hasPending) {
+          const outbox = await kmeshV1List().catch(() => []);
+          const active = new Set(
+            outbox.flatMap((item) => [item.clientId, item.msgUuid]).filter((v): v is string => Boolean(v)),
+          );
+          let changed = false;
+          reconciled = messages.map((m) => {
+            if (!m.pending || !m.clientId || active.has(m.clientId)) return m;
+            changed = true;
+            return { ...m, pending: false, delivered: true, failed: false, kmeshLabel: undefined };
+          });
+          if (!changed) reconciled = messages;
+        }
+        saveMessages(chat.id, reconciled);
+        return reconciled;
       } catch (error) {
         // Без интернета показываем последние сохранённые сообщения чата.
         const cached = await loadCachedMessages(chat.id);
