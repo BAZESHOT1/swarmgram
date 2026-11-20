@@ -26,6 +26,7 @@ import { flushRelayQueue, queueRelay } from '../kmesh/v1/relay';
 import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client, messageRefForMsgUuid } from '../kmesh/v1/client';
 import { peekServerChatKey, storeServerChatKey } from '../data/chatkit';
+import { loadCachedMessages, saveMessages } from '../data/cache';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
@@ -513,6 +514,27 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 };
                 return rows;
               });
+              // Тот же статус сохраняем в локальную ленту: иначе после закрытия чата
+              // «ожидание подтверждения» возвращалось из кэша, хотя Hub уже сохранил.
+              const cachedRows = await loadCachedMessages(chatId).catch(() => null);
+              if (Array.isArray(cachedRows)) {
+                let changed = false;
+                const patched = cachedRows.map((row) => {
+                  const m = row as { text?: string; clientId?: string; pending?: boolean };
+                  const match = (clientId && m.clientId === clientId) || (Boolean(item?.text) && m.text === item?.text && Boolean(m.pending));
+                  if (!match) return row;
+                  changed = true;
+                  return {
+                    ...(row as object),
+                    pending: !delivered && !failed,
+                    delivered,
+                    failed,
+                    storedOnGateway: event.status === 3,
+                    kmeshLabel: label,
+                  };
+                });
+                if (changed) saveMessages(chatId, patched);
+              }
             })();
           },
           onSecureMessage: (message) => {
