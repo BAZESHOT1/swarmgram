@@ -141,6 +141,9 @@ function RealtimeBridge() {
     let reconnectAttempt = 0;
     let lastFallbackAt = 0;
     let lastInboundAt = Date.now();
+    // Когда Hub последний раз ответил по HTTP. Нужен, чтобы «мёртвый» WebSocket
+    // не сбрасывал интернет-режим обратно в kMesh.
+    let hubReachableAt = 0;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let disposed = false;
 
@@ -367,27 +370,53 @@ function RealtimeBridge() {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
     };
+
+    /** Hub ответил по REST: интернет точно есть, переключаемся с kMesh на HTTP. */
+    const markHubOnline = () => {
+      const wasOffline = !useStore.getState().transportOnline;
+      hubReachableAt = Date.now();
+      useStore.getState().setTransportKnown(true);
+      useStore.getState().setTransportOnline(true);
+      if (!wasOffline) return;
+      // Как только интернет появился — сразу досылаем всё, что не ушло через kMesh.
+      void deliverStrandedMeshTexts();
+      void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '').catch(() => undefined);
+      catchUp();
+    };
+
+    /** Короткий health-запрос: не ждём 12-секундный таймаут API. */
+    const probeHub = async (): Promise<boolean> => {
+      try {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), 4000) : null;
+        const res = await fetch(`${apiBase}/health`, {
+          cache: 'no-store',
+          ...(controller ? { signal: controller.signal } : null),
+        });
+        if (timer) clearTimeout(timer);
+        if (!res.ok) return false;
+        markHubOnline();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const pollTick = async () => {
+      const online = await probeHub();
+      if (online) {
+        catchUp();
+      } else if (!socket || socket.readyState !== WebSocket.OPEN) {
+        // Сокет уже открыт и живой — не сбрасываем режим из-за одного health-сбоя.
+        useStore.getState().setTransportKnown(true);
+        useStore.getState().setTransportOnline(false);
+      }
+    };
+
     const startPolling = () => {
       if (pollTimer || disposed) return;
-      const tick = async () => {
-        try {
-          const res = await fetch(`${apiBase}/health`, { cache: 'no-store' });
-          if (!res.ok) throw new Error(String(res.status));
-          const wasOffline = !useStore.getState().transportOnline;
-          useStore.getState().setTransportKnown(true);
-          useStore.getState().setTransportOnline(true);
-          if (wasOffline) {
-            void flushOutbox(useStore.getState().me?.username ?? getSession()?.username ?? '').catch(() => undefined);
-            void deliverStrandedMeshTexts();
-          }
-          catchUp();
-        } catch {
-          useStore.getState().setTransportKnown(true);
-          useStore.getState().setTransportOnline(false);
-        }
-      };
-      void tick();
-      pollTimer = setInterval(() => void tick(), 5000);
+      void pollTick();
+      pollTimer = setInterval(() => void pollTick(), 5000);
     };
 
     const connect = async (fallbackToken?: string) => {
@@ -417,6 +446,7 @@ function RealtimeBridge() {
       socket = ws;
       ws.onopen = () => {
         reconnectAttempt = 0;
+        hubReachableAt = Date.now();
         stopPolling();
         void deliverStrandedMeshTexts();
         useStore.getState().setTransportKnown(true);
@@ -432,13 +462,19 @@ function RealtimeBridge() {
           .catch(() => undefined);
       };
       ws.onerror = () => {
-        useStore.getState().setTransportKnown(true);
-        useStore.getState().setTransportOnline(false);
+        // Если REST только что отвечал — интернет есть, не откатываемся в kMesh
+        // из-за проблем именно с WebSocket.
+        if (Date.now() - hubReachableAt > 15_000) {
+          useStore.getState().setTransportKnown(true);
+          useStore.getState().setTransportOnline(false);
+        }
       };
       ws.onclose = () => {
         if (socket === ws) socket = null;
-        useStore.getState().setTransportKnown(true);
-        useStore.getState().setTransportOnline(false);
+        if (Date.now() - hubReachableAt > 15_000) {
+          useStore.getState().setTransportKnown(true);
+          useStore.getState().setTransportOnline(false);
+        }
         // Два сбоя подряд — включаем опрос, чтобы приложение работало без сокета.
         if (reconnectAttempt >= 1) startPolling();
         scheduleReconnect();
@@ -595,9 +631,15 @@ function RealtimeBridge() {
       void connect();
     };
 
-    const onBrowserOnline = () => reconnectNow();
+    const onBrowserOnline = () => {
+      void probeHub();
+      reconnectNow();
+    };
     const onVisibility = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') reconnectNow();
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void probeHub();
+        reconnectNow();
+      }
     };
     // Chrome СЂСѓРіР°РµС‚СЃСЏ В«Page entered Back-Forward CacheВ», РµСЃР»Рё РїСЂРё СѓС…РѕРґРµ СЃРѕ
     // СЃС‚СЂР°РЅРёС†С‹ РѕСЃС‚Р°С‘С‚СЃСЏ РѕС‚РєСЂС‹С‚С‹Р№ WebSocket. Р—Р°РєСЂС‹РІР°РµРј РµРіРѕ РЅР° pagehide Рё
@@ -673,27 +715,33 @@ function RealtimeBridge() {
     };
 
     // Возврат приложения из фона (в том числе после блокировки экрана):
-    // принудительно переподнимаем сокет, даже если старый висит в OPEN/CLOSING.
+    // принудительно переподнимаем сокет и сразу проверяем Hub по HTTP.
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
+      void probeHub();
       forceReconnect();
       catchUp();
     });
 
-    // Fallback, пока сокет недоступен: возвращаем связь и обновляем данные.
+    // Fallback, пока сокет недоступен: проверяем Hub по HTTP и возвращаем
+    // интернет-режим, не дожидаясь восстановления WebSocket.
     fallbackTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       const now = Date.now();
-      if (now - lastFallbackAt < 20_000) return;
+      if (now - lastFallbackAt < 10_000) return;
       lastFallbackAt = now;
-      if (!useStore.getState().transportOnline) {
+      void probeHub().then((online) => {
+        if (online) return;
         reconnectNow();
         void qc.invalidateQueries({ queryKey: ['chats'] });
         void qc.invalidateQueries({ queryKey: ['messages'], type: 'active' });
-      }
-    }, 20_000);
+      });
+    }, 10_000);
 
     void connect(session.accessToken);
+    // Не ждём исчерпания backoff: первый health-запрос сразу определяет,
+    // есть ли Hub по HTTP (например, когда WebSocket режет провайдер).
+    void probeHub();
 
     // Р’С…РѕРґСЏС‰РёРµ С‡РµСЂРµР· РјРѕРґСѓР»СЊ: РѕР±СЂР°Р±Р°С‚С‹РІР°РµРј РєР°Рє WS-СЃРѕР±С‹С‚РёРµ С‚РѕР»СЊРєРѕ РєРѕРіРґР°
     // РёРЅС‚РµСЂРЅРµС‚Р° РЅРµС‚, РёРЅР°С‡Рµ СЃРµСЂРІРµСЂ РґРѕСЃС‚Р°РІРёС‚ РёС… СЃР°Рј (Рё Р±СѓРґРµС‚ РґСѓР±Р»СЊ).

@@ -75,11 +75,15 @@ export function ModuleConfigSheet({
   const [led, setLed] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
+  const [progress, setProgress] = React.useState<{ step: number; total: number; text: string } | null>(null);
+  const [applied, setApplied] = React.useState(false);
 
   // Подставляем текущие значения модуля, когда они известны (прямое подключение).
   React.useEffect(() => {
     if (!target) return;
     setError('');
+    setProgress(null);
+    setApplied(false);
     setRole(live ? (live.role === 'repeater' ? 'r' : live.role === 'wearable' ? 'c' : '') : '');
     setBattPin(hw ? (hw.b >= 0 ? String(hw.b) : '') : '');
     setBattRatio(hw ? String(hw.r / 100) : '');
@@ -147,9 +151,20 @@ export function ModuleConfigSheet({
     }
     setBusy(true);
     setError('');
-    const ok = await connection.applyHardware({ mac: target.mac, nodeId: nodeIdFromMac(target.mac) || undefined }, p);
+    setProgress({ step: 0, total: 3, text: 'Готовим команду…' });
+    const ok = await connection.applyHardware(
+      { mac: target.mac, nodeId: nodeIdFromMac(target.mac) || undefined },
+      p,
+      (next) => setProgress(next),
+    );
     setBusy(false);
-    if (ok) onClose();
+    if (ok) {
+      setApplied(true);
+      // Даём увидеть финальный этап, затем закрываем окно.
+      setTimeout(onClose, 1600);
+    } else {
+      setError('Настройки не отправлены. Причина указана в уведомлении.');
+    }
   };
 
   const label = (text: string) => (
@@ -284,6 +299,31 @@ export function ModuleConfigSheet({
           Для шлюза на C3 высокая мощность ESP-NOW может мешать подключению к роутеру — меняйте осторожно.
         </Text>
       </ScrollView>
+      {progress ? (
+        <View
+          accessibilityLiveRegion="polite"
+          style={{ marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: theme.surface, borderWidth: 1, borderColor: applied ? theme.success : theme.line }}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <Text style={{ flex: 1, color: theme.textPrimary, fontSize: 12, fontWeight: '700', lineHeight: 16 }}>
+              {progress.text}
+            </Text>
+            <Text style={{ color: applied ? theme.success : theme.textSecondary, fontSize: 11, fontWeight: '800' }}>
+              {Math.min(progress.step, progress.total)}/{progress.total}
+            </Text>
+          </View>
+          <View style={{ height: 5, borderRadius: 3, backgroundColor: theme.line, marginTop: 8, overflow: 'hidden' }}>
+            <View
+              style={{
+                width: `${Math.round((Math.min(progress.step, progress.total) / Math.max(1, progress.total)) * 100)}%`,
+                height: 5,
+                borderRadius: 3,
+                backgroundColor: applied ? theme.success : theme.accent,
+              }}
+            />
+          </View>
+        </View>
+      ) : null}
       {error ? <Text style={{ color: theme.danger, fontSize: 12, marginTop: 8 }}>{error}</Text> : null}
       <View style={{ height: 10 }} />
       <Btn title="Применить и перезагрузить модуль" loading={busy} onPress={() => void submit()} />

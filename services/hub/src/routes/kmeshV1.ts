@@ -1400,7 +1400,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       `SELECT id::text, dst_node_id::text, kind, packet_id::text, msg_uuid, packet_b64
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
-          AND id > $2 AND delivered_at IS NULL AND expires_at > now()
+          AND expires_at > now()
+          AND (
+            (delivered_at IS NULL AND id > $2)
+            -- Конфиг повторяем, пока модуль не подтвердит применение: он мог быть
+            -- вне зоны связи в момент первой выдачи. Модуль дедуплицирует по epoch.
+            OR (kind = 'config' AND attempts < 20
+                AND (delivered_at IS NULL OR delivered_at < now() - interval '75 seconds'))
+          )
         ORDER BY (kind = 'ack') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
@@ -1442,7 +1449,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       `SELECT id::text, dst_node_id::text, kind, packet_id::text, msg_uuid, packet_b64
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
-          AND id > $2 AND delivered_at IS NULL AND expires_at > now()
+          AND expires_at > now()
+          AND (
+            (delivered_at IS NULL AND id > $2)
+            -- Конфиг повторяем, пока модуль не подтвердит применение: он мог быть
+            -- вне зоны связи в момент первой выдачи. Модуль дедуплицирует по epoch.
+            OR (kind = 'config' AND attempts < 20
+                AND (delivered_at IS NULL OR delivered_at < now() - interval '75 seconds'))
+          )
         ORDER BY (kind = 'ack') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
@@ -1972,11 +1986,12 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const deliver = String((req.body as Record<string, unknown>)?.deliver ?? '');
     if (deliver !== 'hub') return reply.send({ ok: true, moduleMac: mac, mod6: moduleMod6(mac), epoch, p, sig });
 
-    // Через kMesh: шлюз кластера, в котором модуль был слышен за 30 минут, забирает пакет из downlink.
+    // Через kMesh: шлюз кластера, в котором модуль был слышен за последние 5 минут, забирает
+    // пакет из downlink. Слишком старое присутствие даёт «ложную» доставку в пустоту.
     const nodeId = nodeIdFromMac(mac);
     const seen = await one<{ gateway_id: string }>(
       `SELECT gateway_id::text FROM kmesh_v1_presence
-        WHERE node_id = $1 AND gateway_id > 1 AND last_seen_at > now() - interval '30 minutes'
+        WHERE node_id = $1 AND gateway_id > 1 AND last_seen_at > now() - interval '5 minutes'
         ORDER BY last_seen_at DESC LIMIT 1`,
       [nodeId],
     );
@@ -2000,7 +2015,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       flags: sealed.flags, payload: sealed.payload });
     await query(
       `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64, expires_at)
-       VALUES ($1,$2,'packet',$3,$4,$5, now() + interval '30 minutes')`,
+       VALUES ($1,$2,'config',$3,$4,$5, now() + interval '15 minutes')`,
       [gatewayId, nodeId, packetId, BigInt.asUintN(64, msgUuid).toString(16).padStart(16, '0'), wire.toString('base64')],
     );
     return reply.send({ ok: true, queued: true, moduleMac: mac, nodeId, gatewayId, epoch });

@@ -73,6 +73,13 @@ export interface AutoModuleState {
   error?: string;
 }
 
+/** Этап применения настроек модуля: 1..3 из 3, текст для UI. */
+export interface HardwareConfigProgress {
+  step: number;
+  total: number;
+  text: string;
+}
+
 interface ModuleContextValue {
   connection: ModuleConnection | null;
   info: ModuleInfo | null;
@@ -92,8 +99,13 @@ interface ModuleContextValue {
   /**
    * Удалённая настройка железа модуля (тип, пины, мощность). Подпись выдаёт Hub только владельцу;
    * команда уходит в подключённый модуль (BLE/USB) или через него по mesh другому узлу.
+   * `onProgress` вызывается на каждом этапе, чтобы UI показал прогресс, а не только тост.
    */
-  applyHardware: (target: { mac: string; nodeId?: number }, p: string) => Promise<boolean>;
+  applyHardware: (
+    target: { mac: string; nodeId?: number },
+    p: string,
+    onProgress?: (progress: HardwareConfigProgress) => void,
+  ) => Promise<boolean>;
   clearError: () => void;
   /** Последняя ошибка подключения синхронно (контекст может быть ещё не обновлён). */
   getLastError: () => string | null;
@@ -191,6 +203,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const outboxTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deliveredUuidsRef = useRef<Set<string>>(new Set());
   const configAckRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const configWaitersRef = useRef<Map<string, (ok: boolean) => void>>(new Map());
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -509,6 +522,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onStatus: (event) => {
             void (async () => {
               const uuid = String(event.msgUuid).toLowerCase();
+              const waiter = configWaitersRef.current.get(uuid);
+              if (waiter) {
+                configWaitersRef.current.delete(uuid);
+                waiter(event.status >= 2 && event.status !== 5);
+              }
               if (event.status === 4) {
                 deliveredUuidsRef.current.add(uuid);
               } else if (deliveredUuidsRef.current.has(uuid)) {
@@ -1091,36 +1109,51 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const applyHardware = useCallback(
-    async (target: { mac: string; nodeId?: number }, p: string): Promise<boolean> => {
+    async (
+      target: { mac: string; nodeId?: number },
+      p: string,
+      onProgress?: (progress: HardwareConfigProgress) => void,
+    ): Promise<boolean> => {
+      let stage = 0;
+      const report = (step: number, text: string) => {
+        stage = step;
+        onProgress?.({ step, total: 3, text });
+        // Если экран не показывает прогресс сам — дублируем тостом.
+        if (!onProgress) useStore.getState().pushToast({ kind: 'info', message: `Настройки ${step}/3: ${text}` });
+      };
+      const succeed = (message: string) => {
+        useStore.getState().pushToast({ kind: 'success', message });
+        onProgress?.({ step: 3, total: 3, text: message });
+        return true;
+      };
       const fail = (message: string) => {
         useStore.getState().pushToast({ kind: 'error', message });
+        onProgress?.({ step: Math.max(1, stage), total: 3, text: message });
         return false;
       };
       const v1 = v1ClientRef.current;
       const current = infoRef.current;
       const mac12 = (value: string) => value.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
       const hubDeliver = async (): Promise<boolean> => {
+        report(1, 'Проверяем модуль в кластере и подписываем команду на Hub…');
         try {
-          useStore.getState().pushToast({ kind: 'info', message: 'Настройки: отправка через Hub → шлюз кластера…' });
           await api.kmeshV1ModuleConfigViaHub(target.mac, p);
-          useStore.getState().pushToast({
-            kind: 'success',
-            message: 'Настройки отправлены через Hub и шлюз кластера. Модуль применит их и перезагрузится.',
-          });
+          report(2, 'Hub подписал команду и передал её шлюзу кластера.');
+          report(3, 'Шлюз повторяет доставку модулю до 15 минут. Модуль применит настройки и перезагрузится.');
           refreshLists();
-          return true;
+          return succeed('Настройки отправлены: Hub → шлюз → модуль. Применятся, когда модуль будет в зоне связи.');
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
           return fail(
             /module_not_reachable/.test(code)
-              ? 'Модуль не был слышен ни одним шлюзом за 30 минут — подключите к нему носимый модуль.'
+              ? 'Модуль не выходил на связь со шлюзом последние 5 минут. Подойдите ближе к шлюзу или подключите модуль по USB/BLE.'
               : 'Hub не смог отправить настройки: нужен интернет и права владельца модуля.',
           );
         }
       };
       // Нет прямого подключения к модулям — доставляем через Hub → шлюз → kMesh.
       if (!v1 || !connectionRef.current?.isOpen || !current) return hubDeliver();
-      useStore.getState().pushToast({ kind: 'info', message: 'Настройки 1/3: готовим подпись Hub…' });
+      report(1, 'Готовим подпись Hub…');
       let token: { epoch: number; sig: string };
       try {
         token = await api.kmeshV1ModuleConfigToken(target.mac, p);
@@ -1129,38 +1162,36 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
       const direct = mac12(current.hardwareId) === mac12(target.mac);
       if (!direct && !target.nodeId) return hubDeliver();
-      useStore.getState().pushToast({
-        kind: 'info',
-        message: direct ? 'Настройки 2/3: пишем в подключённый модуль…' : 'Настройки 2/3: отправляем по mesh…',
-      });
+      report(2, direct ? 'Пишем команду в подключённый модуль…' : 'Отправляем команду по mesh…');
       if (direct) {
         const ok = await v1.sendHwConfig(p, token.epoch, token.sig);
         if (!ok) return fail('Команда не ушла в модуль. Проверьте подключение.');
-        useStore.getState().pushToast({
-          kind: 'success',
-          message: 'Настройки 3/3 доставлены. Модуль применит их и перезагрузится.',
-        });
         setTimeout(() => void restoreRef.current?.(), 3000);
-        return true;
+        return succeed('Команда доставлена. Модуль применит настройки и перезагрузится.');
       }
       const uuid = await v1.sendNodeConfig(target.nodeId as number, p, token.epoch, token.sig);
       if (!uuid) {
         // Прямой mesh-путь не сработал — пробуем через Hub, если есть интернет.
         return hubDeliver();
       }
-      const timer = setTimeout(() => {
-        configAckRef.current.delete(uuid);
-        useStore.getState().pushToast({
-          kind: 'info',
-          message: 'Настройки отправлены по mesh. Подтверждение не пришло — модуль применит их при следующей связи.',
+      report(3, 'Ждём подтверждение модуля…');
+      const acked = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          configAckRef.current.delete(uuid);
+          configWaitersRef.current.delete(uuid);
+          resolve(false);
+        }, 12_000);
+        configAckRef.current.set(uuid, timer);
+        configWaitersRef.current.set(uuid, (ok) => {
+          clearTimeout(timer);
+          configAckRef.current.delete(uuid);
+          configWaitersRef.current.delete(uuid);
+          resolve(ok);
         });
-      }, 20_000);
-      configAckRef.current.set(uuid, timer);
-      useStore.getState().pushToast({
-        kind: 'info',
-        message: 'Настройки 3/3: ждём подтверждение модуля…',
       });
-      return true;
+      if (acked) return succeed('Модуль получил настройки и перезагружается.');
+      onProgress?.({ step: 3, total: 3, text: 'Команда отправлена по mesh, но подтверждение не пришло — модуль применит её при следующей связи.' });
+      return succeed('Настройки отправлены по mesh. Подтверждение не пришло — модуль применит их при следующей связи.');
     },
     [],
   );
