@@ -470,7 +470,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                       : event.status >= 2
                         ? 'SYNC_PENDING'
                         : item.state;
-                if (nextState !== item.state) {
+                // Подтверждение Hub окончательное: поздний ACK шлюза (3) не должен
+                // возвращать сообщение в «ожидание подтверждения».
+                if (nextState !== item.state && !(item.state === 'SYNCED_PERMANENT' && event.status !== 4)) {
                   await kmeshV1Update({ ...item, state: nextState, serverSeq: event.serverSeq }).catch(
                     () => undefined,
                   );
@@ -504,6 +506,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   console.log('[kmesh]', 'status: bubble not found', { rows: rows.length });
                   return prev;
                 }
+                if ((rows[index] as { delivered?: boolean }).delivered && !delivered) {
+                  // Поздний ACK шлюза после подтверждения Hub не откатывает пузырь.
+                  return prev;
+                }
                 rows[index] = {
                   ...(rows[index] as object),
                   pending: !delivered && !failed,
@@ -523,6 +529,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   const m = row as { text?: string; clientId?: string; pending?: boolean };
                   const match = (clientId && m.clientId === clientId) || (Boolean(item?.text) && m.text === item?.text && Boolean(m.pending));
                   if (!match) return row;
+                  if ((row as { delivered?: boolean }).delivered && !delivered) return row;
                   changed = true;
                   return {
                     ...(row as object),
