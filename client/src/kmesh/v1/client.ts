@@ -57,7 +57,7 @@ import {
   type SearchResult,
 } from './protocol';
 import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
-import { decodeLocalSearch, encodeLocalSearchReq, encodeLocalSearchResp, msgUuidFromHex } from './protocol';
+import { crc16, decodeLocalSearch, encodeLocalSearchReq, encodeLocalSearchResp, msgUuidFromHex } from './protocol';
 
 export interface KMeshV1Link {
   send(frame: Uint8Array): Promise<boolean>;
@@ -322,6 +322,7 @@ export class KMeshV1Client {
     allowPlaintext?: boolean;
     clientId?: string;
   }): Promise<{ msgUuid: string; state: KMeshV1SyncState }> {
+    const t0 = Date.now();
     const keys = await storage.loadKeys();
     if (!keys) throw new Error('device_keys_missing');
     if (!this.nodeId) throw new Error('mesh_node_not_connected');
@@ -425,7 +426,7 @@ export class KMeshV1Client {
     const toCluster = !input.toInternet;
     if (!chatKey && input.toInternet) {
       this.opts.onSendProgress?.({ msgUuid: uuidHex, clientId: input.clientId, chatId: input.chatId, sent: 0, total: 0, phase: 'key' });
-      chatKey = await this.chatKeyFor(input.chatId).catch(() => null);
+      chatKey = await this.chatKeyFor(input.chatId, true).catch(() => null);
       if (!chatKey) {
         await this.requestChatKey(input.chatId, input.chatRef).catch(() => false);
         for (let i = 0; i < 14 && !chatKey; i += 1) {
@@ -516,8 +517,12 @@ export class KMeshV1Client {
     item.state = 'LOCAL_MESH_ONLY';
     await kmeshV1Update(item);
 
+    const tKey = Date.now() - t0;
     const ok = await sendFrame(frame);
     console.log('[kmesh]', 'sendText', {
+      keyKind,
+      keyMs: tKey,
+      totalMs: Date.now() - t0,
       chatId: input.chatId,
       chatRef: input.chatRef,
       nodeId: this.nodeId,
@@ -750,23 +755,36 @@ export class KMeshV1Client {
     if (server) candidates.push(server);
     const pair = await pairKeyFor(chatId);
     if (pair) candidates.push(pair);
-    const keys = await storage.loadKeys();
-    if (keys) {
-      const e2e = await loadChatKey(chatId, keys).catch(() => null);
-      if (e2e) candidates.push(e2e);
-    }
-    if (!candidates.length) {
-      try {
-        candidates.push((await getServerChatKey(chatId)).key);
-      } catch {
-        return null;
+    const e2e = await this.e2eKeyFor(chatId);
+    if (e2e) candidates.push(e2e);
+    const tryKeys = (list: Uint8Array[]): string | null => {
+      for (const key of list) {
+        try {
+          return new TextDecoder().decode(decryptBytes(key, ciphertextB64, nonceB64));
+        } catch {
+          /* пробуем следующий ключ */
+        }
       }
+      return null;
+    };
+    const direct = tryKeys(candidates);
+    if (direct != null) return direct;
+    // Серверного ключа чата на устройстве нет (или он устарел): без интернета просим его у Hub
+    // через kMesh (CHAT_KEY_REQ) и пробуем снова. Раньше такое сообщение молча пропадало.
+    const online = await Promise.race([
+      getServerChatKey(chatId).then((r) => r.key).catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
+    ]);
+    if (online) {
+      const text = tryKeys([online]);
+      if (text != null) return text;
     }
-    for (const key of candidates) {
-      try {
-        return new TextDecoder().decode(decryptBytes(key, ciphertextB64, nonceB64));
-      } catch {
-        /* пробуем следующий ключ */
+    await this.requestChatKey(chatId, crc16(new TextEncoder().encode(chatId)) || 1).catch(() => false);
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const fresh = await peekServerChatKey(chatId).catch(() => null);
+      if (fresh && !candidates.some((k) => k.length === fresh.length && k.every((b, j) => b === fresh[j]))) {
+        return tryKeys([fresh]);
       }
     }
     return null;
@@ -782,11 +800,11 @@ export class KMeshV1Client {
     if (local) return loadChatKey(chatId, keys).catch(() => null);
     return Promise.race([
       loadChatKey(chatId, keys).catch(() => null),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
     ]);
   }
 
-  private async chatKeyFor(chatId: string): Promise<Uint8Array | null> {
+  private async chatKeyFor(chatId: string, skipE2e = false): Promise<Uint8Array | null> {
     if (this.opts.getChatKey) return this.opts.getChatKey(chatId);
     const keys = await storage.loadKeys();
     if (!keys) return null;
@@ -795,14 +813,15 @@ export class KMeshV1Client {
     const server = await peekServerChatKey(chatId).catch(() => null);
     if (server) return server;
     // E2E-чат: локальный ключ устройства.
-    const e2e = await this.e2eKeyFor(chatId);
+    // В sendText E2E-ключ уже проверен — второй раз не ждём.
+    const e2e = skipE2e ? null : await this.e2eKeyFor(chatId);
     if (e2e) return e2e;
     // Офлайн HTTP-запрос ключа может висеть десятки секунд — ограничиваем.
     // Дальше sendText сам запросит ключ через KMesh (CHAT_KEY_REQ).
     try {
       const key = await Promise.race([
         getServerChatKey(chatId).then((result) => result.key),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
       ]);
       return key;
     } catch {

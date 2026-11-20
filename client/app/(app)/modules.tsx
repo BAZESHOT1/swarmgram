@@ -202,7 +202,9 @@ function ConnectedModuleCard({
   const batteryTone = batteryPct <= 20 ? 'danger' : batteryPct <= 50 ? 'warning' : 'success';
   const batteryColor =
     batteryTone === 'danger' ? theme.danger : batteryTone === 'warning' ? theme.warning : theme.success;
-  const neighbors = Math.max(0, Number(module.neighbors ?? 0));
+  // Соседи: счётчик из статуса модуля или список nb из INFO (ретранслятор присылает только список).
+  const nbList = (module as { nb?: unknown[] }).nb;
+  const neighbors = Math.max(0, Number(module.neighbors ?? 0), Array.isArray(nbList) ? nbList.length : 0);
   const lastSeen = module.lastSeenAt ?? module.last_seen_at;
   const transportName = kind === 'ble' ? 'Bluetooth LE' : kind === 'usb' ? 'USB' : 'USB / BLE';
   const transportHint =

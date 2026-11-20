@@ -25,7 +25,7 @@ import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { flushRelayQueue, queueRelay } from '../kmesh/v1/relay';
 import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
-import { storeServerChatKey } from '../data/chatkit';
+import { peekServerChatKey, storeServerChatKey } from '../data/chatkit';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
@@ -36,6 +36,7 @@ import { loadCachedIdentity, refreshCachedIdentity, saveCachedIdentity } from '.
 import {
   addPendingBleClaim,
   listPendingBleClaims,
+  kmeshV1Get,
   kmeshV1List,
   kmeshV1Update,
   removePendingBleClaim,
@@ -453,8 +454,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onHistory: (chatRef, messages, more) => emitKmeshHistory({ chatRef, messages, more }),
           onStatus: (event) => {
             void (async () => {
-              const list = await kmeshV1List().catch(() => []);
-              const item = list.find((row) => row.msgUuid === event.msgUuid);
+              const item = await kmeshV1Get(event.msgUuid).catch(() => null);
               if (!item) return;
               const nextState =
                 event.status === 5
@@ -616,6 +616,21 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           // Биндим в фоне: adopt не должен ждать HTTP, иначе мастер
           // подключения «висит» на медленной сети.
           void api.kmeshV1NodeBind(nextInfo.nodeId).catch(() => undefined);
+        }
+        // Без интернета заранее просим у Hub (через шлюз kMesh) серверные ключи последних чатов, которых
+        // нет на устройстве: иначе первая отправка ждёт ключ, а входящие нечем расшифровать.
+        if (!useStore.getState().transportOnline) {
+          void (async () => {
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+            const cachedChats = qc.getQueryData<Array<{ id?: unknown; encryption?: unknown }>>(['chats', session?.username]) ?? [];
+            for (const chat of cachedChats.slice(0, 12)) {
+              if (typeof chat?.id !== 'string' || chat.encryption === 'e2e') continue;
+              if (v1ClientRef.current !== v1) return;
+              if (await peekServerChatKey(chat.id).catch(() => null)) continue;
+              await v1.requestChatKey(chat.id, refOf(chat.id)).catch(() => false);
+              await new Promise((resolve) => setTimeout(resolve, 600));
+            }
+          })();
         }
         // Мобильный шлюз: модуль → приложение → Hub и обратно.
         mobileGatewayRef.current?.stop();

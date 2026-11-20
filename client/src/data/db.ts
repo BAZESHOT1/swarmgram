@@ -77,6 +77,12 @@ async function native(): Promise<NonNullable<typeof sqliteDb> | null> {
            updated_at TEXT NOT NULL
          );`,
       );
+      // clientId сообщения в ленте: по нему статусы доставки kMesh находят свой пузырь.
+      try {
+        await db.execAsync("ALTER TABLE kmesh_v1_outbox ADD COLUMN client_id TEXT NOT NULL DEFAULT ''");
+      } catch {
+        /* колонка уже есть */
+      }
       sqliteDb = db as unknown as NonNullable<typeof sqliteDb>;
       return sqliteDb;
     }
@@ -243,26 +249,43 @@ export async function kmeshV1Enqueue(item: KMeshV1OutboxItem): Promise<void> {
   await db.runAsync(
     `INSERT OR REPLACE INTO kmesh_v1_outbox
        (msg_uuid, chat_id, chat_ref, peer_node_id, sender_node_id, text, created_at,
-        ciphertext_b64, nonce, state, attempts, server_seq, permanent_signature)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ciphertext_b64, nonce, state, attempts, server_seq, permanent_signature, client_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     item.msgUuid, item.chatId, item.chatRef, item.peerNodeId, item.senderNodeId, item.text,
     item.createdAt, item.ciphertextB64, item.nonce, item.state, item.attempts,
-    item.serverSeq ?? null, item.permanentSignature,
+    item.serverSeq ?? null, item.permanentSignature, item.clientId ?? '',
   );
+}
+
+type KMeshV1Row = {
+  msg_uuid: string; chat_id: string; chat_ref: number; peer_node_id: number;
+  sender_node_id: number; text: string; created_at: string; ciphertext_b64: string;
+  nonce: string; state: string; attempts: number; server_seq: number | null;
+  permanent_signature: string; client_id?: string;
+};
+
+/** Одна запись outbox по msg_uuid (в любом состоянии): для статусов доставки. */
+export async function kmeshV1Get(msgUuid: string): Promise<KMeshV1OutboxItem | null> {
+  if (Platform.OS === 'web') return (await readKMeshV1Web()).find((i) => i.msgUuid === msgUuid) ?? null;
+  const db = await native();
+  if (!db) return null;
+  const rows = await db.getAllAsync<KMeshV1Row>('SELECT * FROM kmesh_v1_outbox WHERE msg_uuid = ? LIMIT 1', msgUuid);
+  return rows.length ? rowToKMeshV1(rows[0]) : null;
 }
 
 export async function kmeshV1List(): Promise<KMeshV1OutboxItem[]> {
   if (Platform.OS === 'web') return readKMeshV1Web();
   const db = await native();
   if (!db) return [];
-  const rows = await db.getAllAsync<{
-    msg_uuid: string; chat_id: string; chat_ref: number; peer_node_id: number;
-    sender_node_id: number; text: string; created_at: string; ciphertext_b64: string;
-    nonce: string; state: string; attempts: number; server_seq: number | null;
-    permanent_signature: string;
-  }>('SELECT * FROM kmesh_v1_outbox WHERE state <> ? ORDER BY created_at ASC LIMIT 200',
+  // Свежие записи первыми: при большом хвосте старых неотправленных новые не должны выпадать за лимит.
+  const rows = await db.getAllAsync<KMeshV1Row>(
+    'SELECT * FROM (SELECT * FROM kmesh_v1_outbox WHERE state <> ? ORDER BY created_at DESC LIMIT 300) ORDER BY created_at ASC',
     'SYNCED_PERMANENT');
-  return rows.map((r) => ({
+  return rows.map(rowToKMeshV1);
+}
+
+function rowToKMeshV1(r: KMeshV1Row): KMeshV1OutboxItem {
+  return ({
     msgUuid: r.msg_uuid,
     chatId: r.chat_id,
     chatRef: r.chat_ref,
@@ -276,7 +299,8 @@ export async function kmeshV1List(): Promise<KMeshV1OutboxItem[]> {
     attempts: r.attempts ?? 0,
     serverSeq: r.server_seq ?? undefined,
     permanentSignature: r.permanent_signature ?? '',
-  }));
+    ...(r.client_id ? { clientId: r.client_id } : {}),
+  });
 }
 
 export async function kmeshV1Update(item: KMeshV1OutboxItem): Promise<void> {
