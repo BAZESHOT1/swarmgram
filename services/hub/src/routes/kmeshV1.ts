@@ -2303,13 +2303,26 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         [chip, variant, base, release.build_number],
       );
       if (manifest) {
+        /* Медленный/дорогой LoRa: большой патч (сотни КБ) часами занимает эфир.
+         * Разрешаем LoRa только для небольших патчей; большие — только ESP-NOW. */
+        const LORA_PATCH_MAX = 192 * 1024;
+        const loraOnly = (rollout.ifc_mask & 2) && !(rollout.ifc_mask & 1);
+        if (loraOnly && manifest.patch_size > LORA_PATCH_MAX) {
+          return reply.send({ ok: true, up_to_date: true, chip, base_build: base, reason: 'patch_too_large' });
+        }
         return reply.send({
-          ok: true, full: false, chip, variant, ifc_mask: rollout.ifc_mask,
+          ok: true, full: false, chip, variant,
+          ifc_mask: manifest.patch_size > LORA_PATCH_MAX ? (rollout.ifc_mask & 1) : rollout.ifc_mask,
           patch_id: manifest.patch_id, base_build: base, target_build: manifest.target_build,
           version: manifest.version, total_chunks: manifest.total_chunks, patch_size: manifest.patch_size,
           patch_sha256: manifest.patch_sha256, target_sha256: manifest.target_sha256,
           signature: manifest.signature, patch_url: `/v1/kmesh/v1/ota/patch/${manifest.patch_id}`,
         });
+      }
+      /* По LoRa полный образ (1.5 МБ) не раздаём: это часы эфира и высокий риск.
+       * Для дальних лесных модулей обязателен дельта-патч. */
+      if ((rollout.ifc_mask & 2) && !(rollout.ifc_mask & 1)) {
+        return reply.send({ ok: true, up_to_date: true, chip, base_build: base, reason: 'patch_required' });
       }
     }
     const totalChunks = Math.ceil(release.full_size / 180);
@@ -2321,7 +2334,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     fullManifest.signature = signManifest(fullManifest);
     if (!fullManifest.signature) return reply.code(503).send({ ok: false, error: 'ota_signing_unavailable' });
     return reply.send({
-      ok: true, full: true, chip, variant, ifc_mask: rollout.ifc_mask,
+      ok: true, full: true, chip, variant, ifc_mask: rollout.ifc_mask & 1,
       patch_id: (Number(release.id) & 0x7fff) || 1, base_build: base, target_build: release.build_number,
       version: release.version, total_chunks: totalChunks, full_size: release.full_size,
       patch_sha256: release.full_sha256, target_sha256: release.full_sha256,
@@ -2423,7 +2436,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     // Дельта-патчи от предыдущих канонических сборок того же чипа и варианта.
     const previous = await query<{ build_number: number; image: Buffer }>(
       `SELECT build_number, image FROM kmesh_ota_releases
-        WHERE chip = $1 AND variant = $2 AND build_number < $3 ORDER BY build_number DESC LIMIT 2`,
+        WHERE chip = $1 AND variant = $2 AND build_number < $3 ORDER BY build_number DESC LIMIT 6`,
       [chip, variant, build],
     );
     for (const prev of previous) {

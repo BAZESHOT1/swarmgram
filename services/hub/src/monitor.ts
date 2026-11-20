@@ -116,6 +116,24 @@ export async function accrueCredits(): Promise<void> {
   }
 }
 
+/**
+ * Заготовки загрузок (objects.state='pending'), которые так и не подтвердили: телефон не смог
+ * писать на узел по http и загрузил файл через Hub. Они держат «обещанные» фрагменты на узлах —
+ * удаляем всё старше часа, на что не ссылаются сообщения/комментарии/аватары/фоны.
+ */
+async function purgeStalePending(): Promise<void> {
+  const rows = await query<{ id: string }>(
+    `DELETE FROM objects o
+      WHERE o.state = 'pending' AND o.created_at < now() - interval '1 hour'
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.object_id = o.id)
+        AND NOT EXISTS (SELECT 1 FROM post_comments pc WHERE pc.object_id = o.id)
+        AND NOT EXISTS (SELECT 1 FROM users u WHERE u.avatar_object_id = o.id OR u.background_object_id = o.id)
+        AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.avatar_object_id = o.id OR c.background_object_id = o.id)
+      RETURNING o.id`,
+  );
+  if (rows.length) log('info', 'stale_pending_purged', { count: rows.length });
+}
+
 export function startMonitor(): void {
   const timer = setInterval(() => {
     ticks += 1;
@@ -125,6 +143,7 @@ export function startMonitor(): void {
         await purgeDeletedObjects();
         await pingOnlineNodes();
         if (ticks % 180 === 0) await accrueCredits(); // ~раз в час
+        if (ticks % 45 === 1) await purgeStalePending(); // ~раз в 15 минут
       } catch (e) {
         log('error', 'monitor_failed', { error: e instanceof Error ? e.message : String(e) });
       }

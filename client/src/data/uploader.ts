@@ -355,6 +355,9 @@ async function putFragmentWithProgress(
  * Этапы/прогресс: upload 0.25–0.9, register 0.9–1.
  * Сжатие и шифрование выполняет вызывающая сторона (messaging.ts).
  */
+/** Узлы доступны телефону напрямую (https) — тогда грузим на них, а не через Hub. */
+let nativeDirectNodes = false;
+
 export async function uploadBytesWithProgress(
   bytes: Uint8Array,
   opts: UploadProgressOptions = {},
@@ -366,8 +369,25 @@ export async function uploadBytesWithProgress(
   onStage?.('upload');
   report(0.25);
 
+  // iOS/Android не могут писать на узлы по http (ATS/cleartext): сразу загружаем через Hub,
+  // без init — он оставлял «висящие» заготовки и стоил лишний запрос на каждую отправку.
+  if (Platform.OS !== 'web' && !nativeDirectNodes) {
+    try {
+      report(0.6);
+      const relayed = await api.api.uploadObjectRelay(bytes);
+      assertNotAborted(signal);
+      onStage?.('register');
+      report(1);
+      return { objectId: relayed.id, size: relayed.sizeBytes, replicas: relayed.replicas };
+    } catch (e) {
+      if ((e as { name?: string })?.name === 'AbortError') throw e;
+      /* запасной путь: init + узлы (если у узлов появится https) */
+    }
+  }
+
   const sha256 = sha256Of(bytes);
   const init = await api.api.objectInit(bytes.length, sha256);
+  if (Platform.OS !== 'web' && (init.replicas ?? []).some((r) => replicaIsHttps(r?.url))) nativeDirectNodes = true;
   assertNotAborted(signal);
 
   const replicas = init.replicas ?? [];
