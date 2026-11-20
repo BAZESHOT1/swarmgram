@@ -1184,15 +1184,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     await storeArchive(relayBody, gatewayId);
     await routeRelayedPacket(relayBody, gatewayId);
 
-    const src = num(body.src_id);
-    const packetId = num(body.packet_id);
-    if (src > 1 && packetId > 0) {
-      await query(
-        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, expires_at)
-         VALUES ($1,$2,'ack',$3,$4, now() + interval '24 hours')`,
-        [gatewayId, src, packetId, String(body.msg_uuid ?? '')],
-      );
-    }
+    // ACK в downlink здесь не нужен: телефон сам подтверждает сообщение модулю
+    // сразу после успешного ответа Hub. Иначе на каждый отправленный текст в
+    // очередь ложился лишний ACK и при офлайне забивал выдачу входящих пакетов.
     rateLimit(`kmesh-mobile-relay:${auth.userId}`, 600, 60_000);
     return reply.send({ ok: true, gateway_id: gatewayId });
   });
