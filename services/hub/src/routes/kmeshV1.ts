@@ -1988,14 +1988,43 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
 
     // Через kMesh: шлюз кластера, в котором модуль был слышен за последние 5 минут, забирает
     // пакет из downlink. Слишком старое присутствие даёт «ложную» доставку в пустоту.
+    //
+    // Важно: presence может содержать строку с gateway_id = самому узлу — это мобильный
+    // шлюз (телефон). Если поставить конфиг только туда, физический шлюз его никогда не
+    // заберёт, а телефон может быть выключен. Поэтому физическому шлюзу шлём приоритетно
+    // и дублируем мобильному: кто первый доставит, тот и применит (модуль дедуплицирует epoch).
     const nodeId = nodeIdFromMac(mac);
-    const seen = await one<{ gateway_id: string }>(
+    const seenRows = await query<{ gateway_id: string }>(
       `SELECT gateway_id::text FROM kmesh_v1_presence
         WHERE node_id = $1 AND gateway_id > 1 AND last_seen_at > now() - interval '5 minutes'
-        ORDER BY last_seen_at DESC LIMIT 1`,
+        ORDER BY (gateway_id <> $1) DESC, last_seen_at DESC`,
       [nodeId],
     );
-    if (!seen) throw badRequest('module_not_reachable');
+    // Presence хранит только один шлюз на узел (PK node_id), и мобильный шлюз телефона
+    // может перезаписать физический. Поэтому дополнительно ищем физический шлюз,
+    // который недавно слышал модуль как соседа (kmesh_v1_links).
+    const linkRows = await query<{ node_id: string }>(
+      `SELECT l.node_id::text
+         FROM kmesh_v1_links l
+        WHERE l.neighbor_id = $1
+          AND l.seen_at > now() - interval '5 minutes'
+          AND l.node_id <> $1
+          AND EXISTS (
+            SELECT 1 FROM kmesh_v1_presence p
+             WHERE p.gateway_id = l.node_id AND p.node_id <> l.node_id
+          )
+        GROUP BY l.node_id
+        ORDER BY MAX(l.seen_at) DESC`,
+      [nodeId],
+    );
+    const candidateIds = [
+      ...linkRows.map((row) => Number(row.node_id)),
+      ...seenRows.map((row) => Number(row.gateway_id)),
+    ];
+    const gatewayIds = Array.from(
+      new Set(candidateIds.filter((id) => Number.isInteger(id) && id > 1)),
+    ).slice(0, 2);
+    if (!gatewayIds.length) throw badRequest('module_not_reachable');
     if (!config.tempMeshKey) throw badRequest('mesh_key_unavailable');
     const sigBuf = Buffer.from(sig, 'hex');
     const head = Buffer.alloc(9);
@@ -2005,7 +2034,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     head.writeUInt32LE(epoch >>> 0, 4);
     head[8] = sigBuf.length;
     const rpc = Buffer.concat([head, sigBuf, Buffer.from(p, 'utf8')]);
-    const gatewayId = Number(seen.gateway_id);
+    const gatewayId = gatewayIds[0]!;
     const packetId = randomBytes(4).readUInt32LE(0) || 1;
     const msgUuid = randomBytes(8).readBigUInt64LE(0) || 1n;
     const sealed = sealTemp(config.tempMeshKey, { packetId, msgUuid, srcId: gatewayId, dstId: nodeId, type: 1 }, rpc,
@@ -2013,12 +2042,16 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!sealed) throw badRequest('config_too_large');
     const wire = buildPacket({ packetId, msgUuid, srcId: gatewayId, dstId: nodeId, nextHopId: nodeId, type: 1,
       flags: sealed.flags, payload: sealed.payload });
-    await query(
-      `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64, expires_at)
-       VALUES ($1,$2,'config',$3,$4,$5, now() + interval '15 minutes')`,
-      [gatewayId, nodeId, packetId, BigInt.asUintN(64, msgUuid).toString(16).padStart(16, '0'), wire.toString('base64')],
-    );
-    return reply.send({ ok: true, queued: true, moduleMac: mac, nodeId, gatewayId, epoch });
+    const packetB64 = wire.toString('base64');
+    const msgUuidHex = BigInt.asUintN(64, msgUuid).toString(16).padStart(16, '0');
+    for (const targetGateway of gatewayIds) {
+      await query(
+        `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, packet_b64, expires_at)
+         VALUES ($1,$2,'config',$3,$4,$5, now() + interval '15 minutes')`,
+        [targetGateway, nodeId, packetId, msgUuidHex, packetB64],
+      );
+    }
+    return reply.send({ ok: true, queued: true, moduleMac: mac, nodeId, gatewayId, gateways: gatewayIds, epoch });
   });
 
   /** Удаление модуля из аккаунта (в том числе без данных о нём): снимает привязку по MAC. */
