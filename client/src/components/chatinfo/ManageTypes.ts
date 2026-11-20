@@ -22,6 +22,8 @@ export interface PermissionSet {
   publish: boolean;
   /** Смена аватара группы/канала (владелец не ограничивается). */
   setAvatar: boolean;
+  /** Смена фона группы/канала. */
+  setBackground: boolean;
 }
 
 export interface ChatPermissions {
@@ -54,6 +56,7 @@ export const DEFAULT_ADMIN_PERMISSIONS: PermissionSet = {
   pinMessages: true,
   publish: true,
   setAvatar: true,
+  setBackground: true,
 };
 
 /** Права модератора по умолчанию (совпадают с сервером). */
@@ -68,6 +71,7 @@ export const DEFAULT_MODERATOR_PERMISSIONS: PermissionSet = {
   pinMessages: true,
   publish: true,
   setAvatar: true,
+  setBackground: false,
 };
 
 export const DEFAULT_PERMISSIONS: ChatPermissions = {
@@ -91,6 +95,7 @@ export const PERMISSION_ITEMS: {
   { key: 'pinMessages', label: 'Закрепление', hint: 'Закреплять сообщения', icon: 'pin-outline' },
   { key: 'publish', label: 'Публикация', hint: 'Публиковать посты в канале', icon: 'megaphone-outline' },
   { key: 'setAvatar', label: 'Смена аватара', hint: 'Устанавливать и удалять аватар группы/канала', icon: 'image-outline' },
+  { key: 'setBackground', label: 'Смена фона', hint: 'Ставить фоновое изображение группы/канала', icon: 'color-palette-outline' },
 ];
 
 export const ROLE_LABEL: Record<ChatRole, string> = {

@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { one, query, tx } from '../db.js';
 import { verifyPassword } from '../crypto.js';
 import { ensureKdfSalt } from './keys.js';
-import { ApiError, badRequest, conflict, log, notFound, str, USERNAME_RE } from '../util.js';
+import { ApiError, badRequest, conflict, forbidden, log, notFound, str, USERNAME_RE } from '../util.js';
 
 
 /**
@@ -128,6 +128,69 @@ function parseSearchHistory(value: unknown): {
   });
 }
 
+/** Фон профиля (тот же контракт, что у аватара). */
+async function backgroundOfUser(userId: string): Promise<{ objectId: string; key: string; mime: string } | null> {
+  const row = await one<{ background_object_id: string | null; background_key: string; background_mime: string }>(
+    'SELECT background_object_id, background_key, background_mime FROM users WHERE id = $1',
+    [userId],
+  );
+  if (!row?.background_object_id || !row.background_key || !row.background_mime) return null;
+  return { objectId: row.background_object_id, key: row.background_key, mime: row.background_mime };
+}
+
+/** Примерные радиусы покрытия по ролям (км): носимый ~0.3, шлюз ~1.2, ретранслятор ~1.6. */
+const COVERAGE_RADIUS_KM: Record<string, number> = { wearable: 0.3, gateway: 1.2, repeater: 1.6 };
+
+/** Модули владельца по ролям + примерная площадь покрытия и короткий список для вкладки «Модули». */
+async function moduleActivity(userId: string) {
+  const rows = await query<{ id: string; name: string; role: string; status: string }>(
+    `SELECT id::text, COALESCE(NULLIF(name, ''), role) AS name, role, status
+       FROM modules WHERE owner_id = $1 ORDER BY role, name LIMIT 60`,
+    [userId],
+  ).catch(() => [] as Array<{ id: string; name: string; role: string; status: string }>);
+  const byRole = { wearable: 0, repeater: 0, gateway: 0 };
+  let area = 0;
+  for (const m of rows) {
+    const role = m.role === 'wearable' || m.role === 'repeater' ? m.role : 'gateway';
+    byRole[role] += 1;
+    const r = COVERAGE_RADIUS_KM[role] ?? 1;
+    area += Math.PI * r * r;
+  }
+  return {
+    modulesByRole: byRole,
+    coverageKm2: Math.round(area),
+    modulesList: rows.map((m) => ({ id: m.id, name: m.name, role: m.role, online: m.status === 'online' })),
+  };
+}
+
+/** Закреплённый в профиле канал/группа — если зритель может его видеть. */
+async function featuredChatFor(userId: string, viewerId: string) {
+  const row = await one<{
+    id: string; type: string; title: string; description: string; visibility: string;
+    avatar_object_id: string | null; avatar_key: string; avatar_mime: string; is_member: boolean;
+  }>(
+    `SELECT c.id, c.type, c.title, c.description, c.visibility,
+            c.avatar_object_id, c.avatar_key, c.avatar_mime,
+            EXISTS (SELECT 1 FROM chat_members cm WHERE cm.chat_id = c.id AND cm.user_id = $2) AS is_member
+       FROM users u JOIN chats c ON c.id = u.featured_chat_id
+      WHERE u.id = $1 AND c.type IN ('group','channel') AND c.blocked_reason IS NULL`,
+    [userId, viewerId],
+  );
+  if (!row) return null;
+  if (row.visibility === 'private' && !row.is_member) return null;
+  return {
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    description: row.description ?? '',
+    isMember: row.is_member,
+    avatar:
+      row.avatar_object_id && row.avatar_key && row.avatar_mime
+        ? { objectId: row.avatar_object_id, key: row.avatar_key, mime: row.avatar_mime }
+        : null,
+  };
+}
+
 const meRoutes: FastifyPluginAsync = async (app) => {
   /* ------------------------------------------------------------------ me -- */
   app.get('/me', { onRequest: [requireAuth()] }, async (req, reply) => {
@@ -211,6 +274,8 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       invitePrivacy: user.invite_privacy,
       // Расширенный профиль и синхронизируемые настройки.
       avatar: avatarFrom(user),
+      background: await backgroundOfUser(user.id),
+      featuredChat: await featuredChatFor(user.id, user.id),
       banner: user.banner,
       links: Array.isArray(user.links) ? user.links : [],
       location: user.location,
@@ -387,6 +452,54 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       [me],
     );
     return reply.send({ ok: true });
+  });
+
+  /* ------------------------------------------------- фон профиля --------- */
+  app.put('/me/background', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const body = (req.body ?? {}) as { objectId?: unknown; key?: unknown; mime?: unknown };
+    const objectId = str(body.objectId, 'objectId', { max: 64 });
+    const key = str(body.key, 'key', { min: 1, max: 300 });
+    const mime = str(body.mime, 'mime', { min: 1, max: 120 });
+    if (!/^image\//i.test(mime)) throw badRequest('invalid_background_mime');
+    const obj = await one<{ id: string }>(
+      "SELECT id FROM objects WHERE id = $1 AND owner_id = $2 AND state = 'active'",
+      [objectId, me],
+    );
+    if (!obj) throw notFound('object');
+    await query(
+      `UPDATE users SET background_object_id = $2, background_key = $3, background_mime = $4, updated_at = now()
+        WHERE id = $1`,
+      [me, objectId, key, mime],
+    );
+    return reply.send({ background: { objectId, key, mime } });
+  });
+
+  app.delete('/me/background', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    await query(
+      `UPDATE users SET background_object_id = NULL, background_key = '', background_mime = '', updated_at = now()
+        WHERE id = $1`,
+      [me],
+    );
+    return reply.send({ ok: true });
+  });
+
+  /* ------------------------------- канал/группа, закреплённые в профиле -- */
+  app.put('/me/featured-chat', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const me = req.auth!.userId;
+    const body = (req.body ?? {}) as { chatId?: unknown };
+    const chatId = typeof body.chatId === 'string' && body.chatId ? body.chatId : null;
+    if (chatId) {
+      const ok = await one(
+        `SELECT 1 FROM chats c JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $2
+          WHERE c.id = $1 AND c.type IN ('group','channel')`,
+        [chatId, me],
+      );
+      if (!ok) throw forbidden('not_a_member');
+    }
+    await query('UPDATE users SET featured_chat_id = $2, updated_at = now() WHERE id = $1', [me, chatId]);
+    return reply.send({ featuredChat: chatId ? await featuredChatFor(me, me) : null });
   });
 
   /* ------------------------------------------------- удаление аккаунта ---- */
@@ -633,6 +746,9 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       username: target.username,
       displayName: target.display_name,
       avatar: avatarFrom(target),
+      background: await backgroundOfUser(target.id),
+      featuredChat: await featuredChatFor(target.id, me),
+      ...(await moduleActivity(target.id)),
       banner: target.banner,
       // Статус — публичная информация и не зависит от настроек видимости био.
       status: target.profile_status,

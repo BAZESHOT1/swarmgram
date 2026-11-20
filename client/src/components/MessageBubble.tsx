@@ -337,12 +337,21 @@ export function MessageBubble({
     Alert.alert('Сообщение', undefined, buttons);
   };
 
-  const bubbleColor = item.mine ? theme.bubbleMine : theme.bubbleOther;
+  const onMine = theme.dark ? '#FFFFFF' : theme.onAccent;
+  const mineSub = theme.dark ? 'rgba(255,255,255,0.62)' : 'rgba(26,18,6,0.68)';
+  // Тёмная тема: полупрозрачные «стеклянные» пузыри поверх фона чата (как на макете).
+  const bubbleColor = theme.dark
+    ? item.mine
+      ? 'rgba(255,255,255,0.17)'
+      : 'rgba(24,24,26,0.84)'
+    : item.mine
+      ? theme.bubbleMine
+      : theme.bubbleOther;
   const first = group === 'single' || group === 'first';
   const last = group === 'single' || group === 'last';
   // Крупные скругления без «хвостиков»: 20 снаружи, 8 между сообщениями группы.
-  const R = 20;
-  const r = 8;
+  const R = 18;
+  const r = 7;
 
   const radii = item.mine
     ? {
@@ -429,7 +438,7 @@ export function MessageBubble({
             radii,
             {
               backgroundColor: pressed ? theme.surfacePressed : bubbleColor,
-              borderColor: highlightActive ? theme.accent : item.mine ? 'transparent' : theme.line,
+              borderColor: highlightActive ? theme.accent : theme.dark ? 'rgba(255,255,255,0.07)' : item.mine ? 'transparent' : theme.line,
               borderWidth: highlightActive ? 1.5 : 1,
             },
             first && styles.bubbleFirst,
@@ -469,10 +478,10 @@ export function MessageBubble({
               accessibilityLabel="Перейти к сообщению, на которое ответили"
               style={[styles.quote, { borderLeftColor: theme.accent, backgroundColor: item.mine ? 'rgba(0,0,0,0.16)' : theme.surfacePressed }]}
             >
-              <Text style={{ color: item.mine ? theme.onAccent : theme.accent, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>
+              <Text style={{ color: item.mine ? onMine : theme.accent, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>
                 {quoted?.username ?? 'Ответ'}
               </Text>
-              <Text style={{ color: item.mine ? 'rgba(26,18,6,0.72)' : theme.textSecondary, fontSize: 12.5 }} numberOfLines={1}>
+              <Text style={{ color: item.mine ? mineSub : theme.textSecondary, fontSize: 12.5 }} numberOfLines={1}>
                 {quoted?.text || 'Сообщение'}
               </Text>
             </Pressable>
@@ -490,13 +499,13 @@ export function MessageBubble({
             richText(
               item.text,
               highlight,
-              item.mine ? theme.onAccent : theme.textPrimary,
-              item.mine ? theme.onAccent : theme.accent,
+              item.mine ? onMine : theme.textPrimary,
+              item.mine ? onMine : theme.accent,
               item.mine ? 'rgba(255,255,255,0.3)' : theme.accentSoft,
               item.mine,
             )
           ) : (
-            <Text style={[styles.text, { color: item.mine ? theme.onAccent : theme.textSecondary, fontStyle: 'italic' }]}>🔒 Зашифрованное сообщение</Text>
+            <Text style={[styles.text, { color: item.mine ? onMine : theme.textSecondary, fontStyle: 'italic' }]}>🔒 Зашифрованное сообщение</Text>
           )}
 
           {/* Тонкий прогресс-бар внизу пузыря во время загрузки */}
@@ -505,7 +514,7 @@ export function MessageBubble({
               <View
                 style={[
                   styles.progressFill,
-                  { width: `${Math.max(4, progressPct)}%`, backgroundColor: item.mine ? theme.onAccent : theme.accent },
+                  { width: `${Math.max(4, progressPct)}%`, backgroundColor: item.mine ? onMine : theme.accent },
                 ]}
               />
             </View>
@@ -526,13 +535,13 @@ export function MessageBubble({
                       styles.progressFill,
                       {
                         width: `${Math.max(4, Math.min(100, Math.round(((kmeshSent ?? 0) / kmeshTotal) * 100)))}%`,
-                        backgroundColor: item.mine ? theme.onAccent : theme.accent,
+                        backgroundColor: item.mine ? onMine : theme.accent,
                       },
                     ]}
                   />
                 </View>
               ) : null}
-              <Text style={{ fontSize: 9.5, fontWeight: '600', color: item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary }}>
+              <Text style={{ fontSize: 9.5, fontWeight: '600', color: item.mine ? mineSub : theme.textSecondary }}>
                 {kmeshLabel ?? 'Отправка…'}
                 {kmeshTotal ? ` · ${Math.min(kmeshSent ?? 0, kmeshTotal)}/${kmeshTotal} Б` : ''}
               </Text>
@@ -541,7 +550,7 @@ export function MessageBubble({
 
           {item.mine && uploading && onCancelUpload ? (
             <Pressable onPress={onCancelUpload} accessibilityRole="button" accessibilityLabel="Отменить загрузку" hitSlop={6} style={styles.cancelRow}>
-              <Text style={{ color: item.mine ? 'rgba(26,18,6,0.72)' : theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+              <Text style={{ color: item.mine ? mineSub : theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
                 Отмена
               </Text>
             </Pressable>
@@ -566,14 +575,14 @@ export function MessageBubble({
           ) : null}
 
           <View style={styles.metaRow}>
-            {ext.scheme === 'e2e' ? <Ionicons name="lock-closed" size={10} color={item.mine ? 'rgba(26,18,6,0.62)' : theme.accent} /> : null}
+            {ext.scheme === 'e2e' ? <Ionicons name="lock-closed" size={10} color={item.mine ? mineSub : theme.accent} /> : null}
             {viewsCount != null ? (
               <>
-                <Ionicons name="eye-outline" size={12} color={item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary} />
-                <Text style={[styles.meta, { color: item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary }]}>{viewsCount}</Text>
+                <Ionicons name="eye-outline" size={12} color={item.mine ? mineSub : theme.textSecondary} />
+                <Text style={[styles.meta, { color: item.mine ? mineSub : theme.textSecondary }]}>{viewsCount}</Text>
               </>
             ) : null}
-            <Text style={[styles.meta, { color: item.mine ? 'rgba(26,18,6,0.62)' : theme.textSecondary }]}>
+            <Text style={[styles.meta, { color: item.mine ? mineSub : theme.textSecondary }]}>
               {fmtTime(item.createdAt)}
               {ext.edited ? ' · изменено' : ''}
             </Text>
@@ -586,7 +595,7 @@ export function MessageBubble({
                 color="rgba(26,18,6,0.62)"
               />
             ) : null}
-            {secret ? <Ionicons name="lock-closed" size={9} color={item.mine ? 'rgba(26,18,6,0.62)' : theme.accent} /> : null}
+            {secret ? <Ionicons name="lock-closed" size={9} color={item.mine ? mineSub : theme.accent} /> : null}
           </View>
         </Pressable>
 

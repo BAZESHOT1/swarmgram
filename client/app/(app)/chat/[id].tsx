@@ -20,6 +20,8 @@ import { FlashList } from '@shopify/flash-list';
 import { KeyboardAvoidingView as KCKeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Wallpaper } from '../../../src/components/Wallpaper';
+import { Glass, GLASS_FILL_BUTTON } from '../../../src/components/Glass';
 import { useTheme } from '../../../src/theme/useTheme';
 import { useIsWide } from '../../../src/theme/useIsWide';
 import { MessageBubble, SystemMessage, type BubbleGroup, type QuotedMessage } from '../../../src/components/MessageBubble';
@@ -1811,12 +1813,13 @@ export default function ChatScreen() {
         ref={dragRootRef}
         style={{
           flex: 1,
-          backgroundColor: theme.background,
+          backgroundColor: 'transparent',
           // Акцентная рамка вокруг экрана секретного чата.
           borderWidth: secret ? 1.5 : 0,
           borderColor: secret ? theme.accent : 'transparent',
         }}
       >
+        <Wallpaper image={chat?.background ?? null} />
         <ChatHeader
           title={title || 'Диалог'}
           channel={channel}
@@ -2034,7 +2037,7 @@ export default function ChatScreen() {
           style={[
             styles.composer,
             {
-              borderTopColor: theme.line,
+              borderTopColor: 'transparent',
               opacity: canCompose ? 1 : 0.65,
               // Safe-area снизу только при закрытой клавиатуре: иначе KAV уже
               // поднял композер, и лишний отступ даёт «пузырь» над клавиатурой.
@@ -2048,14 +2051,16 @@ export default function ChatScreen() {
             accessibilityLabel="Вложения"
             accessibilityState={{ expanded: attachOpen }}
             hitSlop={6}
-            style={({ pressed }) => [styles.attach, { opacity: pressed ? 0.65 : 1 }]}
+            style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1 })}
           >
-            <MotiView
-              animate={{ rotate: attachOpen ? '45deg' : '0deg' }}
-              transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
-            >
-              <Ionicons name="add" size={24} color={theme.textSecondary} />
-            </MotiView>
+            <Glass radius={26} fill={GLASS_FILL_BUTTON} style={styles.attach}>
+              <MotiView
+                animate={{ rotate: attachOpen ? '45deg' : '0deg' }}
+                transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
+              >
+                <Ionicons name="attach" size={27} color={theme.textPrimary} />
+              </MotiView>
+            </Glass>
           </Pressable>
           <TextInput
             ref={inputRef}
@@ -2091,9 +2096,9 @@ export default function ChatScreen() {
             style={[
               styles.input,
               {
-                backgroundColor: theme.surface,
+                backgroundColor: 'rgba(255,255,255,0.10)',
                 color: theme.textPrimary,
-                borderColor: editing ? theme.accent : theme.line,
+                borderColor: editing ? theme.accent : 'rgba(255,255,255,0.10)',
                 maxWidth: 860,
                 height: inputHeight,
               },
@@ -2302,8 +2307,8 @@ const styles = StyleSheet.create({
     maxWidth: 940,
     alignSelf: 'center',
   },
-  input: { flex: 1, borderWidth: 1, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, minHeight: 42, textAlignVertical: 'top' },
-  attach: { width: 34, height: 42, alignItems: 'center', justifyContent: 'center' },
+  input: { flex: 1, borderWidth: 1, borderRadius: 26, paddingHorizontal: 18, paddingVertical: 12, minHeight: 52, textAlignVertical: 'top', fontSize: 17 },
+  attach: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center' },
   send: { width: 42, height: 42, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
   dropOverlay: {
     zIndex: 80,

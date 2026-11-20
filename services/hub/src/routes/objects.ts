@@ -42,14 +42,17 @@ async function canAccessObject(objectId: string, userId: string): Promise<boolea
   if (grant) return true;
   // Аватар профиля доступен любому авторизованному пользователю: клиент
   // получает маршруты к репликам и расшифровывает файл ключом из профиля.
-  const asAvatar = await one('SELECT 1 FROM users WHERE avatar_object_id = $1', [objectId]);
+  const asAvatar = await one(
+    'SELECT 1 FROM users WHERE avatar_object_id = $1 OR background_object_id = $1',
+    [objectId],
+  );
   if (asAvatar) return true;
   // Аватар группы/канала доступен любому участнику этого чата — так же, как
   // аватар профиля доступен авторизованному пользователю.
   const asChatAvatar = await one(
     `SELECT 1 FROM chats c
        JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = $2
-      WHERE c.avatar_object_id = $1 LIMIT 1`,
+      WHERE c.avatar_object_id = $1 OR c.background_object_id = $1 LIMIT 1`,
     [objectId, userId],
   );
   if (asChatAvatar) return true;

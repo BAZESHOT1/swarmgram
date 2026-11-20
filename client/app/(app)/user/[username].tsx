@@ -31,6 +31,8 @@ import {
   useUpdateProfile,
   humanError,
 } from '../../../src/data/queries';
+import { Glass } from '../../../src/components/Glass';
+import { Wallpaper } from '../../../src/components/Wallpaper';
 import * as api from '../../../src/data/api';
 import type { UserProfile } from '../../../src/data/api';
 import { useStore } from '../../../src/state/useStore';
@@ -398,6 +400,7 @@ export default function UserProfileScreen() {
           onOpenChat={(id) => router.push(`/chat/${id}` as never)}
           forceMobile={compactParam === '1'}
           onEdit={startEdit}
+          onEditProfile={() => router.push(`/user/${profile.username}/edit` as never)}
         />
       </ScrollView>
 
@@ -1004,6 +1007,7 @@ function BrightProfile({
   onOpenChat,
   forceMobile,
   onEdit,
+  onEditProfile,
 }: {
   profile: UserProfile;
   isSelf: boolean;
@@ -1030,6 +1034,7 @@ function BrightProfile({
   onOpenChat: (id: string) => void;
   forceMobile?: boolean;
   onEdit?: (field: EditField, value: string) => void;
+  onEditProfile?: () => void;
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -1048,41 +1053,55 @@ function BrightProfile({
   const contribution = Number(profile.nodeCapacityBytes ?? 0);
   const hasActivity = modulesTotal > 0 || nodesTotal > 0 || nodesOnline > 0 || contribution > 0;
 
+  const [tab, setTab] = React.useState<'gifts' | 'stories' | 'modules'>('modules');
+  const glassFill = 'rgba(255,255,255,0.08)';
+  const byRole = profile.modulesByRole ?? { wearable: 0, repeater: 0, gateway: 0 };
+  const coverage = Number(profile.coverageKm2 ?? 0);
+  const featured = profile.featuredChat ?? null;
+
+  const Row = ({ label, value, accent, onPencil, last }: { label: string; value: string; accent?: boolean; onPencil?: () => void; last?: boolean }) => (
+    <View style={[styles.pRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.16)' }]}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={styles.pRowLabel}>{label}</Text>
+        <Text style={[styles.pRowValue, accent && { color: theme.accent, fontSize: 28 }]} numberOfLines={3}>
+          {value}
+        </Text>
+      </View>
+      {onPencil ? (
+        <Pressable onPress={onPencil} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Изменить: ${label}`}>
+          <Ionicons name="pencil-outline" size={16} color={theme.accent} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+
   const identity = (
-    <View style={{ alignItems: desktop ? 'flex-start' : 'center' }}>
+    <View style={{ alignItems: 'center' }}>
       <Avatar
         name={title || '?'}
-        size={desktop ? 132 : 112}
-        radius={10}
+        size={desktop ? 200 : 170}
+        radius={desktop ? 30 : 26}
+        ringSize={3}
         avatar={avatar ?? null}
         nodeOnline={nodeOnline}
         moduleOnline={moduleOnline}
       />
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: desktop ? 'flex-start' : 'center' }}>
-        <Text style={[styles.bName, { marginTop: 0, textAlign: desktop ? 'left' : 'center' }]} numberOfLines={2}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+        <Text style={styles.pName} numberOfLines={2}>
           {title || 'Пользователь'}
         </Text>
+        {roleLabel ? (
+          <Glass radius={16} fill={glassFill} style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }}>{roleLabel}</Text>
+          </Glass>
+        ) : null}
         {isSelf && onEdit ? (
           <Pressable onPress={() => onEdit('displayName', title)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить имя">
             <Ionicons name="pencil-outline" size={16} color="rgba(255,255,255,0.75)" />
           </Pressable>
         ) : null}
       </View>
-      <Text style={styles.bUsername} numberOfLines={1}>
-        @{profile.username}
-      </Text>
-      {roleLabel ? (
-        <View style={styles.bRolePill}>
-          <Ionicons name="shield-checkmark-outline" size={11} color="#FFFFFF" />
-          <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>{roleLabel}</Text>
-        </View>
-      ) : null}
-      <View style={styles.bStatusRow}>
-        <View style={[styles.bStatusDot, { backgroundColor: online ? theme.success : 'rgba(255,255,255,0.55)' }]} />
-        <Text style={styles.bStatusText} numberOfLines={1}>
-          {statusText}
-        </Text>
-      </View>
+      <Text style={styles.pOnline}>{online ? 'в сети' : statusText}</Text>
 
       {primary ? (
         <Pressable
@@ -1092,9 +1111,9 @@ function BrightProfile({
           accessibilityLabel={primary.label}
           style={({ pressed }) => ({
             marginTop: 14,
-            width: desktop ? '100%' : '100%',
-            minHeight: 44,
-            borderRadius: 14,
+            width: '100%',
+            minHeight: 48,
+            borderRadius: 24,
             alignItems: 'center',
             justifyContent: 'center',
             flexDirection: 'row',
@@ -1104,14 +1123,14 @@ function BrightProfile({
           })}
         >
           <Ionicons name={primary.loading ? 'hourglass-outline' : primary.icon} size={17} color={primary.danger ? '#FFFFFF' : theme.onAccent} />
-          <Text style={{ color: primary.danger ? '#FFFFFF' : theme.onAccent, fontSize: 14, fontWeight: '800' }}>
+          <Text style={{ color: primary.danger ? '#FFFFFF' : theme.onAccent, fontSize: 15, fontWeight: '800' }}>
             {primary.loading ? 'Подождите…' : primary.label}
           </Text>
         </Pressable>
       ) : null}
 
       {secondary.length ? (
-        <View style={[styles.bSecondary, desktop ? { justifyContent: 'flex-start' } : null]}>
+        <View style={styles.bSecondary}>
           {secondary.map((action) => (
             <PressableScale
               key={action.key}
@@ -1119,23 +1138,14 @@ function BrightProfile({
               disabled={action.disabled || action.loading}
               accessibilityRole="button"
               accessibilityLabel={action.label}
-              style={[
-                styles.bSecondaryBtn,
-                {
-                  backgroundColor: 'rgba(10,14,20,0.34)',
-                  borderColor: 'rgba(255,255,255,0.20)',
-                  opacity: action.disabled ? 0.5 : 1,
-                },
-              ]}
+              style={{ opacity: action.disabled ? 0.5 : 1 }}
             >
-              <Ionicons
-                name={action.loading ? 'hourglass-outline' : action.icon}
-                size={15}
-                color={action.danger ? '#FFB4B8' : '#FFFFFF'}
-              />
-              <Text style={{ color: action.danger ? '#FFB4B8' : '#FFFFFF', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
-                {action.label}
-              </Text>
+              <Glass radius={18} fill={glassFill} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}>
+                <Ionicons name={action.loading ? 'hourglass-outline' : action.icon} size={15} color={action.danger ? '#FFB4B8' : '#FFFFFF'} />
+                <Text style={{ color: action.danger ? '#FFB4B8' : '#FFFFFF', fontSize: 12.5, fontWeight: '600' }} numberOfLines={1}>
+                  {action.label}
+                </Text>
+              </Glass>
             </PressableScale>
           ))}
         </View>
@@ -1143,197 +1153,214 @@ function BrightProfile({
     </View>
   );
 
-  const contacts = (
-    <BSection title="Контакты" icon="person-circle-outline">
+  const channelCard = featured ? (
+    <View>
+      <Text style={styles.pSection}>{featured.type === 'channel' ? 'Канал' : 'Группа'}</Text>
       <PressableScale
-        onPress={onCopyUsername}
+        onPress={() => onOpenChat(featured.id)}
         accessibilityRole="button"
-        accessibilityLabel={`Скопировать username @${profile.username}`}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 4 }}
+        accessibilityLabel={`Открыть ${featured.title}`}
       >
-        <Text style={{ color: theme.accent, fontSize: 15, fontWeight: '700', flex: 1 }} numberOfLines={1}>
-          @{profile.username}
-        </Text>
-        <Ionicons name="copy-outline" size={14} color={theme.textSecondary} />
+        <Glass radius={26} fill={glassFill} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10 }}>
+          <Avatar name={featured.title} size={64} radius={16} avatar={featured.avatar ?? null} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }} numberOfLines={1}>
+              {featured.title}
+            </Text>
+            {featured.description ? (
+              <Text style={{ color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 18 }} numberOfLines={3}>
+                {featured.description}
+              </Text>
+            ) : null}
+          </View>
+        </Glass>
       </PressableScale>
-      <View style={{ height: 1, backgroundColor: theme.line, marginVertical: 8 }} />
-      <View style={{ gap: 9 }}>
-        {location ? (
-          <View style={styles.bInfoRow}>
-            <Ionicons name="location-outline" size={16} color={theme.textSecondary} />
-            <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{location}</Text>
-            {isSelf && onEdit ? (
-              <Pressable onPress={() => onEdit('location', location)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить адрес">
-                <Ionicons name="pencil-outline" size={14} color={theme.accent} />
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
-        {birthday ? (
-          <View style={styles.bInfoRow}>
-            <Ionicons name="gift-outline" size={16} color={theme.textSecondary} />
-            <Text style={{ color: theme.textSecondary, fontSize: 13.5, flex: 1 }}>{birthdayLabel(birthday)}</Text>
-            {isSelf && onEdit ? (
-              <Pressable onPress={() => onEdit('birthday', birthday ?? '')} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить день рождения">
-                <Ionicons name="pencil-outline" size={14} color={theme.accent} />
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
-        {isSelf && onEdit && !location ? (
-          <Pressable onPress={() => onEdit('location', '')} accessibilityRole="button" accessibilityLabel="Добавить адрес" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }}>
-            <Ionicons name="add-circle-outline" size={16} color={theme.accent} />
-            <Text style={{ color: theme.accent, fontSize: 13 }}>Добавить адрес</Text>
-          </Pressable>
-        ) : null}
-        {isSelf && onEdit && !birthday ? (
-          <Pressable onPress={() => onEdit('birthday', '')} accessibilityRole="button" accessibilityLabel="Добавить день рождения" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }}>
-            <Ionicons name="add-circle-outline" size={16} color={theme.accent} />
-            <Text style={{ color: theme.accent, fontSize: 13 }}>Добавить день рождения</Text>
-          </Pressable>
-        ) : null}
-        <PressableScale
-          onPress={onQr}
-          accessibilityRole="button"
-          accessibilityLabel="QR-код профиля"
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}
-        >
-          <Ionicons name="qr-code-outline" size={16} color={theme.accent} />
-          <Text style={{ color: theme.accent, fontSize: 13.5, fontWeight: '600', flex: 1 }}>QR-код и ссылка</Text>
-          <Ionicons name="chevron-forward" size={14} color={theme.textDisabled} />
-        </PressableScale>
-        <PressableScale
-          onPress={onShare}
-          accessibilityRole="button"
-          accessibilityLabel="Поделиться профилем"
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}
-        >
-          <Ionicons name="share-social-outline" size={16} color={theme.accent} />
-          <Text style={{ color: theme.accent, fontSize: 13.5, fontWeight: '600', flex: 1 }}>Поделиться профилем</Text>
-        </PressableScale>
+    </View>
+  ) : null;
+
+  const infoCard = (
+    <Glass radius={26} fill={glassFill} style={{ paddingHorizontal: 16, paddingVertical: 6 }}>
+      <Row label="Username" value={`@${profile.username}`} accent onPencil={undefined} />
+      <Row label="О себе" value={bio || (isSelf ? 'Добавьте пару слов о себе' : 'Пока ничего не рассказал')} onPencil={isSelf && onEdit ? () => onEdit('bio', bio) : undefined} />
+      {birthday || isSelf ? (
+        <Row label="День рождения" value={birthday ? birthdayLabel(birthday) : 'Не указан'} onPencil={isSelf && onEdit ? () => onEdit('birthday', birthday ?? '') : undefined} />
+      ) : null}
+      {location || isSelf ? (
+        <Row label="Страна, регион, город" value={location || 'Не указано'} onPencil={isSelf && onEdit ? () => onEdit('location', location) : undefined} />
+      ) : null}
+      {status ? <Row label="Статус" value={status} onPencil={isSelf && onEdit ? () => onEdit('status', status) : undefined} /> : null}
+      <View style={{ flexDirection: 'row', gap: 18, paddingVertical: 12 }}>
+        <Pressable onPress={onCopyUsername} accessibilityRole="button" accessibilityLabel="Скопировать username" style={styles.pLink}>
+          <Ionicons name="copy-outline" size={15} color={theme.accent} />
+          <Text style={styles.pLinkText}>Копировать</Text>
+        </Pressable>
+        <Pressable onPress={onQr} accessibilityRole="button" accessibilityLabel="QR-код профиля" style={styles.pLink}>
+          <Ionicons name="qr-code-outline" size={15} color={theme.accent} />
+          <Text style={styles.pLinkText}>QR-код</Text>
+        </Pressable>
+        <Pressable onPress={onShare} accessibilityRole="button" accessibilityLabel="Поделиться профилем" style={styles.pLink}>
+          <Ionicons name="share-social-outline" size={15} color={theme.accent} />
+          <Text style={styles.pLinkText}>Поделиться</Text>
+        </Pressable>
       </View>
-    </BSection>
+    </Glass>
   );
 
-  const activity = hasActivity ? (
-    <BSection title="Активность" icon="pulse-outline">
-      <View style={{ gap: 10 }}>
-        {modulesTotal > 0 ? (
-          <View style={styles.bStatRow}>
-            <Ionicons name="hardware-chip-outline" size={17} color={theme.accent} />
-            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Модули</Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
-              {modulesTotal} · онлайн {modulesOnline}
-            </Text>
-          </View>
+  const activityCard = (
+    <View>
+      <Text style={styles.pSection}>Активность</Text>
+      <Glass radius={26} fill={glassFill} style={{ padding: 16, gap: 8 }}>
+        <Text style={styles.pStat}>
+          Носимых модулей: <Text style={styles.pStatNum}>{byRole.wearable}</Text>
+        </Text>
+        <Text style={styles.pStat}>
+          Ретрансляторов: <Text style={styles.pStatNum}>{byRole.repeater}</Text>
+        </Text>
+        <Text style={styles.pStat}>
+          Шлюзов: <Text style={styles.pStatNum}>{byRole.gateway}</Text>
+        </Text>
+        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.18)', marginVertical: 4 }} />
+        <Text style={{ color: '#FFFFFF', fontSize: 16 }}>
+          Примерная площадь покрытия:{' '}
+          <Text style={{ color: theme.accent, fontWeight: '800', textDecorationLine: 'underline' }}>{coverage}км²</Text>
+        </Text>
+        {nodesTotal > 0 || contribution > 0 ? (
+          <Text style={{ color: 'rgba(255,255,255,0.62)', fontSize: 13 }}>
+            Узлы: {nodesOnline} из {nodesTotal} онлайн{contribution > 0 ? ` · вклад ${formatBytes(contribution)}` : ''}
+          </Text>
         ) : null}
-        {nodesTotal > 0 || nodesOnline > 0 ? (
-          <View style={styles.bStatRow}>
-            <Ionicons name="server-outline" size={17} color={theme.success} />
-            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Узлы сети</Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
-              {nodesOnline} из {nodesTotal} онлайн
-            </Text>
-          </View>
-        ) : null}
-        {contribution > 0 ? (
-          <View style={styles.bStatRow}>
-            <Ionicons name="cloud-upload-outline" size={17} color={theme.warning} />
-            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }}>Вклад в сеть</Text>
-            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>{formatBytes(contribution)}</Text>
-          </View>
-        ) : null}
-      </View>
-    </BSection>
-  ) : null;
+      </Glass>
+    </View>
+  );
 
-  const achievements = badges.length ? (
-    <BSection
-      title="Достижения"
-      icon="trophy-outline"
-      right={
-        <Pressable
-          onPress={() => setBadgesOpen((v) => !v)}
-          accessibilityRole="button"
-          accessibilityLabel={badgesOpen ? 'Свернуть достижения' : 'Показать достижения'}
-          hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-        >
-          <Text style={{ color: theme.accent, fontSize: 12, fontWeight: '700' }}>{badgesOpen ? 'Свернуть' : `Показать (${badges.length})`}</Text>
-          <Ionicons name={badgesOpen ? 'chevron-up' : 'chevron-down'} size={14} color={theme.accent} />
-        </Pressable>
-      }
-    >
-      {badgesOpen ? (
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-          {badges.map((badge) => (
-            <View
-              key={badge.key}
-              style={[
-                styles.bBadge,
-                {
-                  borderColor: theme.line,
-                  backgroundColor: theme.dark ? 'rgba(255,255,255,0.04)' : 'rgba(16,24,40,0.03)',
-                },
-              ]}
-            >
-              <View style={[styles.bBadgeIcon, { backgroundColor: badge.soft, borderColor: badge.color }]}>
-                <Ionicons name={badge.icon} size={15} color={badge.color} />
-              </View>
-              <View style={{ minWidth: 0, flex: 1 }}>
-                <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }} numberOfLines={1}>
-                  {badge.title}
-                </Text>
-                <Text style={{ color: theme.textSecondary, fontSize: 10.5 }} numberOfLines={1}>
-                  {badge.description}
-                </Text>
-              </View>
+  const tabs = (
+    <View>
+      <Glass radius={26} fill={glassFill} style={{ flexDirection: 'row', padding: 4 }}>
+        {([['gifts', 'Подарки'], ['stories', 'Истории'], ['modules', 'Модули']] as const).map(([key, label]) => (
+          <Pressable
+            key={key}
+            onPress={() => setTab(key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: tab === key }}
+            style={{
+              flex: 1,
+              paddingVertical: 11,
+              borderRadius: 22,
+              alignItems: 'center',
+              backgroundColor: tab === key ? 'rgba(255,255,255,0.14)' : 'transparent',
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: tab === key ? '800' : '600' }}>{label}</Text>
+          </Pressable>
+        ))}
+      </Glass>
+      <View style={{ marginTop: 12 }}>
+        {tab === 'modules' ? (
+          profile.modulesList && profile.modulesList.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              {profile.modulesList.map((m) => (
+                <Glass key={m.id} radius={22} fill={glassFill} style={{ width: desktop ? 180 : '31%', aspectRatio: 1, padding: 10, justifyContent: 'space-between' }}>
+                  <Ionicons
+                    name={m.role === 'wearable' ? 'watch-outline' : m.role === 'repeater' ? 'git-network-outline' : 'wifi-outline'}
+                    size={28}
+                    color={m.online ? theme.success : 'rgba(255,255,255,0.5)'}
+                  />
+                  <View>
+                    <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }} numberOfLines={2}>
+                      {m.name}
+                    </Text>
+                    <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>
+                      {m.role === 'wearable' ? 'Носимый' : m.role === 'repeater' ? 'Ретранслятор' : 'Шлюз'} · {m.online ? 'онлайн' : 'офлайн'}
+                    </Text>
+                  </View>
+                </Glass>
+              ))}
             </View>
-          ))}
-        </View>
-      ) : null}
-    </BSection>
-  ) : null;
+          ) : (
+            <Text style={styles.pEmpty}>Модулей пока нет</Text>
+          )
+        ) : (
+          <Text style={styles.pEmpty}>{tab === 'gifts' ? 'Подарки появятся скоро' : 'Истории появятся скоро'}</Text>
+        )}
+      </View>
+    </View>
+  );
 
   const shared = !isSelf && profile.sharedChats.length ? (
-    <BSection title="Общие чаты" icon="chatbubbles-outline" right={<Text style={{ color: theme.textDisabled, fontSize: 11.5 }}>{profile.sharedChats.length}</Text>}>
-      <View style={{ gap: 2 }}>
+    <View>
+      <Text style={styles.pSection}>Общие чаты · {profile.sharedChats.length}</Text>
+      <Glass radius={26} fill={glassFill} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
         {profile.sharedChats.slice(0, 8).map((chat) => (
           <PressableScale
             key={chat.id}
             onPress={() => onOpenChat(chat.id)}
             accessibilityRole="button"
             accessibilityLabel={`Открыть ${chat.title}`}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11 }}
           >
             <Ionicons
               name={chat.type === 'channel' ? 'megaphone-outline' : chat.type === 'group' ? 'people-outline' : 'chatbubble-outline'}
-              size={16}
-              color={theme.textSecondary}
+              size={17}
+              color="rgba(255,255,255,0.7)"
             />
-            <Text style={{ color: theme.textPrimary, fontSize: 13.5, flex: 1 }} numberOfLines={1}>
+            <Text style={{ color: '#FFFFFF', fontSize: 15, flex: 1 }} numberOfLines={1}>
               {chat.title}
             </Text>
-            <Ionicons name="chevron-forward" size={14} color={theme.textDisabled} />
+            <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
           </PressableScale>
         ))}
-      </View>
-    </BSection>
+      </Glass>
+    </View>
+  ) : null;
+
+  const achievements = badges.length ? (
+    <View>
+      <Pressable onPress={() => setBadgesOpen((v) => !v)} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Text style={styles.pSection}>Достижения · {badges.length}</Text>
+        <Ionicons name={badgesOpen ? 'chevron-up' : 'chevron-down'} size={14} color={theme.accent} />
+      </Pressable>
+      {badgesOpen ? (
+        <Glass radius={26} fill={glassFill} style={{ padding: 12, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {badges.map((badge) => (
+            <View key={badge.key} style={[styles.bBadge, { borderColor: 'rgba(255,255,255,0.14)' }]}>
+              <View style={[styles.bBadgeIcon, { backgroundColor: badge.soft, borderColor: badge.color }]}>
+                <Ionicons name={badge.icon} size={15} color={badge.color} />
+              </View>
+              <View style={{ minWidth: 0, flex: 1 }}>
+                <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }} numberOfLines={1}>{badge.title}</Text>
+                <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 10.5 }} numberOfLines={1}>{badge.description}</Text>
+              </View>
+            </View>
+          ))}
+        </Glass>
+      ) : null}
+    </View>
   ) : null;
 
   return (
-    <View style={[styles.bPage, bannerBackground(banner)]}>
-      <View pointerEvents="none" style={styles.bOverlay} />
+    <View style={styles.bPage}>
+      <Wallpaper image={profile.background ?? null} />
       <View style={[styles.bInner, desktop ? styles.bInnerDesktop : null]}>
-        <PressableScale
-          onPress={onBack}
-          accessibilityRole="button"
-          accessibilityLabel="Назад"
-          hitSlop={10}
-          style={styles.bBack}
-        >
-          <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
-        </PressableScale>
+        <View style={styles.pTopBar}>
+          <PressableScale onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={10}>
+            <Glass radius={26} fill={glassFill} style={styles.pRound}>
+              <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
+            </Glass>
+          </PressableScale>
+          {isSelf && onEditProfile ? (
+            <PressableScale onPress={onEditProfile} accessibilityRole="button" accessibilityLabel="Редактировать профиль" hitSlop={10}>
+              <Glass radius={26} fill={glassFill} style={styles.pEditBtn}>
+                <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Изм.</Text>
+              </Glass>
+            </PressableScale>
+          ) : (
+            <PressableScale onPress={onShare} accessibilityRole="button" accessibilityLabel="Поделиться профилем" hitSlop={10}>
+              <Glass radius={26} fill={glassFill} style={styles.pRound}>
+                <Ionicons name="share-outline" size={22} color="#FFFFFF" />
+              </Glass>
+            </PressableScale>
+          )}
+        </View>
 
         {blockedByMe ? (
           <View style={[styles.bNotice, { backgroundColor: 'rgba(180,32,42,0.35)', borderColor: 'rgba(255,180,184,0.4)' }]}>
@@ -1352,77 +1379,23 @@ function BrightProfile({
           <View style={styles.bDesktopRow}>
             <View style={styles.bDesktopLeft}>{identity}</View>
             <View style={styles.bDesktopRight}>
-              <BSection
-                title="О себе"
-                icon="reader-outline"
-                right={
-                  isSelf && onEdit ? (
-                    <Pressable onPress={() => onEdit('bio', bio)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить описание">
-                      <Ionicons name="pencil-outline" size={15} color={theme.accent} />
-                    </Pressable>
-                  ) : undefined
-                }
-              >
-                {bio ? (
-                  <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
-                ) : (
-                  <Text style={{ color: theme.textDisabled, fontSize: 13, fontStyle: 'italic' }}>
-                    {isSelf ? 'Добавьте пару слов о себе в редактировании профиля.' : 'Пользователь пока ничего не рассказал о себе.'}
-                  </Text>
-                )}
-                {status ? (
-                  <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18, flex: 1 }}>{status}</Text>
-                    {isSelf && onEdit ? (
-                      <Pressable onPress={() => onEdit('status', status)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить статус">
-                        <Ionicons name="pencil-outline" size={14} color={theme.accent} />
-                      </Pressable>
-                    ) : null}
-                  </View>
-                ) : null}
-              </BSection>
-              {contacts}
-              {activity}
-              {achievements}
+              {channelCard}
+              {infoCard}
+              {activityCard}
+              {tabs}
               {shared}
+              {achievements}
             </View>
           </View>
         ) : (
           <View style={styles.bMobile}>
-            <View style={{ paddingTop: 18, paddingBottom: 16 }}>{identity}</View>
-            <BSection
-              title="О себе"
-              icon="reader-outline"
-              right={
-                isSelf && onEdit ? (
-                  <Pressable onPress={() => onEdit('bio', bio)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить описание">
-                    <Ionicons name="pencil-outline" size={15} color={theme.accent} />
-                  </Pressable>
-                ) : undefined
-              }
-            >
-              {bio ? (
-                <Text style={{ color: theme.textPrimary, fontSize: 14, lineHeight: 21 }}>{bio}</Text>
-              ) : (
-                <Text style={{ color: theme.textDisabled, fontSize: 13, fontStyle: 'italic' }}>
-                  {isSelf ? 'Добавьте пару слов о себе в редактировании профиля.' : 'Пользователь пока ничего не рассказал о себе.'}
-                </Text>
-              )}
-              {status ? (
-                <View style={{ marginTop: 10, paddingLeft: 10, borderLeftWidth: 3, borderLeftColor: theme.accent, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 12.5, lineHeight: 18, flex: 1 }}>{status}</Text>
-                  {isSelf && onEdit ? (
-                    <Pressable onPress={() => onEdit('status', status)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить статус">
-                      <Ionicons name="pencil-outline" size={14} color={theme.accent} />
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : null}
-            </BSection>
-            {contacts}
-            {activity}
-            {achievements}
+            <View style={{ paddingTop: 6, paddingBottom: 4 }}>{identity}</View>
+            {channelCard}
+            {infoCard}
+            {activityCard}
+            {tabs}
             {shared}
+            {achievements}
           </View>
         )}
       </View>
@@ -1464,15 +1437,29 @@ const styles = StyleSheet.create({
   mStatIcon: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   mBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 8, flexGrow: 1, flexBasis: '46%', minWidth: 140 },
   mBadgeIcon: { width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  bPage: { flexGrow: 1, minHeight: '100%' },
+  bPage: { flexGrow: 1, minHeight: '100%', backgroundColor: '#161616' },
+  pTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  pRound: { width: 58, height: 58, alignItems: 'center', justifyContent: 'center' },
+  pEditBtn: { height: 58, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center' },
+  pName: { color: '#FFFFFF', fontSize: 38, fontWeight: '800', textShadowColor: 'rgba(0,0,0,0.4)', textShadowRadius: 8 },
+  pOnline: { color: 'rgba(255,255,255,0.72)', fontSize: 18, marginTop: 2 },
+  pSection: { color: 'rgba(255,255,255,0.55)', fontSize: 17, fontWeight: '600', marginBottom: 6, marginLeft: 8 },
+  pRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
+  pRowLabel: { color: 'rgba(255,255,255,0.62)', fontSize: 19 },
+  pRowValue: { color: '#FFFFFF', fontSize: 21, fontWeight: '800' },
+  pLink: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  pLinkText: { color: '#F5A623', fontSize: 13, fontWeight: '700' },
+  pStat: { color: '#FFFFFF', fontSize: 19 },
+  pStatNum: { fontWeight: '800' },
+  pEmpty: { color: 'rgba(255,255,255,0.5)', fontSize: 14, textAlign: 'center', paddingVertical: 18 },
   bOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,10,18,0.30)' },
-  bInner: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 14, paddingTop: 46, paddingBottom: 24 },
+  bInner: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 14, paddingTop: 50, paddingBottom: 24 },
   bInnerDesktop: { paddingHorizontal: 24, paddingTop: 56 },
   bBack: { position: 'absolute', top: 8, left: 14, width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,14,20,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', zIndex: 5 },
   bDesktopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 22 },
-  bDesktopLeft: { width: 350, flexShrink: 0 },
-  bDesktopRight: { flex: 1, minWidth: 0, gap: 12 },
-  bMobile: { gap: 12 },
+  bDesktopLeft: { width: 360, flexShrink: 0 },
+  bDesktopRight: { flex: 1, minWidth: 0, gap: 14 },
+  bMobile: { gap: 14 },
   bName: { color: '#FFFFFF', fontSize: 26, fontWeight: '800', marginTop: 12, textAlign: 'center', textShadowColor: 'rgba(0,0,0,0.35)', textShadowRadius: 6 },
   bUsername: { color: 'rgba(255,255,255,0.72)', fontSize: 13.5, marginTop: 2, textAlign: 'center' },
   bRolePill: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 7, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.28)' },

@@ -20,7 +20,8 @@ import {
   SettingsSection,
 } from '../../../../src/components/settings/SettingsUI';
 import { SettingsRowsSkeleton } from '../../../../src/components/skeletons/PageSkeletons';
-import { useMe, humanError, CHATS_KEY } from '../../../../src/data/queries';
+import { useMe, humanError, CHATS_KEY, useChats, useMySubscriptions } from '../../../../src/data/queries';
+import { BackgroundSetting } from '../../../../src/components/BackgroundSetting';
 import * as api from '../../../../src/data/api';
 import type { BioVisibility, LastSeenVisibility, ProfileLink, User } from '../../../../src/data/api';
 import { encryptFileBytes, fromB64, toB64, toB64u } from '../../../../src/crypto/core';
@@ -462,6 +463,22 @@ export default function UserEditScreen() {
   }
 
   /* ------------------------------------------------------------- loading */
+  const chatsQ = useChats();
+  const subsQ = useMySubscriptions();
+  const featuredOptions = React.useMemo(() => {
+    const all = [...(chatsQ.data ?? []), ...(subsQ.data ?? [])];
+    const seen = new Set<string>();
+    return all.filter((c) => (c.type === 'group' || c.type === 'channel') && !seen.has(c.id) && seen.add(c.id));
+  }, [chatsQ.data, subsQ.data]);
+  async function pickFeatured(chatId: string | null) {
+    try {
+      await api.api.setFeaturedChat(chatId);
+      await meQuery.refetch();
+    } catch (e) {
+      useStore.getState().pushToast({ kind: 'error', message: humanError(e) });
+    }
+  }
+
   if (meQuery.isLoading || (!form && !meQuery.isError)) {
     return (
       <SettingsPage title="Редактировать профиль" subtitle="Загрузка данных…">
@@ -812,6 +829,72 @@ export default function UserEditScreen() {
                   onPress={addLink}
                 />
               </View>
+            </View>
+          </GlassCard>
+        </SettingsSection>
+
+        {/* ------------------------------------------------ Фон профиля */}
+        <SettingsSection title="Фон профиля" delay={170}>
+          <GlassCard>
+            <View style={{ padding: 12 }}>
+              <BackgroundSetting
+                title="Фоновое изображение"
+                hint="Любое фото: оно показывается за вашим профилем у всех, кто его открывает."
+                current={me.background ?? null}
+                onSave={async (image) => {
+                  await api.api.putBackground(image);
+                  await meQuery.refetch();
+                }}
+                onRemove={async () => {
+                  await api.api.deleteBackground();
+                  await meQuery.refetch();
+                }}
+              />
+            </View>
+          </GlassCard>
+        </SettingsSection>
+
+        {/* ------------------------------------- Канал/группа в профиле */}
+        <SettingsSection title="Канал в профиле" delay={175}>
+          <GlassCard>
+            <View style={{ padding: 12, gap: 8 }}>
+              <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17 }}>
+                Закреплённый канал или группа показывается карточкой в вашем профиле.
+              </Text>
+              {featuredOptions.length === 0 ? (
+                <Text style={{ color: theme.textDisabled, fontSize: 13 }}>Вы пока не состоите в группах и каналах.</Text>
+              ) : (
+                <View style={{ gap: 6 }}>
+                  {featuredOptions.map((chat) => {
+                    const active = me.featuredChat?.id === chat.id;
+                    return (
+                      <Pressable
+                        key={chat.id}
+                        onPress={() => void pickFeatured(active ? null : chat.id)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        style={({ pressed }) => ({
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: 8,
+                          borderRadius: 14,
+                          borderWidth: 1,
+                          borderColor: active ? theme.accent : theme.line,
+                          backgroundColor: active ? theme.accentSoft : 'transparent',
+                          opacity: pressed ? 0.8 : 1,
+                        })}
+                      >
+                        <Avatar name={chat.title} size={38} radius={10} avatar={chat.avatar ?? null} />
+                        <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '600', flex: 1 }} numberOfLines={1}>
+                          {chat.title}
+                        </Text>
+                        {active ? <Ionicons name="checkmark-circle" size={20} color={theme.accent} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
             </View>
           </GlassCard>
         </SettingsSection>

@@ -48,7 +48,7 @@ export function invalidateAvatar(objectId?: string): void {
   }
 }
 
-async function loadAvatar(info: AvatarInfo): Promise<string> {
+export async function loadAvatar(info: AvatarInfo): Promise<string> {
   const cached = avatarCache.get(info.objectId);
   if (cached) return cached;
 

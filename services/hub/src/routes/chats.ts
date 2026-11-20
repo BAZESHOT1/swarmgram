@@ -31,6 +31,8 @@ export interface ChatPermissionSet {
   publish: boolean;
   /** Установка/смена/удаление аватара группы или канала. */
   setAvatar: boolean;
+  /** Смена фона группы или канала (по умолчанию — владелец и администраторы). */
+  setBackground: boolean;
 }
 
 export interface ChatPermissions {
@@ -51,6 +53,7 @@ const DEFAULT_PERMISSIONS: ChatPermissions = {
     pinMessages: true,
     publish: true,
     setAvatar: true,
+    setBackground: true,
   },
   moderator: {
     manageInfo: true,
@@ -63,6 +66,7 @@ const DEFAULT_PERMISSIONS: ChatPermissions = {
     pinMessages: true,
     publish: true,
     setAvatar: true,
+    setBackground: false,
   },
 };
 
@@ -77,6 +81,7 @@ const PERMISSION_KEYS: (keyof ChatPermissionSet)[] = [
   'pinMessages',
   'publish',
   'setAvatar',
+  'setBackground',
 ];
 
 const ROLE_RANK: Record<ChatRole, number> = { member: 0, moderator: 1, admin: 2, owner: 3 };
@@ -92,6 +97,7 @@ const EMPTY_PERMISSIONS: ChatPermissionSet = {
   pinMessages: false,
   publish: false,
   setAvatar: false,
+  setBackground: false,
 };
 
 function normRole(raw: unknown): ChatRole {
@@ -180,7 +186,7 @@ async function memberIds(chatId: string): Promise<string[]> {
   return rows.map((r) => r.user_id);
 }
 
-export type SystemMessageEvent = 'member_joined' | 'member_left' | 'member_removed';
+export type SystemMessageEvent = 'member_joined' | 'member_left' | 'member_removed' | 'background_changed';
 
 /**
  * Служебное сообщение о событии участников группы.
@@ -197,11 +203,15 @@ export async function insertSystemMessage(
   event: SystemMessageEvent,
   relatedUserId?: string | null,
 ): Promise<void> {
-  // Служебные сообщения нужны только в группах.
+  // Служебные сообщения нужны в группах; смена фона — ещё и в личных чатах.
   const chat = await one<{ type: string }>('SELECT type FROM chats WHERE id = $1', [chatId]);
-  if (!chat || chat.type !== 'group') return;
+  if (!chat) return;
+  if (chat.type !== 'group' && !(event === 'background_changed' && chat.type === 'direct')) return;
 
-  const actor = await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [actorUserId]);
+  const actor = await one<{ username: string; display_name: string }>(
+    'SELECT username, display_name FROM users WHERE id = $1',
+    [actorUserId],
+  );
   const related = relatedUserId
     ? await one<{ username: string }>('SELECT username FROM users WHERE id = $1', [relatedUserId])
     : null;
@@ -209,7 +219,9 @@ export async function insertSystemMessage(
   const targetUsername = related?.username ?? '';
 
   const systemText =
-    event === 'member_left'
+    event === 'background_changed'
+      ? `${actor?.display_name || actorUsername || 'Участник'} изменил фон чата`
+      : event === 'member_left'
       ? `${actorUsername || 'Участник'} вышел из группы`
       : event === 'member_removed'
         ? `${actorUsername || 'Участник'} исключил ${targetUsername || 'участника'} из группы`
@@ -939,6 +951,61 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
     return reply.send(await chatInfo(id, me));
   });
 
+  /* ------------------------------------------------- фон чата ------------ */
+  async function assertCanSetBackground(id: string, me: string): Promise<string> {
+    const chat = await one<{ type: string }>('SELECT type FROM chats WHERE id = $1', [id]);
+    if (!chat) throw notFound('chat');
+    const member = await getMembership(id, me);
+    if (!member) throw forbidden('not_a_member');
+    if (chat.type !== 'direct' && member.role !== 'owner' && !member.permissions.setBackground) {
+      throw forbidden('no_permission');
+    }
+    return chat.type;
+  }
+
+  app.put('/chats/:id/background', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    const type = await assertCanSetBackground(id, me);
+    const body = (req.body ?? {}) as { objectId?: unknown; key?: unknown; mime?: unknown };
+    const objectId = str(body.objectId, 'objectId', { max: 64 });
+    const key = str(body.key, 'key', { min: 1, max: 300 });
+    const mime = str(body.mime, 'mime', { min: 1, max: 120 });
+    if (!/^image\//i.test(mime)) throw badRequest('invalid_background_mime');
+    const obj = await one(
+      `SELECT o.id FROM objects o
+        WHERE o.id = $1 AND o.state = 'active'
+          AND (o.owner_id = $2
+               OR EXISTS (SELECT 1 FROM object_grants g WHERE g.object_id = o.id AND g.user_id = $2))`,
+      [objectId, me],
+    );
+    if (!obj) throw notFound('object');
+    await query(
+      `UPDATE chats SET background_object_id = $2, background_key = $3, background_mime = $4, updated_at = now()
+        WHERE id = $1`,
+      [id, objectId, key, mime],
+    );
+    if (type === 'direct') await insertSystemMessage(id, me, 'background_changed');
+    publishMany(await memberIds(id), { type: 'chat_updated', chatId: id });
+    await audit(id, me, 'background_updated', objectId, { mime });
+    return reply.send(await chatInfo(id, me));
+  });
+
+  app.delete('/chats/:id/background', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    const type = await assertCanSetBackground(id, me);
+    await query(
+      `UPDATE chats SET background_object_id = NULL, background_key = '', background_mime = '', updated_at = now()
+        WHERE id = $1`,
+      [id],
+    );
+    if (type === 'direct') await insertSystemMessage(id, me, 'background_changed');
+    publishMany(await memberIds(id), { type: 'chat_updated', chatId: id });
+    await audit(id, me, 'background_removed');
+    return reply.send(await chatInfo(id, me));
+  });
+
   /* -------------------------------------------------- матрица прав -------- */
   app.get('/chats/:id/permissions', { onRequest: [requireAuth()] }, async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -1527,11 +1594,12 @@ async function createKeyVersion(chatId: string, version: number): Promise<KeyVer
 }
 
 export async function chatInfo(chatId: string, viewerId: string) {
-  const chat = await one<{ id: string; type: string; title: string; is_public: boolean; encryption: string; created_at: string; updated_at: string; last_seq: number; owner_id: string | null; owner_username: string | null; pinned_message_id: string | null; visibility: string; description: string; permissions: unknown; avatar_object_id: string | null; avatar_key: string; avatar_mime: string }>(
+  const chat = await one<{ id: string; type: string; title: string; is_public: boolean; encryption: string; created_at: string; updated_at: string; last_seq: number; owner_id: string | null; owner_username: string | null; pinned_message_id: string | null; visibility: string; description: string; permissions: unknown; avatar_object_id: string | null; avatar_key: string; avatar_mime: string; background_object_id: string | null; background_key: string; background_mime: string }>(
     `SELECT c.id, c.type, c.title, c.is_public, c.encryption, c.created_at, c.updated_at,
             c.last_seq, c.owner_id, u.username AS owner_username, c.pinned_message_id,
             c.visibility, c.description, c.permissions,
-            c.avatar_object_id, c.avatar_key, c.avatar_mime
+            c.avatar_object_id, c.avatar_key, c.avatar_mime,
+            c.background_object_id, c.background_key, c.background_mime
        FROM chats c LEFT JOIN users u ON u.id = c.owner_id
       WHERE c.id = $1`,
     [chatId],
@@ -1624,6 +1692,13 @@ export async function chatInfo(chatId: string, viewerId: string) {
       chat.avatar_object_id && chat.avatar_key && chat.avatar_mime
         ? { objectId: chat.avatar_object_id, key: chat.avatar_key, mime: chat.avatar_mime }
         : null,
+    /** Фон чата: в личном чате меняет любой участник, в группе/канале — владелец или право setBackground. */
+    background:
+      chat.background_object_id && chat.background_key && chat.background_mime
+        ? { objectId: chat.background_object_id, key: chat.background_key, mime: chat.background_mime }
+        : null,
+    canSetBackground:
+      chat.type === 'direct' ? Boolean(my) : myRole === 'owner' || permissionsForRole(perms, myRole).setBackground,
     ...(pendingRequests === undefined ? {} : { pendingRequests }),
     encryption: chat.encryption === 'e2e' ? 'e2e' : 'server',
     createdAt: chat.created_at,

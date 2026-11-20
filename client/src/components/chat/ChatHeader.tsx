@@ -1,5 +1,7 @@
 import React from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Platform, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Glass, GLASS_FILL_BUTTON } from '../Glass';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useTheme } from '../../theme/useTheme';
@@ -121,6 +123,9 @@ export function ChatHeader({
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
 
   // Появление шапки при открытии чата: мягкий fade + сдвиг сверху.
   const enter = React.useRef(new Animated.Value(reduced ? 1 : 0)).current;
@@ -167,137 +172,89 @@ export function ChatHeader({
             ? `${membersCount} ${plural(membersCount, 'участник', 'участника', 'участников')}`
             : STATUS_LABEL[channel];
 
+  // Шапка по макету: стеклянная «назад», капсула с названием и статусом, квадратный аватар справа.
+  const titleSize = wide ? 22 : 20;
   return (
     <Animated.View
       style={[
         styles.header,
         {
-          paddingTop,
-          paddingBottom,
+          paddingTop: (Platform.OS === 'web' ? 12 : insets.top + 6),
           opacity: enter,
           transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
-          backgroundColor: theme.background,
-          borderBottomColor: secret ? theme.accent : theme.line,
         },
       ]}
     >
-      <Animated.View style={{ transform: [{ translateY: parallax }], opacity: contentOpacity, flexDirection: 'row', alignItems: 'center', width: '100%', gap: 10 }}>
-        <PressableScale
-          pressedScale={0.9}
-          onPress={onBack}
-          accessibilityRole="button"
-          accessibilityLabel="Назад"
-          hitSlop={6}
-          style={({ pressed }) => [styles.iconBtn, { backgroundColor: pressed ? theme.surfacePressed : 'transparent' }]}
-        >
-          <Ionicons name="chevron-back" size={22} color={theme.textSecondary} />
+      <View style={[styles.row, wide && { maxWidth: 980, alignSelf: 'center', width: '100%' }]}>
+        <PressableScale pressedScale={0.9} onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={6}>
+          <Glass radius={28} fill={GLASS_FILL_BUTTON} style={styles.round}>
+            <Ionicons name="chevron-back" size={26} color={theme.textPrimary} />
+          </Glass>
         </PressableScale>
 
-        <Pressable
+        <PressableScale
+          pressedScale={0.97}
+          onPress={onMenu}
+          onLongPress={onOpenInfo}
+          accessibilityRole="button"
+          accessibilityLabel={`${title || 'Диалог'}, меню чата`}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          <Glass radius={29} fill={GLASS_FILL_BUTTON} style={styles.pill}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '100%' }}>
+              {secret ? <Ionicons name="lock-closed" size={14} color={theme.accent} style={{ marginRight: 5 }} /> : null}
+              <Text numberOfLines={1} style={{ color: theme.textPrimary, fontWeight: '800', fontSize: titleSize, flexShrink: 1 }}>
+                {title || 'Диалог'}
+              </Text>
+            </View>
+            <MotiView
+              key={`${typingUsername ? 'typing' : channel}-${subtitle}`}
+              from={reduced ? { opacity: 1 } : { opacity: 0, translateY: 3 }}
+              animate={{ opacity: 1, translateY: 0 }}
+              transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%' }}
+            >
+              {!typingUsername && channel === 'waiting' ? <StatusDot color={dotColor} waiting /> : null}
+              <Text
+                numberOfLines={1}
+                style={{ color: typingUsername ? theme.accent : theme.textSecondary, fontSize: 13.5, flexShrink: 1 }}
+              >
+                {subtitle}
+                {linkMode && linkMode !== 'internet' ? (linkMode === 'gateway' ? ' · через шлюз' : ' · модульная сеть') : ''}
+              </Text>
+            </MotiView>
+          </Glass>
+        </PressableScale>
+
+        <PressableScale
+          pressedScale={0.92}
           onPress={onOpenInfo}
           disabled={!onOpenInfo}
           accessibilityRole="button"
           accessibilityLabel="Информация о чате"
-          style={({ pressed }) => [styles.titleBtn, { opacity: pressed ? 0.72 : 1 }]}
         >
           <View ref={avatarRef as never} style={{ opacity: hideAvatar ? 0 : 1 }}>
             <Avatar
               name={title || 'Диалог'}
-              size={36}
+              size={58}
+              radius={16}
+              ringSize={3}
               nodeOnline={nodeOnline}
               moduleOnline={moduleOnline}
               avatar={avatar}
             />
           </View>
-
-          <Animated.View style={{ flex: 1, minWidth: 0, transform: [{ scale: nameScale }] }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
-              <Text numberOfLines={1} style={{ color: theme.textPrimary, fontWeight: '700', fontSize: 16, flexShrink: 1 }}>
-                {title || 'Диалог'}
-              </Text>
-              {secret ? <Ionicons name="lock-closed" size={13} color={theme.accent} style={{ marginLeft: 5 }} /> : null}
-              {linkMode && linkMode !== 'internet' ? (
-                <View
-                  style={{
-                    marginLeft: 6,
-                    paddingHorizontal: 6,
-                    paddingVertical: 1.5,
-                    borderRadius: 999,
-                    backgroundColor: linkMode === 'gateway' ? theme.successSoft : theme.accentSoft,
-                  }}
-                >
-                  <Text style={{ color: linkMode === 'gateway' ? theme.success : theme.accent, fontSize: 9.5, fontWeight: '700' }}>
-                    {linkMode === 'gateway' ? 'Через шлюз' : 'Модульная сеть'}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-            <Animated.View style={{ height: statusHeight, opacity: statusOpacity, overflow: 'hidden', flexDirection: 'row', alignItems: 'center' }}>
-              {/* key заставляет статус плавно въезжать при смене канала/печати */}
-              <MotiView
-                key={`${typingUsername ? 'typing' : secret ? 'secret' : channel}-${subtitle}`}
-                from={reduced ? { opacity: 1 } : { opacity: 0, translateX: 6, scale: 0.92 }}
-                animate={{ opacity: 1, translateX: 0, scale: 1 }}
-                transition={reduced ? { type: 'timing', duration: 0 } : motion.softSpring}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1 }}
-              >
-                {secret && !typingUsername ? (
-                  <Ionicons name="lock-closed" size={11} color={theme.accent} />
-                ) : (
-                  <StatusDot color={dotColor} waiting={!typingUsername && channel === 'waiting'} />
-                )}
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    color: typingUsername ? theme.accent : theme.textSecondary,
-                    fontSize: 12,
-                    fontWeight: typingUsername ? '600' : '400',
-                    flexShrink: 1,
-                  }}
-                >
-                  {subtitle}
-                </Text>
-              </MotiView>
-            </Animated.View>
-          </Animated.View>
-          {onOpenInfo ? <Ionicons name="chevron-forward" size={14} color={theme.textDisabled} style={{ marginRight: 2 }} /> : null}
-        </Pressable>
-
-        <PressableScale
-          pressedScale={0.9}
-          onPress={onMenu}
-          accessibilityRole="button"
-          accessibilityLabel="Меню чата"
-          hitSlop={6}
-          style={({ pressed }) => [styles.iconBtn, { backgroundColor: pressed ? theme.surfacePressed : 'transparent' }]}
-        >
-          <Ionicons name="ellipsis-vertical" size={20} color={theme.textSecondary} />
         </PressableScale>
-      </Animated.View>
+      </View>
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    paddingHorizontal: 10,
-    borderBottomWidth: 1,
-    overflow: 'hidden',
-  },
-  iconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  titleBtn: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
+  header: { paddingHorizontal: 12, paddingBottom: 8, zIndex: 5 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  round: { width: 56, height: 56, alignItems: 'center', justifyContent: 'center' },
+  pill: { height: 58, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18 },
   dotWrap: { width: 9, height: 9, alignItems: 'center', justifyContent: 'center' },
   dot: { width: 7, height: 7, borderRadius: 4 },
   pulseRing: { position: 'absolute', width: 7, height: 7, borderRadius: 4 },

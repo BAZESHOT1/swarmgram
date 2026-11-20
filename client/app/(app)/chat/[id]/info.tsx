@@ -26,6 +26,7 @@ import { canOpenManage, hasRight, normalizeVisibility, roleOf, visibilityLabel }
 import { joinByChatId, manageActions, manageError } from '../../../../src/components/chatinfo/ManageData';
 import { Avatar } from '../../../../src/components/Avatar';
 import { Btn } from '../../../../src/components/Btn';
+import { BackgroundSetting } from '../../../../src/components/BackgroundSetting';
 import type { ChatMemberRow } from '../../../../src/components/chatinfo/MembersTab';
 import {
   useChatMessages,
@@ -629,6 +630,32 @@ export default function ChatInfoScreen() {
           <View style={{ marginTop: 12 }}>
             <InfoActions actions={actions} />
           </View>
+
+          {chat?.canSetBackground ? (
+            <GlassCard style={{ marginTop: 12, padding: 14 }}>
+              <BackgroundSetting
+                title={isDirect ? 'Фон чата' : isChannel ? 'Фон канала' : 'Фон группы'}
+                hint={
+                  isDirect
+                    ? 'Фон видят оба участника. В чате появится уведомление о смене фона.'
+                    : 'Фон видят все участники. Менять его могут владелец и роли с правом «Смена фона».'
+                }
+                current={chat.background ?? null}
+                onSave={async (image) => {
+                  const next = await api.api.setChatBackground(chat.id, image);
+                  setChat(next as never);
+                  void qc.invalidateQueries({ queryKey: ['chats'] });
+                  void qc.invalidateQueries({ queryKey: ['chat', chat.id] });
+                }}
+                onRemove={async () => {
+                  const next = await api.api.deleteChatBackground(chat.id);
+                  setChat(next as never);
+                  void qc.invalidateQueries({ queryKey: ['chats'] });
+                  void qc.invalidateQueries({ queryKey: ['chat', chat.id] });
+                }}
+              />
+            </GlassCard>
+          ) : null}
 
           {isDirect && peer ? (
             <PressableScale

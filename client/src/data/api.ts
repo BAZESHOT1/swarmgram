@@ -320,6 +320,16 @@ export interface SearchHistoryEntry {
   at: string;
 }
 
+/** Канал или группа, закреплённые в профиле. */
+export interface FeaturedChat {
+  id: string;
+  type: 'group' | 'channel';
+  title: string;
+  description: string;
+  isMember: boolean;
+  avatar?: AvatarInfo | null;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -342,6 +352,10 @@ export interface User {
   invitePrivacy?: string;
   /* ---- расширенный профиль ---- */
   avatar?: AvatarInfo | null;
+  /** Фон профиля (зашифрованное изображение на узлах). */
+  background?: AvatarInfo | null;
+  /** Канал/группа, закреплённые в профиле. */
+  featuredChat?: FeaturedChat | null;
   banner?: string;
   links?: ProfileLink[];
   location?: string;
@@ -384,6 +398,8 @@ export interface ChatPermissionSet {
   publish: boolean;
   /** Смена аватара группы/канала (владелец не ограничивается). */
   setAvatar: boolean;
+  /** Смена фона группы/канала. */
+  setBackground: boolean;
 }
 
 /** Матрица прав чата по ролям (владелец — всегда всё). */
@@ -486,6 +502,13 @@ export interface UserProfile {
   username: string;
   displayName: string;
   avatar?: AvatarInfo | null;
+  /** Фон профиля, выбранный владельцем. */
+  background?: AvatarInfo | null;
+  featuredChat?: FeaturedChat | null;
+  /** Модули владельца по ролям и примерная площадь покрытия. */
+  modulesByRole?: { wearable: number; repeater: number; gateway: number };
+  coverageKm2?: number;
+  modulesList?: Array<{ id: string; name: string; role: string; online: boolean }>;
   banner?: string;
   /** Короткий статус профиля — публичный. */
   status?: string;
@@ -616,6 +639,9 @@ export interface Chat {
   canSetAvatar?: boolean;
   /** Аватар группы/канала — зашифрованный объект на узлах. */
   avatar?: AvatarInfo | null;
+  /** Фон чата: в личном чате меняет любой участник, в группе/канале — по праву setBackground. */
+  background?: AvatarInfo | null;
+  canSetBackground?: boolean;
   pendingRequests?: number;
   encryption: ChatEncryption;
   createdAt: string;
@@ -1042,6 +1068,16 @@ export const api = {
   putAvatar: (input: { objectId: string; key: string; mime: string }) =>
     req<{ avatar: AvatarInfo }>('/v1/me/avatar', { method: 'PUT', body: JSON.stringify(input) }),
   deleteAvatar: () => req<{ ok: true }>('/v1/me/avatar', { method: 'DELETE' }),
+  /** Фон профиля. */
+  putBackground: (input: { objectId: string; key: string; mime: string }) =>
+    req<{ background: AvatarInfo }>('/v1/me/background', { method: 'PUT', body: JSON.stringify(input) }),
+  deleteBackground: () => req<{ ok: true }>('/v1/me/background', { method: 'DELETE' }),
+  /** Закрепить канал/группу в профиле (null — открепить). */
+  setFeaturedChat: (chatId: string | null) =>
+    req<{ featuredChat: FeaturedChat | null }>('/v1/me/featured-chat', {
+      method: 'PUT',
+      body: JSON.stringify({ chatId }),
+    }),
   userProfile: (username: string) =>
     req<UserProfile>('/v1/users/' + encodeURIComponent(username) + '/profile'),
   setBlock: (username: string, blocked: boolean) =>
@@ -1257,6 +1293,11 @@ export const api = {
     req<Chat>(`/v1/chats/${id}/avatar`, { method: 'POST', body: JSON.stringify(input) }),
   deleteChatAvatar: (id: string) =>
     req<Chat>(`/v1/chats/${id}/avatar`, { method: 'DELETE' }),
+  /* ---- фон чата ---- */
+  setChatBackground: (id: string, input: { objectId: string; key: string; mime: string }) =>
+    req<Chat>(`/v1/chats/${id}/background`, { method: 'PUT', body: JSON.stringify(input) }),
+  deleteChatBackground: (id: string) =>
+    req<Chat>(`/v1/chats/${id}/background`, { method: 'DELETE' }),
 
   directInvite: (id: string, username: string) =>
     req<{ ok: true; chatId: string; added: boolean }>(`/v1/chats/${id}/invite`, {
