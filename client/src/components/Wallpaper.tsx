@@ -39,16 +39,21 @@ export function Wallpaper({
   image,
   previewUri,
   dim = 0.38,
+  pattern = false,
 }: {
   image?: AvatarInfo | null;
   /** Локальное превью (сразу после выбора, до загрузки). */
   previewUri?: string | null;
   /** Затемнение своего фото (0..1). */
   dim?: number;
+  /** Без своего фото: показывать узор Kinto (профиль) или оставить прозрачным (чаты). */
+  pattern?: boolean;
 }) {
   const theme = useTheme();
   const loaded = useEncryptedImage(image);
   const uri = previewUri ?? loaded;
+  // Чаты, каналы и группы без своего фона прозрачны: виден фон приложения.
+  if (!uri && !pattern) return null;
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: theme.dark ? '#161616' : '#ECEDF1' }]}>
       {uri ? (

@@ -130,7 +130,13 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       asChannel?: boolean;
       /** Короткий текст для push (не хранится в истории; можно отключить настройкой). */
       pushText?: string;
+      /** Шифротекст небольшого сообщения (base64url): рассылается сразу, без загрузки с узлов. */
+      inlineB64?: string;
     };
+    const inlineB64 =
+      typeof body.inlineB64 === 'string' && body.inlineB64.length <= 8192 && /^[A-Za-z0-9_-]+={0,2}$/.test(body.inlineB64)
+        ? body.inlineB64
+        : null;
 
     // Канал: писать может только владелец/админ с правом publish, и всегда
     // от имени канала. В сообществе (группе) публикация от имени сообщества
@@ -209,9 +215,9 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     const row = await one<{ seq: number; created_at: string }>(
-      `INSERT INTO messages (id, chat_id, sender_user_id, sender_device_id, kind, header, object_id, reply_to, client_id, as_channel)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9,''), $10) RETURNING seq, created_at`,
-      [id, chatId, me, deviceId, kind, JSON.stringify(headerObj), objectId, body.replyTo ?? null, body.clientId ?? null, asChannel],
+      `INSERT INTO messages (id, chat_id, sender_user_id, sender_device_id, kind, header, object_id, reply_to, client_id, as_channel, inline_b64)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9,''), $10, $11) RETURNING seq, created_at`,
+      [id, chatId, me, deviceId, kind, JSON.stringify(headerObj), objectId, body.replyTo ?? null, body.clientId ?? null, asChannel, inlineB64],
     );
 
     await query('UPDATE chats SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1', [chatId, row!.seq]);
@@ -234,6 +240,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
         senderDeviceId: deviceId,
         createdAt: row!.created_at,
         clientId: body.clientId ?? null,
+        ...(inlineB64 ? { envelopeB64: inlineB64 } : {}),
       },
     };
     for (const m of members) publish(m.user_id, envelope);
@@ -315,7 +322,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     const rows = await query<MsgRow>(
       `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
               m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id, m.client_id,
-              m.msg_uuid,
+              m.msg_uuid, m.inline_b64,
               EXISTS(SELECT 1 FROM message_receipts rc
                       WHERE rc.message_id = m.id AND rc.user_id <> m.sender_user_id) AS is_delivered,
               EXISTS(SELECT 1 FROM chat_members cmr
@@ -380,7 +387,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
     const inlineMap = new Map<string, string>();
     if (req.headers['x-sg-mesh'] === '1' && rows.length) {
       for (const r of rows.slice(0, 30)) {
-        if (!r.object_id || !r.size_bytes || r.size_bytes > 4096) continue;
+        if (r.inline_b64 || !r.object_id || !r.size_bytes || r.size_bytes > 4096) continue;
         try {
           const frag = await one<{ index: number; node_id: string; public_url: string; ticket_secret: string }>(
             `SELECT f.index, n.id AS node_id, n.public_url, n.ticket_secret
@@ -424,7 +431,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           kind: r.kind,
           // У системных сообщений нет объекта на узлах — ключ не отдаём.
           ...(r.kind === 'system' ? {} : { objectId: r.object_id }),
-          ...(inlineMap.has(r.id) ? { envelopeB64: inlineMap.get(r.id) } : {}),
+          ...(r.inline_b64 ? { envelopeB64: r.inline_b64 } : inlineMap.has(r.id) ? { envelopeB64: inlineMap.get(r.id) } : {}),
           sizeBytes: r.size_bytes,
           nonce: extractNonce(r.header),
           header: r.header,
@@ -783,6 +790,7 @@ function headerMeta(header: unknown): { scheme: 'server' | 'e2e'; keyVersion: nu
 interface MsgRow {
   id: string;
   seq: number;
+  inline_b64?: string | null;
   kind: string;
   header: unknown;
   object_id: string | null;

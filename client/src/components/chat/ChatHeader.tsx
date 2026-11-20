@@ -85,6 +85,8 @@ export function ChatHeader({
   onBack,
   onMenu,
   onOpenInfo,
+  onSearch,
+  onAvatarPress,
   avatarRef,
   hideAvatar,
   nodeOnline,
@@ -106,6 +108,10 @@ export function ChatHeader({
   onMenu: () => void;
   /** Тап по аватару/названию открывает информацию о чате. */
   onOpenInfo?: () => void;
+  /** Удержание на названии: поиск по чату (как в Telegram). */
+  onSearch?: () => void;
+  /** Тап по фото: профиль собеседника (личный чат) или информация о чате. */
+  onAvatarPress?: () => void;
   avatarRef: React.RefObject<View | null>;
   hideAvatar?: boolean;
   /** Direct-чат: онлайн-статус собеседника для обводки аватара. */
@@ -173,34 +179,36 @@ export function ChatHeader({
             : STATUS_LABEL[channel];
 
   // Шапка по макету: стеклянная «назад», капсула с названием и статусом, квадратный аватар справа.
-  const titleSize = wide ? 22 : 20;
+  const titleSize = wide ? 17 : 20;
   return (
     <Animated.View
       style={[
         styles.header,
         {
-          paddingTop: (Platform.OS === 'web' ? 12 : insets.top + 6),
+          paddingTop: Platform.OS === 'web' ? 10 : insets.top + 6,
+          paddingHorizontal: wide ? 16 : 12,
           opacity: enter,
           transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
         },
       ]}
     >
-      <View style={[styles.row, wide && { maxWidth: 980, alignSelf: 'center', width: '100%' }]}>
+      <View style={[styles.row, wide && { gap: 8 }]}>
         <PressableScale pressedScale={0.9} onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={6}>
-          <Glass radius={28} fill={GLASS_FILL_BUTTON} style={styles.round}>
-            <Ionicons name="chevron-back" size={26} color={theme.textPrimary} />
+          <Glass radius={wide ? 23 : 28} fill={GLASS_FILL_BUTTON} style={[styles.round, wide && { width: 46, height: 46 }]}>
+            <Ionicons name="chevron-back" size={wide ? 22 : 26} color={theme.textPrimary} />
           </Glass>
         </PressableScale>
 
         <PressableScale
           pressedScale={0.97}
-          onPress={onMenu}
-          onLongPress={onOpenInfo}
+          onPress={onOpenInfo}
+          onLongPress={onSearch}
+          delayLongPress={380}
           accessibilityRole="button"
-          accessibilityLabel={`${title || 'Диалог'}, меню чата`}
+          accessibilityLabel={`${title || 'Диалог'}: информация, удержание — поиск по чату`}
           style={{ flex: 1, minWidth: 0 }}
         >
-          <Glass radius={29} fill={GLASS_FILL_BUTTON} style={styles.pill}>
+          <Glass radius={wide ? 24 : 29} fill={GLASS_FILL_BUTTON} style={[styles.pill, wide && { height: 50 }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '100%' }}>
               {secret ? <Ionicons name="lock-closed" size={14} color={theme.accent} style={{ marginRight: 5 }} /> : null}
               <Text numberOfLines={1} style={{ color: theme.textPrimary, fontWeight: '800', fontSize: titleSize, flexShrink: 1 }}>
@@ -226,18 +234,23 @@ export function ChatHeader({
           </Glass>
         </PressableScale>
 
+        <PressableScale pressedScale={0.9} onPress={onMenu} accessibilityRole="button" accessibilityLabel="Меню чата" hitSlop={6}>
+          <Glass radius={wide ? 23 : 25} fill={GLASS_FILL_BUTTON} style={[styles.round, { width: wide ? 46 : 50, height: wide ? 46 : 50 }]}>
+            <Ionicons name="ellipsis-horizontal" size={20} color={theme.textPrimary} />
+          </Glass>
+        </PressableScale>
+
         <PressableScale
           pressedScale={0.92}
-          onPress={onOpenInfo}
-          disabled={!onOpenInfo}
+          onPress={onAvatarPress ?? onOpenInfo}
           accessibilityRole="button"
-          accessibilityLabel="Информация о чате"
+          accessibilityLabel={chatType === 'direct' ? 'Профиль собеседника' : 'Информация о чате'}
         >
           <View ref={avatarRef as never} style={{ opacity: hideAvatar ? 0 : 1 }}>
             <Avatar
               name={title || 'Диалог'}
-              size={58}
-              radius={16}
+              size={wide ? 48 : 58}
+              radius={wide ? 13 : 16}
               ringSize={3}
               nodeOnline={nodeOnline}
               moduleOnline={moduleOnline}

@@ -573,6 +573,7 @@ export default function ChatsScreen() {
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const [headerBottom, setHeaderBottom] = useState(56);
   useEffect(() => {
     setChatSearchActive(Boolean(search.trim()));
     return () => setChatSearchActive(false);
@@ -1824,7 +1825,7 @@ export default function ChatsScreen() {
   );
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }} onTouchStart={onScreenTouch}>
-      <View style={styles.header}>
+      <View style={styles.header} onLayout={(e) => setHeaderBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}>
         {/* Пока список вверху и есть закреплённые чаты — шапка лежит
             на той же серой подложке, что и блок «Закреплённые». */}
         {pinnedChats.length > 0 ? (
@@ -1878,23 +1879,6 @@ export default function ChatsScreen() {
             }}
             placeholder="Поиск"
           />
-          {historyOpen ? (
-            <View style={styles.headerHistory}>
-              <SearchHistoryPanel
-                theme={theme}
-                wide={wide}
-                history={history}
-                onOpen={(entry) => {
-                  setSearchFocused(false);
-                  openHistoryEntry(entry);
-                }}
-                onRemove={(entry) => {
-                  persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
-                }}
-                onClear={() => persistHistory([])}
-              />
-            </View>
-          ) : null}
         </View>
         <Reanimated.View style={[styles.headerCreate, headerCreateStyle]}>
           <HeaderCreateMenu />
@@ -1950,54 +1934,7 @@ export default function ChatsScreen() {
       ) : null}
       {meshRefreshing && !search.trim() ? <MeshLoadingBar theme={theme} label="Обновление чатов через kMesh…" /> : null}
 
-      {search.trim() ? (
-        <MotiView
-          from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -10, scale: 0.99 }}
-          animate={{ opacity: 1, translateY: 0, scale: 1 }}
-          transition={reduced ? { type: 'timing', duration: 0 } : motion.quick}
-          style={[styles.searchOverlay, { backgroundColor: theme.background }]}
-        >
-        <SearchResults
-          theme={theme}
-          reduced={reduced}
-          search={search}
-          activeQuery={activeQuery}
-          queryTooShort={queryTooShort}
-          searching={searching}
-          noResults={noResults}
-          total={total}
-          rows={searchRows}
-          counts={counts}
-          filter={filter}
-          onFilter={setFilter}
-          selectedKey={selectedKey}
-          onOpenRow={openSearchRow}
-          onOpenChat={(chat) => {
-            const peer = peerOf(chat, myUsername);
-            rememberEntry({
-              type: 'chat',
-              id: chat.id,
-              title: titleOf(chat, myUsername),
-              subtitle: chat.type === 'direct' ? 'Чат' : 'Группа',
-              avatar: peer?.avatar ?? null,
-              at: new Date().toISOString(),
-            });
-            openChat(chat);
-          }}
-          myUsername={myUsername}
-          pinned={pinned}
-          mutedSet={mutedSet}
-          busyUser={busyUser}
-          messageLoading={messageSearch.loading}
-          messageProgress={messageSearch.progress}
-          meshSearching={meshSearching}
-          onCreate={() => router.push('/compose?mode=direct' as never)}
-          onMenuChat={setMenuChat}
-          onTogglePin={togglePin}
-          onToggleMute={toggleMuted}
-        />
-        </MotiView>
-      ) : chats.isLoading ? (
+      {chats.isLoading ? (
         <SkeletonChatList rows={8} />
       ) : noChats ? (
         <View style={{ flex: 1 }}>
@@ -2054,6 +1991,81 @@ export default function ChatsScreen() {
           />
         </>
       )}
+
+
+      {/* Поиск поверх списка чатов: всё под ним размыто (история и результаты). */}
+      {searchExpanded ? (
+        <View style={[styles.searchLayer, { top: headerBottom }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={blurSearch} accessibilityLabel="Закрыть поиск">
+            <Glass radius={0} borderWidth={0} intensity={60} fill={theme.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)'} style={StyleSheet.absoluteFill} />
+          </Pressable>
+          {search.trim() ? (
+        <MotiView
+          from={reduced ? { opacity: 0 } : { opacity: 0, translateY: -10, scale: 0.99 }}
+          animate={{ opacity: 1, translateY: 0, scale: 1 }}
+          transition={reduced ? { type: 'timing', duration: 0 } : motion.quick}
+          style={{ flex: 1 }}
+        >
+        <SearchResults
+          theme={theme}
+          reduced={reduced}
+          search={search}
+          activeQuery={activeQuery}
+          queryTooShort={queryTooShort}
+          searching={searching}
+          noResults={noResults}
+          total={total}
+          rows={searchRows}
+          counts={counts}
+          filter={filter}
+          onFilter={setFilter}
+          selectedKey={selectedKey}
+          onOpenRow={openSearchRow}
+          onOpenChat={(chat) => {
+            const peer = peerOf(chat, myUsername);
+            rememberEntry({
+              type: 'chat',
+              id: chat.id,
+              title: titleOf(chat, myUsername),
+              subtitle: chat.type === 'direct' ? 'Чат' : 'Группа',
+              avatar: peer?.avatar ?? null,
+              at: new Date().toISOString(),
+            });
+            openChat(chat);
+          }}
+          myUsername={myUsername}
+          pinned={pinned}
+          mutedSet={mutedSet}
+          busyUser={busyUser}
+          messageLoading={messageSearch.loading}
+          messageProgress={messageSearch.progress}
+          meshSearching={meshSearching}
+          onCreate={() => router.push('/compose?mode=direct' as never)}
+          onMenuChat={setMenuChat}
+          onTogglePin={togglePin}
+          onToggleMute={toggleMuted}
+        />
+        </MotiView>
+          ) : historyOpen ? (
+            <View>
+
+              <SearchHistoryPanel
+                theme={theme}
+                wide={wide}
+                history={history}
+                onOpen={(entry) => {
+                  setSearchFocused(false);
+                  openHistoryEntry(entry);
+                }}
+                onRemove={(entry) => {
+                  persistHistory(historyRef.current.filter((x) => !(x.type === entry.type && x.id === entry.id)));
+                }}
+                onClear={() => persistHistory([])}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       <ChatContextMenu
         visible={Boolean(menuChat)}
@@ -3097,7 +3109,8 @@ function OnboardingCard() {
 /* --------------------------------------------------------------- стили */
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44, position: 'relative', backgroundColor: 'transparent' },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, minHeight: 44, position: 'relative', backgroundColor: 'transparent', zIndex: 70, elevation: 70 },
+  searchLayer: { position: 'absolute', left: -16, right: -16, bottom: -200, zIndex: 65, elevation: 65, paddingHorizontal: 16, paddingTop: 2 },
   headerTitle: { height: 44, justifyContent: 'center', overflow: 'hidden' },
   headerTitleText: { fontSize: 28, fontWeight: '700', letterSpacing: -0.6 },
   headerCreate: { height: 44, justifyContent: 'center', overflow: 'hidden', alignItems: 'flex-end' },

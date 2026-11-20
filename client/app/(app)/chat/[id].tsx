@@ -4,6 +4,7 @@ import {
   Alert,
   Animated,
   Keyboard,
+  Modal,
   KeyboardAvoidingView as RNKeyboardAvoidingView,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -159,6 +160,7 @@ export default function ChatScreen() {
   const [inputHeight, setInputHeight] = useState(42);
   const [replyTo, setReplyTo] = useState<ViewMessage | null>(null);
   const [editing, setEditing] = useState<ViewMessage | null>(null);
+  const [deleteChoice, setDeleteChoice] = useState<{ message: ViewMessage; buttons: Array<{ text: string; onPress: () => void }> } | null>(null);
   const [sheetMessage, setSheetMessage] = useState<ViewMessage | null>(null);
   const [reactionTarget, setReactionTarget] = useState<ViewMessage | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1525,7 +1527,9 @@ export default function ChatScreen() {
 
   function confirmDelete(m: ViewMessage) {
     setSheetMessage(null);
-    if (m.pending || m.failed || String(m.id).startsWith('loc-')) {
+    // Только реально не ушедшее (локальный id) отменяем без вопросов; доставленное через
+    // kMesh, но ещё «ждущее подтверждения», удаляем как обычное сообщение.
+    if (String(m.id).startsWith('loc-') || (m.failed && !m.seq)) {
       void cancelPendingSend(m);
       return;
     }
@@ -1565,8 +1569,8 @@ export default function ChatScreen() {
           .catch(() => undefined);
       },
     });
-    buttons.push({ text: 'Отмена', style: 'cancel' });
-    Alert.alert('Удалить сообщение?', 'Выберите, где удалить.', buttons);
+    // Своё окно вместо Alert: на web Alert не показывает больше одной кнопки.
+    setDeleteChoice({ message: m, buttons: buttons.map((b) => ({ text: b.text, onPress: b.onPress ?? (() => undefined) })) });
   }
 
   async function createSecretChat() {
@@ -1834,6 +1838,15 @@ export default function ChatScreen() {
           onOpenInfo={() => {
             setMenuOpen(false);
             router.push(`/chat/${chatId}/info` as never);
+          }}
+          onSearch={() => {
+            setMenuOpen(false);
+            setSearchOpen(true);
+          }}
+          onAvatarPress={() => {
+            setMenuOpen(false);
+            const peerName = chat?.type === 'direct' ? chat.members.find((m) => m.username !== myUsername)?.username : null;
+            router.push((peerName ? `/user/${peerName}` : `/chat/${chatId}/info`) as never);
           }}
           avatarRef={avatarRef}
           nodeOnline={peerPresence?.nodeOnline}
@@ -2248,6 +2261,43 @@ export default function ChatScreen() {
           </View>
         ) : null}
       </View>
+
+      <Modal visible={Boolean(deleteChoice)} transparent animationType="fade" onRequestClose={() => setDeleteChoice(null)}>
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 }}
+          onPress={() => setDeleteChoice(null)}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={{ width: '100%', maxWidth: 360, borderRadius: 22, padding: 18, gap: 10, backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.line }}
+          >
+            <Text style={{ color: theme.textPrimary, fontSize: 17, fontWeight: '800' }}>Удалить сообщение?</Text>
+            <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
+              {deleteChoice?.buttons.length && deleteChoice.buttons.length > 1 ? 'Выберите, у кого удалить.' : 'Сообщение пропадёт только у вас.'}
+            </Text>
+            {deleteChoice?.buttons.map((b) => (
+              <Pressable
+                key={b.text}
+                accessibilityRole="button"
+                onPress={() => {
+                  setDeleteChoice(null);
+                  b.onPress();
+                }}
+                style={({ pressed }) => ({ paddingVertical: 13, borderRadius: 14, alignItems: 'center', backgroundColor: theme.dangerSoft, opacity: pressed ? 0.8 : 1 })}
+              >
+                <Text style={{ color: theme.danger, fontSize: 15, fontWeight: '700' }}>{b.text}</Text>
+              </Pressable>
+            ))}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setDeleteChoice(null)}
+              style={({ pressed }) => ({ paddingVertical: 12, alignItems: 'center', opacity: pressed ? 0.7 : 1 })}
+            >
+              <Text style={{ color: theme.textSecondary, fontSize: 15, fontWeight: '600' }}>Отмена</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Avoider>
   );
 }

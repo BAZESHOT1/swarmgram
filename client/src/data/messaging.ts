@@ -395,6 +395,8 @@ export async function sendMessage(
       ...(opts.asChannel ? { asChannel: true } : {}),
       // Короткий предпросмотр для push (только для текста, не для E2E-секретов).
       ...(kind === 'text' ? { pushText: String(payload.text ?? '').slice(0, 300) } : {}),
+      // Шифротекст небольшого сообщения: получатели показывают его сразу, не скачивая с узлов.
+      ...(ciphertext.length <= 8192 ? { inlineB64: ciphertext } : {}),
     } as never);
     const saved = online && !meshAvailable
       ? await registerRequest
@@ -504,6 +506,7 @@ export async function flushOutbox(myUsername: string): Promise<ViewMessage[]> {
         ...(item.kind === 'text' && typeof (item as { text?: unknown }).text === 'string'
           ? { pushText: String((item as { text?: string }).text).slice(0, 300) }
           : {}),
+        ...(ciphertext && ciphertext.length <= 8192 ? { inlineB64: ciphertext } : {}),
       } as never);
       await removeOutbox(item.id);
       out.push({

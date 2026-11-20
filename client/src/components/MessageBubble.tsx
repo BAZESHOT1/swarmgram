@@ -337,6 +337,8 @@ export function MessageBubble({
     Alert.alert('Сообщение', undefined, buttons);
   };
 
+  // Анимация въезда только у только что пришедших/отправленных: история и прокрутка без дёрганья.
+  const fresh = React.useMemo(() => Date.now() - new Date(item.createdAt).getTime() < 5000, [item.createdAt]);
   const onMine = theme.dark ? '#FFFFFF' : theme.onAccent;
   const mineSub = theme.dark ? 'rgba(255,255,255,0.62)' : 'rgba(26,18,6,0.68)';
   // Тёмная тема: полупрозрачные «стеклянные» пузыри поверх фона чата (как на макете).
@@ -380,7 +382,7 @@ export function MessageBubble({
         </Reanimated.View>
         <Reanimated.View style={swipeStyle}>
     <MotiView
-      from={reduced ? { opacity: 1 } : { opacity: 0, translateY: item.mine ? 26 : 10, scale: item.mine ? 0.94 : 0.98 }}
+      from={reduced || !fresh ? { opacity: 1 } : { opacity: 0, translateY: item.mine ? 26 : 10, scale: item.mine ? 0.94 : 0.98 }}
       animate={{ opacity: 1, translateY: 0, scale: 1 }}
       transition={reduced ? { type: 'timing', duration: 0 } : motion.spring}
       style={[styles.row, item.mine && styles.rowMine, { marginTop: first ? 8 : 2 }]}

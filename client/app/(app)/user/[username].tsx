@@ -1339,7 +1339,7 @@ function BrightProfile({
 
   return (
     <View style={styles.bPage}>
-      <Wallpaper image={profile.background ?? null} />
+      <Wallpaper image={profile.background ?? null} pattern />
       <View style={[styles.bInner, desktop ? styles.bInnerDesktop : null]}>
         <View style={styles.pTopBar}>
           <PressableScale onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={10}>
