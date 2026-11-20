@@ -189,6 +189,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const unsubInfoRef = useRef<(() => void) | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outboxTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deliveredUuidsRef = useRef<Set<string>>(new Set());
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -506,6 +507,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           },
           onStatus: (event) => {
             void (async () => {
+              const uuid = String(event.msgUuid).toLowerCase();
+              if (event.status === 4) {
+                deliveredUuidsRef.current.add(uuid);
+              } else if (deliveredUuidsRef.current.has(uuid)) {
+                // Hub уже подтвердил: поздние ACK/повторы не откатывают статус.
+                return;
+              }
               const item = await kmeshV1Get(event.msgUuid).catch(() => null);
               const ref = messageRefForMsgUuid(event.msgUuid);
               const clientId = item?.clientId ?? ref.clientId;

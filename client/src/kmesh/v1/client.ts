@@ -136,6 +136,8 @@ export interface KMeshV1ClientOptions {
 
 /** Общий для всех экземпляров: повтор после переподключения использует тот же uuid. */
 const uuidByClient = new Map<string, bigint>();
+/** Hub уже подтвердил эти сообщения: не отправляем их повторно и не откатываем статус. */
+const confirmedUuids = new Set<string>();
 /** Обратное соответствие: статус из модуля приходит по msg_uuid, UI ищет пузырь по clientId. */
 const clientByUuid = new Map<string, string>();
 const chatByUuid = new Map<string, string>();
@@ -379,6 +381,7 @@ export class KMeshV1Client {
     // Повторный вызов для уже принятого шлюзом сообщения не шлём заново: раньше очередь повторяла отправку,
     // и статус в пузыре гонялся «Подготовка kMesh» ↔ «Шлюз принял».
     if (knownUuid) {
+      if (confirmedUuids.has(uuidHex)) return { msgUuid: uuidHex, state: 'SYNCED_PERMANENT' };
       const prev = (await kmeshV1List().catch(() => [])).find((row) => row.msgUuid === uuidHex);
       if (prev && prev.state === 'SYNCED_PERMANENT') return { msgUuid: uuidHex, state: prev.state };
     }
@@ -638,6 +641,7 @@ export class KMeshV1Client {
     const key = `${uuid}:${pid}`;
     if (this.relayConfirmed.has(key)) return;
     this.relayConfirmed.add(key);
+    confirmedUuids.add(uuid);
     if (this.relayConfirmed.size > 1024) this.relayConfirmed.clear();
     this.opts.onStatus?.({ msgUuid: uuid, packetId: pid, status: DeliveryStatus.SYNCED_PERMANENT });
     const node = this.nodeId;
@@ -784,6 +788,10 @@ export class KMeshV1Client {
           const uuid = view.getBigUint64(0, true);
           const packetId = view.getUint32(8, true);
           const status = frame.payload[12] as DeliveryStatusValue;
+          if (status === DeliveryStatus.SYNCED_PERMANENT) {
+            confirmedUuids.add(msgUuidHex(uuid));
+            if (confirmedUuids.size > 4000) confirmedUuids.clear();
+          }
           this.opts.onStatus?.({ msgUuid: msgUuidHex(uuid), packetId, status });
           break;
         }
@@ -1057,6 +1065,7 @@ export class KMeshV1Client {
           chat_ref: item.chatRef,
         });
         item.state = 'SYNCED_PERMANENT';
+        confirmedUuids.add(item.msgUuid);
         item.serverSeq = response.server_seq;
         item.permanentSignature = response.permanent_signature;
         item.attempts = 0;

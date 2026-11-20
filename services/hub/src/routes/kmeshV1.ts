@@ -128,9 +128,13 @@ async function storeArchive(body: Record<string, unknown>, gatewayId: number) {
 
   // В архив попадают только сообщения. Сервисные RPC (поиск/лента/ключ)
   // и квитанции идут тем же uplink, но историей не являются.
-  const plain = openTemp(config.tempMeshKey, parsePacket(packet) as never);
-  if (!plain || (plain[0] !== 1 && plain[0] !== 0x0e)) {
-    return { uuid, status: 'ignored' };
+  // Если пакет не разобрался (старый формат/битый CRC), сохраняем как раньше.
+  const parsedPacket = parsePacket(packet);
+  if (parsedPacket) {
+    const plain = openTemp(config.tempMeshKey, parsedPacket);
+    if (plain && plain[0] !== 1 && plain[0] !== 0x0e) {
+      return { uuid, status: 'ignored' };
+    }
   }
 
   const src = packet.readUInt32LE(14);
