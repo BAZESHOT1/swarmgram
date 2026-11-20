@@ -48,7 +48,7 @@ import {
 } from '../../src/data/queries';
 import { loadChatMessages, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
 import { getServerChatKey } from '../../src/data/chatkit';
-import { saveMessages } from '../../src/data/cache';
+import { loadCachedMessages, saveMessages } from '../../src/data/cache';
 import { Avatar } from '../../src/components/Avatar';
 import { Glass, GLASS_FILL_BUTTON, PINNED_SURFACE } from '../../src/components/Glass';
 import { EmptyState } from '../../src/components/EmptyState';
@@ -1540,6 +1540,37 @@ export default function ChatsScreen() {
       setMeshSearching(false);
     };
   }, [activeQuery, transportOnline]);
+
+  // Ремонт превью: прежняя версия перетирала текст последнего сообщения пустым превью из ленты
+  // kMesh («Сообщение»). Восстанавливаем текст из кэша сообщений чата.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const previews = useStore.getState().chatPreviews;
+      for (const chat of allChats.slice(0, 60)) {
+        const p = previews[chat.id];
+        if (!p || p.text) continue;
+        const rows = (await loadCachedMessages(chat.id).catch(() => null)) as
+          | Array<{ id?: string; text?: string; kind?: string; mine?: boolean; createdAt?: string }>
+          | null;
+        if (cancelled) return;
+        const lastText = rows?.slice().reverse().find((m) => typeof m?.text === 'string' && m.text);
+        if (!lastText) continue;
+        useStore.getState().setChatPreview(chat.id, {
+          id: String(lastText.id ?? p.id),
+          text: String(lastText.text),
+          kind: lastText.kind ?? 'text',
+          mine: Boolean(lastText.mine),
+          at: p.at,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Один проход на набор чатов.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allChats.length]);
 
   useEffect(() => {
     if (transportOnline) return undefined;
