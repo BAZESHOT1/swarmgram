@@ -187,7 +187,22 @@ export function useChatMessages(chat: Chat | null) {
       } catch (error) {
         // Без интернета показываем последние сохранённые сообщения чата.
         const cached = await loadCachedMessages(chat.id);
-        if (cached) return cached as ViewMessage[];
+        if (cached) {
+          // Офлайн-кэш мог сохранить «ожидание подтверждения» от старой сборки.
+          // Сверяем с очередью kMesh и снимаем ожидание у уже отправленных.
+          const outbox = await kmeshV1List().catch(() => []);
+          const active = new Set(
+            outbox.flatMap((item) => [item.clientId, item.msgUuid]).filter((v): v is string => Boolean(v)),
+          );
+          let changed = false;
+          const reconciled = (cached as ViewMessage[]).map((m) => {
+            if (!m.pending || !m.clientId || active.has(m.clientId)) return m;
+            changed = true;
+            return { ...m, pending: false, delivered: true, failed: false, kmeshLabel: undefined };
+          });
+          if (changed) saveMessages(chat.id, reconciled);
+          return reconciled;
+        }
         if (!useStore.getState().transportOnline) return [];
         throw error;
       }
