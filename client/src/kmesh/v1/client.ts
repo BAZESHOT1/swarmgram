@@ -776,7 +776,14 @@ export class KMeshV1Client {
   private async e2eKeyFor(chatId: string): Promise<Uint8Array | null> {
     const keys = await storage.loadKeys();
     if (!keys) return null;
-    return loadChatKey(chatId, keys).catch(() => null);
+    // Локальный ключ — сразу. loadChatKey без него ходит в сеть (ключи аккаунта/устройства):
+    // без интернета эти запросы висели до таймаута, и отправка через kMesh начиналась через минуту.
+    const local = (await storage.loadChatKeys().catch(() => ({}) as Record<string, string>))[chatId];
+    if (local) return loadChatKey(chatId, keys).catch(() => null);
+    return Promise.race([
+      loadChatKey(chatId, keys).catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
   }
 
   private async chatKeyFor(chatId: string): Promise<Uint8Array | null> {
@@ -788,7 +795,7 @@ export class KMeshV1Client {
     const server = await peekServerChatKey(chatId).catch(() => null);
     if (server) return server;
     // E2E-чат: локальный ключ устройства.
-    const e2e = await loadChatKey(chatId, keys).catch(() => null);
+    const e2e = await this.e2eKeyFor(chatId);
     if (e2e) return e2e;
     // Офлайн HTTP-запрос ключа может висеть десятки секунд — ограничиваем.
     // Дальше sendText сам запросит ключ через KMesh (CHAT_KEY_REQ).

@@ -20,7 +20,7 @@
 /** Сколько раз повторяем кадр, прежде чем выбросить его из очереди. */
 #define KL_ESPNOW_MAX_RETRIES 3u
 /** Очередь ожидания: 16 кадров достаточно для двух модулей на столе. */
-#define KL_ESPNOW_TX_QUEUE 32u
+#define KL_ESPNOW_TX_QUEUE 16u
 
 class EspNowInterface : public INetInterface {
  public:

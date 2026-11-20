@@ -31,7 +31,7 @@ class KlintoBleServerCallbacks : public NimBLEServerCallbacks {
      * (меньше борьбы за эфир), интервал 20..50 мс, latency 0, supervision 5 с. Разрыв через
      * ~5 с после подключения давали скачки Wi-Fi по каналам при поиске шлюза — теперь их нет. */
     NimBLEDevice::getAdvertising()->stop();
-    server->updateConnParams(info.getConnHandle(), 16, 40, 0, 500);
+    server->updateConnParams(info.getConnHandle(), 6, 12, 0, 500); /* 7.5..15 мс: больше событий соединения при общем с ESP-NOW радио */
     owner_->onConnected(info.getConnHandle(), info.getMTU());
   }
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {

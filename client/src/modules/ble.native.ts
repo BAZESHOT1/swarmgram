@@ -602,6 +602,11 @@ export class NativeBleTransport implements ModuleConnection {
       } catch {
         /* iOS сам управляет MTU */
       }
+      if (Platform.OS === 'android') {
+        // Высокий приоритет: интервал соединения 7.5–15 мс вместо ~50 мс. Модуль делит радио между
+        // BLE и ESP-NOW и часть событий соединения пропускает — чем их больше, тем быстрее кадры.
+        await manager().requestConnectionPriorityForDevice(device.id, 1).catch(() => undefined);
+      }
     } catch (error) {
       this.deviceId = null;
       throw new ModuleTransportError(
