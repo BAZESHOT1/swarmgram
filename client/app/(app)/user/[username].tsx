@@ -285,32 +285,21 @@ export default function UserProfileScreen() {
     profile.role === 'admin' ? 'Администратор' : profile.role === 'moderator' ? 'Модератор' : '';
   const userMuted = mutedUsers.includes(profile.username.toLowerCase());
 
-  /** Действия для мобильного профиля — по требованию: без лишних плиток. */
+  /** Плитки действий (как на макете) и пункты «ещё». «Написать» не нужен: в профиль попадают из чата. */
   const mobileActions: ProfileAction[] = [];
+  const moreActions: ProfileAction[] = [];
   if (isSelf) {
-    mobileActions.push({ key: 'edit', icon: 'pencil-outline', label: 'Редактировать', onPress: () => router.push(`/user/${profile.username}/edit` as never) });
-    mobileActions.push({ key: 'qr', icon: 'qr-code-outline', label: 'QR-код', onPress: () => setQrOpen(true) });
-    mobileActions.push({ key: 'share', icon: 'share-social-outline', label: 'Поделиться', onPress: () => void share() });
+    mobileActions.push({ key: 'qr', icon: 'qr-code', label: 'QR-код', onPress: () => setQrOpen(true) });
+    mobileActions.push({ key: 'share', icon: 'share-social', label: 'поделиться', onPress: () => void share() });
+    mobileActions.push({ key: 'copy', icon: 'link', label: 'ссылка', onPress: () => void copyLink() });
   } else {
     if (canChat) {
-      mobileActions.push({
-        key: 'write',
-        icon: 'paper-plane-outline',
-        label: 'Написать',
-        onPress: () => void openChat('server'),
-        loading: creating === 'server',
-      });
-      mobileActions.push({
-        key: 'invite',
-        icon: 'people-outline',
-        label: 'В группу или канал',
-        onPress: () => setInviteOpen(true),
-      });
+      mobileActions.push({ key: 'invite', icon: 'person-add', label: 'пригласить', onPress: () => setInviteOpen(true) });
     }
     mobileActions.push({
       key: 'mute',
-      icon: userMuted ? 'notifications-outline' : 'notifications-off-outline',
-      label: userMuted ? 'Включить уведомления' : 'Выключить уведомления',
+      icon: userMuted ? 'notifications-off' : 'notifications',
+      label: 'уведомления',
       onPress: () => {
         toggleMutedUser(profile.username);
         pushToast({
@@ -320,19 +309,21 @@ export default function UserProfileScreen() {
       },
     });
     mobileActions.push({
+      key: 'call',
+      icon: 'call',
+      label: 'позвонить',
+      onPress: () => pushToast({ kind: 'info', message: 'Звонки появятся в одном из следующих обновлений' }),
+    });
+    moreActions.push({ key: 'share', icon: 'share-social-outline', label: 'Поделиться профилем', onPress: () => void share() });
+    moreActions.push({ key: 'qr', icon: 'qr-code-outline', label: 'QR-код', onPress: () => setQrOpen(true) });
+    moreActions.push({
       key: 'block',
       icon: blockedByMe ? 'lock-open-outline' : 'ban-outline',
       label: blockedByMe ? 'Разблокировать' : 'Заблокировать',
       danger: !blockedByMe,
       onPress: () => setBlockOpen(true),
     });
-    mobileActions.push({
-      key: 'report',
-      icon: 'flag-outline',
-      label: 'Пожаловаться',
-      danger: true,
-      onPress: () => setReportOpen(true),
-    });
+    moreActions.push({ key: 'report', icon: 'flag-outline', label: 'Пожаловаться', danger: true, onPress: () => setReportOpen(true) });
   }
 
   const startEdit = (field: EditField, value: string) => {
@@ -358,6 +349,8 @@ export default function UserProfileScreen() {
 
   return (
     <>
+      {/* Фон профиля неподвижен и занимает весь экран; без своего фото — прозрачный. */}
+      <Wallpaper image={profile.background ?? null} bleed />
       <ScrollView
         contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
@@ -385,6 +378,7 @@ export default function UserProfileScreen() {
           birthday={birthday}
           badgeFacts={badgeFacts}
           actions={mobileActions}
+          moreActions={moreActions}
           blockedByMe={blockedByMe}
           blockedMe={blockedMe}
           nodeOnline={nodeOnline}
@@ -1008,6 +1002,7 @@ function BrightProfile({
   forceMobile,
   onEdit,
   onEditProfile,
+  moreActions = [],
 }: {
   profile: UserProfile;
   isSelf: boolean;
@@ -1035,6 +1030,7 @@ function BrightProfile({
   forceMobile?: boolean;
   onEdit?: (field: EditField, value: string) => void;
   onEditProfile?: () => void;
+  moreActions?: ProfileAction[];
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -1043,8 +1039,7 @@ function BrightProfile({
   const badges = buildProfileBadges(badgeFacts, theme);
   const [badgesOpen, setBadgesOpen] = React.useState(false);
 
-  const primary = actions[0] ?? null;
-  const secondary = actions.slice(1);
+  const [moreOpen, setMoreOpen] = React.useState(false);
 
   const modulesTotal = Number(profile.modulesTotal ?? 0);
   const modulesOnline = Number(profile.modulesOnline ?? 0);
@@ -1103,53 +1098,44 @@ function BrightProfile({
       </View>
       <Text style={styles.pOnline}>{online ? 'в сети' : statusText}</Text>
 
-      {primary ? (
-        <Pressable
-          onPress={primary.onPress}
-          disabled={primary.disabled || primary.loading}
-          accessibilityRole="button"
-          accessibilityLabel={primary.label}
-          style={({ pressed }) => ({
-            marginTop: 14,
-            width: '100%',
-            minHeight: 48,
-            borderRadius: 24,
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexDirection: 'row',
-            gap: 7,
-            backgroundColor: primary.danger ? theme.danger : theme.accent,
-            opacity: primary.disabled ? 0.5 : pressed ? 0.86 : 1,
-          })}
-        >
-          <Ionicons name={primary.loading ? 'hourglass-outline' : primary.icon} size={17} color={primary.danger ? '#FFFFFF' : theme.onAccent} />
-          <Text style={{ color: primary.danger ? '#FFFFFF' : theme.onAccent, fontSize: 15, fontWeight: '800' }}>
-            {primary.loading ? 'Подождите…' : primary.label}
-          </Text>
-        </Pressable>
-      ) : null}
+      <View style={styles.pTiles}>
+        {[...actions, ...(moreActions.length ? [{ key: 'more', icon: 'ellipsis-horizontal', label: 'ещё', onPress: () => setMoreOpen(true) } as ProfileAction] : [])].map((action) => (
+          <PressableScale
+            key={action.key}
+            onPress={action.onPress}
+            disabled={action.disabled || action.loading}
+            accessibilityRole="button"
+            accessibilityLabel={action.label}
+            style={[styles.pTile, { opacity: action.disabled ? 0.5 : 1 }]}
+          >
+            <Ionicons name={action.loading ? 'hourglass-outline' : action.icon} size={34} color={theme.accent} />
+            <Text style={styles.pTileText} numberOfLines={1} adjustsFontSizeToFit>
+              {action.label}
+            </Text>
+          </PressableScale>
+        ))}
+      </View>
 
-      {secondary.length ? (
-        <View style={styles.bSecondary}>
-          {secondary.map((action) => (
-            <PressableScale
-              key={action.key}
-              onPress={action.onPress}
-              disabled={action.disabled || action.loading}
-              accessibilityRole="button"
-              accessibilityLabel={action.label}
-              style={{ opacity: action.disabled ? 0.5 : 1 }}
-            >
-              <Glass radius={18} fill={glassFill} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}>
-                <Ionicons name={action.loading ? 'hourglass-outline' : action.icon} size={15} color={action.danger ? '#FFB4B8' : '#FFFFFF'} />
-                <Text style={{ color: action.danger ? '#FFB4B8' : '#FFFFFF', fontSize: 12.5, fontWeight: '600' }} numberOfLines={1}>
-                  {action.label}
-                </Text>
-              </Glass>
-            </PressableScale>
-          ))}
-        </View>
-      ) : null}
+      <Modal visible={moreOpen} transparent animationType="fade" onRequestClose={() => setMoreOpen(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end', padding: 14 }} onPress={() => setMoreOpen(false)}>
+          <View style={{ borderRadius: 22, overflow: 'hidden', backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.line, maxWidth: 480, width: '100%', alignSelf: 'center' }}>
+            {moreActions.map((action) => (
+              <Pressable
+                key={action.key}
+                onPress={() => {
+                  setMoreOpen(false);
+                  action.onPress();
+                }}
+                accessibilityRole="button"
+                style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 15, backgroundColor: pressed ? theme.surfacePressed : 'transparent' })}
+              >
+                <Ionicons name={action.icon} size={20} color={action.danger ? theme.danger : theme.accent} />
+                <Text style={{ color: action.danger ? theme.danger : theme.textPrimary, fontSize: 16, fontWeight: '600' }}>{action.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 
@@ -1339,7 +1325,6 @@ function BrightProfile({
 
   return (
     <View style={styles.bPage}>
-      <Wallpaper image={profile.background ?? null} pattern />
       <View style={[styles.bInner, desktop ? styles.bInnerDesktop : null]}>
         <View style={styles.pTopBar}>
           <PressableScale onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={10}>
@@ -1389,7 +1374,7 @@ function BrightProfile({
           </View>
         ) : (
           <View style={styles.bMobile}>
-            <View style={{ paddingTop: 6, paddingBottom: 4 }}>{identity}</View>
+            <View style={{ paddingTop: 0, paddingBottom: 4 }}>{identity}</View>
             {channelCard}
             {infoCard}
             {activityCard}
@@ -1437,8 +1422,11 @@ const styles = StyleSheet.create({
   mStatIcon: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   mBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 8, flexGrow: 1, flexBasis: '46%', minWidth: 140 },
   mBadgeIcon: { width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  bPage: { flexGrow: 1, minHeight: '100%', backgroundColor: '#161616' },
-  pTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  bPage: { flexGrow: 1, minHeight: '100%', backgroundColor: 'transparent' },
+  pTopBar: { position: 'absolute', top: 6, left: 14, right: 14, zIndex: 5, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  pTiles: { flexDirection: 'row', gap: 10, marginTop: 16, width: '100%' },
+  pTile: { flex: 1, aspectRatio: 1.02, maxHeight: 112, borderRadius: 24, backgroundColor: 'rgba(30,26,20,0.82)', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 4 },
+  pTileText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
   pRound: { width: 58, height: 58, alignItems: 'center', justifyContent: 'center' },
   pEditBtn: { height: 58, paddingHorizontal: 20, alignItems: 'center', justifyContent: 'center' },
   pName: { color: '#FFFFFF', fontSize: 38, fontWeight: '800', textShadowColor: 'rgba(0,0,0,0.4)', textShadowRadius: 8 },
@@ -1453,7 +1441,7 @@ const styles = StyleSheet.create({
   pStatNum: { fontWeight: '800' },
   pEmpty: { color: 'rgba(255,255,255,0.5)', fontSize: 14, textAlign: 'center', paddingVertical: 18 },
   bOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(6,10,18,0.30)' },
-  bInner: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 14, paddingTop: 50, paddingBottom: 24 },
+  bInner: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 14, paddingTop: 6, paddingBottom: 24 },
   bInnerDesktop: { paddingHorizontal: 24, paddingTop: 56 },
   bBack: { position: 'absolute', top: 8, left: 14, width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(10,14,20,0.42)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.22)', zIndex: 5 },
   bDesktopRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 22 },

@@ -38,6 +38,9 @@ function nextApiBase(): string | null {
   return NATIVE_API_CANDIDATES[candidateIndex];
 }
 
+/** Ошибки прокси/шлюза перед Hub: сервер перезапускается или не ответил вовремя. */
+const GATEWAY_ERRORS = new Set([502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530]);
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -272,12 +275,27 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (token) res = await run();
   }
 
+  // Шлюз (Cloudflare/nginx) ответил ошибкой вместо Hub (перезапуск, таймаут):
+  // для безопасных к повтору запросов повторяем до двух раз с паузой.
+  const method = String((init as { method?: string } | undefined)?.method ?? 'GET').toUpperCase();
+  for (let attempt = 0; attempt < 2 && GATEWAY_ERRORS.has(res.status) && method !== 'POST'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    res = await run();
+  }
+
   const text = await res.text();
   let data: any = null;
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    data = { error: 'invalid_response', message: text.slice(0, 200) };
+    // HTML-страница ошибки прокси не показываем пользователю как есть.
+    const html = /^\s*</.test(text);
+    data = {
+      error: 'invalid_response',
+      message: html || GATEWAY_ERRORS.has(res.status)
+        ? `Сервер временно недоступен (код ${res.status}). Повторите через минуту.`
+        : text.slice(0, 200),
+    };
   }
 
   if (!res.ok) {

@@ -1837,7 +1837,7 @@ export default function ChatScreen() {
           borderColor: secret ? theme.accent : 'transparent',
         }}
       >
-        <Wallpaper image={chat?.background ?? null} />
+        <Wallpaper image={chat?.background ?? null} bleed />
         <ChatHeader
           title={title || 'Диалог'}
           channel={channel}
