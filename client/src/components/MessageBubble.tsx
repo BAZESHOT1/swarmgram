@@ -580,7 +580,11 @@ export function MessageBubble({
             {item.pending ? <Ionicons name="time-outline" size={11} color={theme.warning} /> : null}
             {!item.pending && isFailed ? <Ionicons name="close-circle" size={11} color={theme.danger} /> : null}
             {!item.pending && !isFailed && item.mine ? (
-              <Ionicons name={item.delivered ? 'checkmark-done' : 'checkmark'} size={12} color="rgba(26,18,6,0.62)" />
+              <Ionicons
+                name={item.read ? 'checkmark-done' : 'checkmark'}
+                size={12}
+                color="rgba(26,18,6,0.62)"
+              />
             ) : null}
             {secret ? <Ionicons name="lock-closed" size={9} color={item.mine ? 'rgba(26,18,6,0.62)' : theme.accent} /> : null}
           </View>

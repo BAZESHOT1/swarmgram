@@ -55,6 +55,14 @@ export const RpcOp = {
   /** Поиск без Hub: широковещательный опрос телефонов кластера (ответ тоже broadcast). */
   LOCAL_SEARCH_REQ: 0x20,
   LOCAL_SEARCH_RESP: 0x21,
+  /** Короткие квитанции доставки/прочтения: [op][flags][chatRef][count][uuid8+status] */
+  MSG_RECEIPT: 0x22,
+} as const;
+
+/** Флаги приложения в заголовке CLIENT_UP (не входят в MeshPacket.flags). */
+export const AppFlag = {
+  /** Не требовать L3 ACK: короткие квитанции не должны занимать эфир повторами. */
+  NO_ACK: 0x80,
 } as const;
 
 /** Запрос локального поиска: [op][reqId u16][utf8 query]. */
@@ -611,20 +619,68 @@ export interface FeedEntry {
   lastMsgUuid: string;
   timestamp: number;
   preview: string;
+  /** seq последнего сообщения: нужен, чтобы отметить чат прочитанным. */
+  lastSeq?: number;
+}
+
+/** Новый Hub добавляет lastSeq: старые ответы читаем по флагу. */
+export const RPC_FLAG_FEED_SEQ = 0x20;
+
+/** Короткая квитанция: 9 байт на сообщение, без текста и без ACK. */
+export interface ReceiptEntry {
+  msgUuid: string;
+  read: boolean;
+}
+
+export function encodeReceipt(chatRef: number, entries: ReceiptEntry[]): Uint8Array {
+  const list = entries.slice(0, 6);
+  const out = new Uint8Array(5 + list.length * 9);
+  const view = new DataView(out.buffer);
+  out[0] = RpcOp.MSG_RECEIPT;
+  out[1] = 0;
+  view.setUint16(2, chatRef & 0xffff, true);
+  out[4] = list.length;
+  let offset = 5;
+  for (const entry of list) {
+    const hex = entry.msgUuid.replace(/[^0-9a-f]/gi, '').slice(-16).padStart(16, '0');
+    view.setBigUint64(offset, BigInt(`0x${hex}`), true);
+    offset += 8;
+    out[offset] = entry.read ? 1 : 0;
+    offset += 1;
+  }
+  return out;
+}
+
+export function decodeReceipt(payload: Uint8Array): { chatRef: number; entries: ReceiptEntry[] } | null {
+  if (payload.length < 5 || payload[0] !== RpcOp.MSG_RECEIPT) return null;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const chatRef = view.getUint16(2, true);
+  const count = Math.min(payload[4], 6);
+  const entries: ReceiptEntry[] = [];
+  let offset = 5;
+  for (let i = 0; i < count && offset + 9 <= payload.length; i += 1) {
+    const uuid = view.getBigUint64(offset, true);
+    entries.push({ msgUuid: uuid.toString(16).padStart(16, '0'), read: payload[offset + 8] === 1 });
+    offset += 9;
+  }
+  return { chatRef, entries };
 }
 
 export function decodeFeedResponse(payload: Uint8Array): { entries: FeedEntry[]; more: boolean } | null {
   if (payload.length < 7 || payload[0] !== RpcOp.FEED_SYNC_RESP) return null;
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const withSeq = (payload[1] & RPC_FLAG_FEED_SEQ) !== 0;
+  const metaSize = withSeq ? 20 : 16;
   const total = payload[6];
   const entries: FeedEntry[] = [];
   let offset = 7;
-  for (let i = 0; i < total && offset + 16 <= payload.length; i += 1) {
+  for (let i = 0; i < total && offset + metaSize <= payload.length; i += 1) {
     const chatRef = view.getUint16(offset, true);
     const unreadCount = view.getUint16(offset + 2, true);
     const uuid = view.getBigUint64(offset + 4, true);
     const timestamp = view.getUint32(offset + 12, true);
-    offset += 16;
+    const lastSeq = withSeq ? view.getUint32(offset + 16, true) : undefined;
+    offset += metaSize;
     const text = readRawText(payload, offset);
     entries.push({
       chatRef,
@@ -632,6 +688,7 @@ export function decodeFeedResponse(payload: Uint8Array): { entries: FeedEntry[];
       lastMsgUuid: uuid.toString(16).padStart(16, '0'),
       timestamp,
       preview: text.text,
+      ...(lastSeq ? { lastSeq } : {}),
     });
     offset = text.next;
   }

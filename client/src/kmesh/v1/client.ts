@@ -46,6 +46,8 @@ import {
   decodeEnvelopeRpc,
   encodeChatKeyRequest,
   decodeChatKeyResponse,
+  decodeReceipt,
+  encodeReceipt,
   encodeRpcUp,
   encodeSearchRequest,
   msgUuidHex,
@@ -54,6 +56,7 @@ import {
   type FeedEntry,
   type HistoryEntry,
   type MeshPacket,
+  type ReceiptEntry,
   type SearchResult,
 } from './protocol';
 import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
@@ -112,6 +115,8 @@ export interface KMeshV1ClientOptions {
   onLocalSearchRequest?: (query: string) => Array<{ type: number; name: string }>;
   onFeed?: (entries: FeedEntry[], more: boolean) => void;
   onHistory?: (chatRef: number, messages: HistoryEntry[], more: boolean) => void;
+  /** Короткая квитанция от собеседника (доставлено/прочитано) через kMesh. */
+  onReceipt?: (chatRef: number, entries: ReceiptEntry[]) => void;
   /** Прогресс записи кадра в BLE: байты и привязка к сообщению. */
   onSendProgress?: (event: {
     msgUuid: string;
@@ -155,6 +160,8 @@ export class KMeshV1Client {
   private proxyBytesToday = 0;
   private proxyDay = '';
   private dailyProxyLimit = 10 * 1024 * 1024;
+  /** Модуль видит шлюз: квитанции шлём unicast до шлюза, иначе broadcast по кластеру. */
+  private gateway = false;
   private pendingKeyRefs = new Map<number, string>();
   /** Подтверждения Hub по мобильному шлюзу: не дублируем статус и ACK. */
   private relayConfirmed = new Set<string>();
@@ -421,7 +428,7 @@ export class KMeshV1Client {
       // сообщение вечно: по таймауту считаем попытку неуспешной, очередь повторит.
       const ok = await Promise.race([
         sendOnce.catch(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 12_000)),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 25_000)),
       ]);
       if (!ok) {
         console.log('[kmesh]', 'sendFrame timeout/failed', frame.length);
@@ -655,14 +662,17 @@ export class KMeshV1Client {
    * Шлём только серверные копии: сообщения под ключом пары переотправляет
    * resendPairViaGateway после получения серверного ключа.
    */
-  async resendUnconfirmed(limit = 6): Promise<number> {
+  async resendUnconfirmed(limit = 3): Promise<number> {
     if (!this.nodeId) return 0;
+    const now = Date.now();
     const items = (await kmeshV1List().catch(() => []))
       .filter(
         (row) =>
           row.state !== 'SYNCED_PERMANENT' &&
           Boolean(row.ciphertextB64 && row.nonce && row.text) &&
-          Date.now() - Date.parse(row.createdAt || '') < 48 * 3600_000,
+          row.attempts < 8 &&
+          now - Date.parse(row.createdAt || '') > 8_000 &&
+          now - Date.parse(row.createdAt || '') < 48 * 3600_000,
       )
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .slice(0, limit);
@@ -697,6 +707,50 @@ export class KMeshV1Client {
     return sent;
   }
 
+  /**
+   * Короткая квитанция доставки/прочтения. 9 байт на сообщение, без ACK:
+   * не занимает эфир повторами и проходит через 5–6 ретрансляторов.
+   */
+  sendReceipt(chatId: string, chatRef: number, entries: ReceiptEntry[], broadcast = !this.gateway): boolean {
+    if (!this.nodeId || !entries.length) return false;
+    const rpc = encodeReceipt(chatRef, entries);
+    const flags = broadcast
+      ? PacketFlag.NEED_CLOUD_ARCHIVE
+      : PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE;
+    const dst = broadcast ? BROADCAST_ID : ANY_GATEWAY_ID;
+    const frame = encodeClientFrame(ClientFrameType.RPC_UP, encodeRpcUp(dst, flags, 0n, rpc), this.seq++);
+    void this.link.send(frame).catch(() => false);
+    const sendFrame = (dstId: number, flagBits: number): void => {
+      void this.link
+        .send(encodeClientFrame(ClientFrameType.RPC_UP, encodeRpcUp(dstId, flagBits, 0n, rpc), this.seq++))
+        .catch(() => false);
+    };
+    sendFrame(dst, flags);
+    // Прочтение — самая важная квитанция: дублируем broadcast, чтобы дойти
+    // и через шлюз, и напрямую до телефона отправителя в локальном кластере.
+    if (entries.some((entry) => entry.read)) {
+      setTimeout(() => {
+        if (!this.nodeId) return;
+        sendFrame(BROADCAST_ID, PacketFlag.NEED_CLOUD_ARCHIVE);
+      }, 450);
+    } else if (broadcast) {
+      // Локальный кластер без шлюза: одна копия может потеряться на 5–6 хопах.
+      setTimeout(() => {
+        if (!this.nodeId) return;
+        sendFrame(dst, flags);
+      }, 450);
+    }
+    console.log('[kmesh]', 'receipt sent', { chatId, chatRef, count: entries.length, broadcast });
+    return true;
+  }
+
+  /** msg_uuid по clientId: нужно для квитанций по оптимистичным сообщениям. */
+  msgUuidForClient(clientId?: string): string | undefined {
+    if (!clientId) return undefined;
+    const uuid = uuidByClient.get(clientId);
+    return uuid ? msgUuidHex(uuid) : undefined;
+  }
+
   /** Feed bytes from the BLE notification stream. */
   handleData(chunk: Uint8Array): void {
     for (const frame of this.decoder.push(chunk)) {
@@ -711,6 +765,7 @@ export class KMeshV1Client {
               gateway?: boolean;
             };
             if (typeof info.nodeId === 'number') this.nodeId = info.nodeId >>> 0;
+            this.gateway = info.gateway === true;
             this.opts.onInfo?.({
               nodeId: this.nodeId,
               role: Number(info.role ?? 0),
@@ -768,6 +823,11 @@ export class KMeshV1Client {
             break;
           }
           const op = packet.payload[0];
+          if (op === RpcOp.MSG_RECEIPT) {
+            const receipt = decodeReceipt(packet.payload);
+            if (receipt) this.opts.onReceipt?.(receipt.chatRef, receipt.entries);
+            break;
+          }
           if (op === RpcOp.CHAT_KEY_RESP) {
             const resp = decodeChatKeyResponse(packet.payload);
             if (resp) {

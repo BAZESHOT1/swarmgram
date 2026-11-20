@@ -1578,19 +1578,36 @@ export default function ChatsScreen() {
       for (const entry of event.entries) {
         const chat = allChats.find((c) => crc16(new TextEncoder().encode(c.id)) === entry.chatRef);
         if (!chat || !entry.timestamp) continue;
-        // Лента kMesh не несёт текста (Hub не читает зашифрованные сообщения): обновляем превью
-        // только если в чате появилось что-то новее известного, иначе не затираем последний текст.
         const at = entry.timestamp * 1000;
         const known = useStore.getState().chatPreviews[chat.id];
         const knownAt = Math.max(activityOf(chat), known?.at ? new Date(known.at).getTime() || 0 : 0);
-        if (at <= knownAt + 1000) continue;
-        useStore.getState().setChatPreview(chat.id, {
-          id: entry.lastMsgUuid,
-          text: 'Новое сообщение',
-          kind: 'text',
-          mine: false,
-          at: new Date(at).toISOString(),
-        });
+        if (entry.preview && at > knownAt + 1000) {
+          useStore.getState().setChatPreview(chat.id, {
+            id: entry.lastMsgUuid,
+            text: entry.preview,
+            kind: 'text',
+            mine: false,
+            at: new Date(at).toISOString(),
+          });
+        }
+        // Счётчик непрочитанных и seq — из ответа Hub, а не из локального кэша.
+        qc.setQueriesData<any[]>({ queryKey: ['chats'] }, (prev) =>
+          Array.isArray(prev)
+            ? prev.map((c) =>
+                c?.id === chat.id
+                  ? {
+                      ...c,
+                      unread: entry.unreadCount,
+                      ...(entry.lastSeq ? { lastSeq: Math.max(Number(c.lastSeq) || 0, entry.lastSeq) } : {}),
+                    }
+                  : c,
+              )
+            : prev,
+        );
+        // Подтягиваем сами непрочитанные сообщения (Hub отдаёт текст для серверных чатов).
+        if (entry.unreadCount > 0) {
+          void requestKmeshHistory(entry.chatRef, Math.min(3, entry.unreadCount));
+        }
       }
     });
     const sync = () => void requestKmeshFeed(Math.floor(Date.now() / 1000) - 86_400);
@@ -1623,6 +1640,7 @@ export default function ChatsScreen() {
           const text = message.text || textByUuid.get(message.msgUuid) || '';
           return {
             id: `mesh-${message.msgUuid}`,
+            msgUuid: message.msgUuid,
             chatId: chat.id,
             seq: 0,
             kind: 'text',
@@ -1636,8 +1654,16 @@ export default function ChatsScreen() {
       if (!incoming.length) return;
       qc.setQueryData<unknown[]>(['messages', chat.id], (prev) => {
         const rows = Array.isArray(prev) ? prev : [];
-        const seen = new Set(rows.map((row) => (row as { id?: string })?.id));
-        const merged = [...rows, ...incoming.filter((row) => !seen.has(row.id))];
+        const seen = new Set<string>();
+        for (const row of rows) {
+          const m = row as { id?: string; msgUuid?: string };
+          if (m.id) seen.add(m.id);
+          if (m.msgUuid) seen.add(m.msgUuid);
+        }
+        const merged = [
+          ...rows,
+          ...incoming.filter((row) => !seen.has(row.id) && !seen.has(row.msgUuid)),
+        ];
         return merged.sort(
           (a, b) =>
             new Date((a as { createdAt?: string })?.createdAt ?? 0).getTime() -

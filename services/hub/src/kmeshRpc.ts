@@ -198,9 +198,11 @@ export const RpcOp = {
   SEND_ENVELOPE: 0x0e,
   CHAT_KEY_REQ: 0x0f,
   CHAT_KEY_RESP: 0x10,
+  MSG_RECEIPT: 0x22,
 } as const;
 
 export const RPC_FLAG_MORE = 0x40;
+export const RPC_FLAG_FEED_SEQ = 0x20;
 
 export interface RpcPrefix {
   op: number;
@@ -229,8 +231,41 @@ function readText(data: Buffer, offset: number): { text: string; next: number } 
 export interface SearchItem { entityId: number; type: number; name: string }
 export interface FeedItem {
   chatRef: number; unreadCount: number; lastMsgUuid: bigint; timestamp: number; preview: string;
+  /** seq последнего сообщения (для отметки прочитанного на клиенте). */
+  lastSeq?: number;
 }
 export interface HistoryItem { msgUuid: bigint; senderId: number; timestamp: number; text: string }
+export interface ReceiptItem { msgUuid: bigint; read: boolean }
+
+export function encodeReceipt(chatRef: number, items: ReceiptItem[]): Buffer {
+  const list = items.slice(0, 6);
+  const out = Buffer.alloc(5 + list.length * 9);
+  out[0] = RpcOp.MSG_RECEIPT;
+  out[1] = 0;
+  out.writeUInt16LE(chatRef & 0xffff, 2);
+  out[4] = list.length;
+  let offset = 5;
+  for (const item of list) {
+    writeU64LE(out, offset, item.msgUuid);
+    offset += 8;
+    out[offset] = item.read ? 1 : 0;
+    offset += 1;
+  }
+  return out;
+}
+
+export function decodeReceipt(payload: Buffer): { chatRef: number; items: ReceiptItem[] } | null {
+  if (payload.length < 5 || payload[0] !== RpcOp.MSG_RECEIPT) return null;
+  const chatRef = payload.readUInt16LE(2);
+  const count = Math.min(payload[4], 6);
+  const items: ReceiptItem[] = [];
+  let offset = 5;
+  for (let i = 0; i < count && offset + 9 <= payload.length; i += 1) {
+    items.push({ msgUuid: payload.readBigUInt64LE(offset), read: payload[offset + 8] === 1 });
+    offset += 9;
+  }
+  return { chatRef, items };
+}
 
 export function encodeSearchResponse(chatRef: number, reqId: number, items: SearchItem[],
                                      more = false): Buffer {
@@ -239,7 +274,7 @@ export function encodeSearchResponse(chatRef: number, reqId: number, items: Sear
   head.writeUInt16LE(chatRef & 0xffff, 0);
   head.writeUInt16LE(reqId & 0xffff, 2);
   parts.push(head);
-  const count = Math.min(items.length, 5);
+  const count = Math.min(items.length, 3);
   parts.push(Buffer.from([count]));
   for (let i = 0; i < count; i += 1) {
     const item = items[i];
@@ -252,7 +287,7 @@ export function encodeSearchResponse(chatRef: number, reqId: number, items: Sear
 }
 
 export function encodeFeedResponse(chatRef: number, items: FeedItem[], more = false): Buffer {
-  const parts: Buffer[] = [Buffer.from([RpcOp.FEED_SYNC_RESP, more ? RPC_FLAG_MORE : 0])];
+  const parts: Buffer[] = [Buffer.from([RpcOp.FEED_SYNC_RESP, (more ? RPC_FLAG_MORE : 0) | RPC_FLAG_FEED_SEQ])];
   const head = Buffer.alloc(2);
   head.writeUInt16LE(chatRef & 0xffff, 0);
   parts.push(head);
@@ -261,12 +296,13 @@ export function encodeFeedResponse(chatRef: number, items: FeedItem[], more = fa
   parts.push(Buffer.from([0, 0, count]));
   for (let i = 0; i < count; i += 1) {
     const item = items[i];
-    const meta = Buffer.alloc(16);
+    const meta = Buffer.alloc(20);
     meta.writeUInt16LE(item.chatRef & 0xffff, 0);
     meta.writeUInt16LE(item.unreadCount & 0xffff, 2);
     writeU64LE(meta, 4, item.lastMsgUuid);
     meta.writeUInt32LE(item.timestamp >>> 0, 12);
-    parts.push(meta, putText(item.preview, 48));
+    meta.writeUInt32LE((item.lastSeq ?? 0) >>> 0, 16);
+    parts.push(meta, putText(item.preview, 16));
   }
   return Buffer.concat(parts);
 }
@@ -276,7 +312,7 @@ export function encodeHistoryResponse(chatRef: number, items: HistoryItem[], mor
   const head = Buffer.alloc(2);
   head.writeUInt16LE(chatRef & 0xffff, 0);
   parts.push(head);
-  const count = Math.min(items.length, 8);
+  const count = Math.min(items.length, 3);
   parts.push(Buffer.from([count]));
   for (let i = 0; i < count; i += 1) {
     const item = items[i];
@@ -284,7 +320,7 @@ export function encodeHistoryResponse(chatRef: number, items: HistoryItem[], mor
     writeU64LE(meta, 0, item.msgUuid);
     meta.writeUInt32LE(item.senderId >>> 0, 8);
     meta.writeUInt32LE(item.timestamp >>> 0, 12);
-    parts.push(meta, putText(item.text, 72));
+    parts.push(meta, putText(item.text, 40));
   }
   return Buffer.concat(parts);
 }

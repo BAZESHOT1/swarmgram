@@ -17,7 +17,7 @@ const listeners = new Set<MeshListener>();
 /** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
 const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number; paused?: boolean; queuedAt?: number }> = [];
 /** После стольких неудач перестаём долбить модуль: сообщение остаётся в outbox. */
-const MAX_V1_ATTEMPTS = 3;
+const MAX_V1_ATTEMPTS = 6;
 const giveUpListeners = new Set<(item: { chatId: string; text: string; clientId?: string }) => void>();
 
 /** Подписка на отказ от повторной отправки (UI снимает «Подготовка KMesh…»). */
@@ -67,7 +67,7 @@ function emitQueue(): void {
 }
 
 /** Одна отправка в модуль не дольше 45 с: зависшая не блокирует всю очередь. */
-const V1_SEND_TIMEOUT_MS = 20_000;
+const V1_SEND_TIMEOUT_MS = 30_000;
 
 let flushingV1 = false;
 let flushTimer: ReturnType<typeof setInterval> | null = null;

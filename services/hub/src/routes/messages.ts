@@ -25,6 +25,7 @@ async function mirrorToKmesh(input: {
   kind: string;
   nonce: string;
   objectId: string;
+  messageId: string;
   senderUserId: string;
   senderNodeId: number;
 }): Promise<void> {
@@ -60,6 +61,7 @@ async function mirrorToKmesh(input: {
         kind: input.kind,
         nonceB64: input.nonce,
         ciphertextB64: ciphertext.toString('base64'),
+        messageId: input.messageId,
         excludeUserId: input.senderUserId,
         srcNodeId: input.senderNodeId,
       });
@@ -250,6 +252,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           kind,
           nonce,
           objectId,
+          messageId: id,
           senderUserId: me,
           senderNodeId: senderNode ? Number(senderNode.node_id) : 0,
         });
@@ -302,7 +305,13 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
 
     const rows = await query<MsgRow>(
       `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
-              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id, m.client_id
+              m.as_channel, m.sender_user_id, u.username AS sender_username, m.sender_device_id, m.client_id,
+              m.msg_uuid,
+              EXISTS(SELECT 1 FROM message_receipts rc
+                      WHERE rc.message_id = m.id AND rc.user_id <> m.sender_user_id) AS is_delivered,
+              EXISTS(SELECT 1 FROM chat_members cmr
+                      WHERE cmr.chat_id = m.chat_id AND cmr.user_id <> m.sender_user_id
+                        AND cmr.last_read_seq >= m.seq) AS is_read
          FROM messages m
          JOIN users u ON u.id = m.sender_user_id
          LEFT JOIN objects o ON o.id = m.object_id
@@ -421,6 +430,9 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           senderUsername: r.sender_username,
           senderDeviceId: r.sender_device_id,
           clientId: r.client_id ?? extractClientId(r.header),
+          ...(r.msg_uuid ? { msgUuid: r.msg_uuid } : {}),
+          delivered: Boolean(r.is_delivered),
+          read: Boolean(r.is_read),
         };
       }),
     );
@@ -756,6 +768,9 @@ interface MsgRow {
   sender_username: string;
   sender_device_id: string;
   client_id: string | null;
+  msg_uuid: string | null;
+  is_delivered?: boolean;
+  is_read?: boolean;
 }
 
 export default messageRoutes;

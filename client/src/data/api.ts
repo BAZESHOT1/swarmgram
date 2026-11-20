@@ -661,6 +661,10 @@ export interface Envelope {
   senderUsername: string;
   senderDeviceId: string;
   clientId?: string | null;
+  /** KMesh msg_uuid (hex) для квитанций доставки/прочтения. */
+  msgUuid?: string;
+  delivered?: boolean;
+  read?: boolean;
   /* локальный маршрут доставки — только на клиенте */
   state?: 'pending' | 'sent' | 'failed';
 }

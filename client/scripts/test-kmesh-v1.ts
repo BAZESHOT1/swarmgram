@@ -28,6 +28,9 @@ import {
   decodeHistoryResponse,
   encodeInetStatus,
   encodeHubAckPacket,
+  encodeReceipt,
+  decodeReceipt,
+  RPC_FLAG_FEED_SEQ,
   RpcOp,
   PacketType,
 } from '../src/kmesh/v1/protocol';
@@ -194,7 +197,6 @@ assert.strictEqual(hdec!.messages[0].text, 'ok');
 const inet = encodeInetStatus(true, 120, true);
 assert.deepStrictEqual(Array.from(inet), [1, 120, 0, 1]);
 
-// Hub ACK от телефона-шлюза: формат прошивочного build_ack (payload[4..7] — packet_id, [8]=1).
 const hubAck = decodeMeshPacket(
   encodeHubAckPacket({
     srcNodeId: 0x11223344,
@@ -212,5 +214,35 @@ assert.strictEqual(hubAck!.msgUuid, 0x1122334455667788n);
 assert.strictEqual(hubAck!.payload.length, 9);
 assert.strictEqual(new DataView(hubAck!.payload.buffer, hubAck!.payload.byteOffset).getUint32(4, true), 0xa1b2c3d4);
 assert.strictEqual(hubAck!.payload[8], 1);
+
+const receipt = encodeReceipt(55191, [
+  { msgUuid: '687e53a21b38c005', read: true },
+  { msgUuid: '0000000000000001', read: false },
+]);
+const rdec = decodeReceipt(receipt);
+assert.ok(rdec);
+assert.strictEqual(rdec!.chatRef, 55191);
+assert.strictEqual(rdec!.entries.length, 2);
+assert.strictEqual(rdec!.entries[0].msgUuid, '687e53a21b38c005');
+assert.strictEqual(rdec!.entries[0].read, true);
+assert.strictEqual(rdec!.entries[1].read, false);
+
+// Новый формат ленты: 20-байтная запись с lastSeq и флагом.
+const feed2 = new Uint8Array(7 + 20 + 1 + 3);
+feed2[0] = RpcOp.FEED_SYNC_RESP;
+feed2[1] = RPC_FLAG_FEED_SEQ;
+feed2[6] = 1;
+const f2v = new DataView(feed2.buffer);
+f2v.setUint16(7, 55191, true);
+f2v.setUint16(9, 2, true);
+f2v.setBigUint64(11, 0x1122334455667788n, true);
+f2v.setUint32(19, 1700000100, true);
+f2v.setUint32(23, 987, true);
+feed2[27] = 3;
+feed2.set(new TextEncoder().encode('abc'), 28);
+const f2dec = decodeFeedResponse(feed2);
+assert.ok(f2dec);
+assert.strictEqual(f2dec!.entries[0].lastSeq, 987);
+assert.strictEqual(f2dec!.entries[0].preview, 'abc');
 
 console.log('KMesh_v1 client codec: OK');

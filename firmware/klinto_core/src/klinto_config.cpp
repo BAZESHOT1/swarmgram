@@ -75,9 +75,14 @@ bool kl_config_validate(kl_config_t *cfg) {
   if (cfg->wifi_channel < 1 || cfg->wifi_channel > 14) return false;
   if (cfg->ttl == 0) cfg->ttl = KL_DEFAULT_TTL;
   if (cfg->ttl > 16) cfg->ttl = 16;
+  /* Сеть должна переживать 5–6 ретрансляторов: старые NVS-значения (7/1.8 с)
+   * обновляем на месте, иначе дальние маршруты рвутся по таймауту ACK. */
+  if (cfg->ttl < KL_DEFAULT_TTL) cfg->ttl = KL_DEFAULT_TTL;
   if (cfg->gw_max_hops == 0) cfg->gw_max_hops = KL_DEFAULT_GW_HOPS;
   if (cfg->gw_max_hops > 16) cfg->gw_max_hops = 16;
+  if (cfg->gw_max_hops < KL_DEFAULT_GW_HOPS) cfg->gw_max_hops = KL_DEFAULT_GW_HOPS;
   if (cfg->ack_retries > 5) cfg->ack_retries = 5;
+  if (cfg->ack_retries < KL_DEFAULT_ACK_RETRIES) cfg->ack_retries = KL_DEFAULT_ACK_RETRIES;
   if (cfg->relay_battery_min < 5) cfg->relay_battery_min = 20;
   if (cfg->relay_battery_resume <= cfg->relay_battery_min) {
     cfg->relay_battery_resume = (uint8_t)(cfg->relay_battery_min + 5);
@@ -86,7 +91,7 @@ bool kl_config_validate(kl_config_t *cfg) {
   if (cfg->mobile_gw_ttl_ms < cfg->mobile_gw_beacon_ms) cfg->mobile_gw_ttl_ms = 60000;
   if (cfg->mobile_gw_hops < 1 || cfg->mobile_gw_hops > 4) cfg->mobile_gw_hops = 2;
   if (cfg->relay_penalty_lora_ms < cfg->relay_penalty_espnow_ms) cfg->relay_penalty_lora_ms = 250;
-  if (cfg->ack_timeout_ms < 300) cfg->ack_timeout_ms = 300;
+  if (cfg->ack_timeout_ms < KL_DEFAULT_ACK_TIMEOUT_MS) cfg->ack_timeout_ms = KL_DEFAULT_ACK_TIMEOUT_MS;
   if (cfg->presence_interval_ms < 30000) cfg->presence_interval_ms = 30000;
   if (cfg->station_presence_ms < cfg->presence_interval_ms) {
     cfg->station_presence_ms = KL_DEFAULT_STATION_PRESENCE_MS;

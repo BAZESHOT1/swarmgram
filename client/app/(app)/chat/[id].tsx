@@ -37,6 +37,8 @@ import { ReplyBar } from '../../../src/components/chat/ReplyBar';
 import { TypingIndicator } from '../../../src/components/chat/TypingIndicator';
 import { ScrollToBottom } from '../../../src/components/chat/ScrollToBottom';
 import { findCachedChat, getCachedMessages, loadCachedMessages, saveMessages } from '../../../src/data/cache';
+import { crc16 } from '../../../src/kmesh/v1/protocol';
+import { sendKmeshReadReceipt } from '../../../src/kmesh/v1/runtime';
 import { MessageActionSheet } from '../../../src/components/chat/MessageActionSheet';
 import { ReactionPicker } from '../../../src/components/chat/ReactionPicker';
 import { AttachmentsGallery } from '../../../src/components/chat/AttachmentsGallery';
@@ -203,6 +205,7 @@ export default function ChatScreen() {
    * (первое открытие, отправка, новое входящее), а не на каждый layout.
    */
   const pendingScrollRef = useRef(false);
+  const lastReadReceiptRef = useRef('');
   const initialWindowRef = useRef(0);
   const userScrolledRef = useRef(false);
   const firstUnreadIndexRef = useRef(0);
@@ -323,11 +326,12 @@ export default function ChatScreen() {
     const seen = new Set<string>();
     const out: ViewMessage[] = [];
     for (const m of [...older, ...data]) {
-      const key = m.clientId ? `c:${m.clientId}` : `i:${m.id}`;
-      if (seen.has(key) || seen.has(`i:${m.id}`)) continue;
+      const key = m.clientId ? `c:${m.clientId}` : m.msgUuid ? `u:${m.msgUuid}` : `i:${m.id}`;
+      if (seen.has(key) || seen.has(`i:${m.id}`) || (m.msgUuid && seen.has(`u:${m.msgUuid}`))) continue;
       seen.add(key);
       seen.add(`i:${m.id}`);
       if (m.clientId) seen.add(`c:${m.clientId}`);
+      if (m.msgUuid) seen.add(`u:${m.msgUuid}`);
       out.push(m);
     }
     const pending = Object.values(optimistic)
@@ -515,17 +519,31 @@ export default function ChatScreen() {
   // непрочитанных в списке и доке включает собственные сообщения.
   const lastSeq = data.length ? data[data.length - 1]?.seq ?? 0 : 0;
   useEffect(() => {
-    if (!chat || !unreadReady || !Number.isFinite(lastSeq) || lastSeq <= 0) return;
+    if (!chat || !unreadReady) return;
     // В группах/каналах не отмечаем всё прочитанным сразу: ждём, пока
-    // пользователь доскроллит и счётчик непрочитанных обнулится.
-    if (unreadCount > 0) return;
-    void api.api
-      .markRead(chatId, lastSeq)
-      .then(() => {
-        void qc.invalidateQueries({ queryKey: ['chats'] });
-      })
-      .catch(() => undefined);
-  }, [chat, unreadReady, unreadCount, chatId, lastSeq, qc]);
+    // пользователь доскроллит и счётчик непрочитанных обнулится. В личном чате
+    // открытие = прочтение, в том числе без интернета (квитанция уйдёт по kMesh).
+    if (unreadCount > 0 && chat.type !== 'direct') return;
+    const receiptKey = `${chatId}:${lastSeq}:${allMessages.length}`;
+    if (lastReadReceiptRef.current === receiptKey) return;
+    lastReadReceiptRef.current = receiptKey;
+    const meshEntries = allMessages
+      .filter((m) => !m.mine && m.msgUuid)
+      .slice(-6)
+      .map((m) => ({ msgUuid: m.msgUuid as string, read: true }));
+    if (meshEntries.length) {
+      // Даже без интернета: короткая квитанция уйдёт через kMesh/шлюз/соседей.
+      sendKmeshReadReceipt(chatId, crc16(new TextEncoder().encode(chatId)) || 1, meshEntries);
+    }
+    if (lastSeq > 0) {
+      void api.api
+        .markRead(chatId, lastSeq)
+        .then(() => {
+          void qc.invalidateQueries({ queryKey: ['chats'] });
+        })
+        .catch(() => undefined);
+    }
+  }, [chat, unreadReady, unreadCount, chatId, lastSeq, qc, allMessages]);
 
   useEffect(() => {
     let alive = true;

@@ -22,6 +22,7 @@ import { requireModule } from './modules.js';
 import { config } from '../config.js';
 import { verifyEcdsaP256 } from '../crypto.js';
 import { one, query, tx } from '../db.js';
+import { getFragment } from '../nodes.js';
 import { badRequest, forbidden, notFound, rateLimit, str } from '../util.js';
 import { requireAdmin } from '../auth.js';
 import { buildDeltaPatch, signManifest, otaSigningAvailable, issueOwnerClaim, signModuleConfig, type OtaManifest } from '../ota.js';
@@ -36,9 +37,11 @@ import {
   decodeTextRpc,
   decodeEnvelopeRpc,
   decodeChatKeyRequest,
+  decodeReceipt,
   encodeChatKeyResponse,
   encodeFeedResponse,
   encodeHistoryResponse,
+  encodeReceipt,
   encodeSearchResponse,
   FLAG_FROM_INTERNET,
   msgUuidHex,
@@ -410,8 +413,64 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
    * она оставалась пустой и текст из mesh нечем было маршрутизировать. Если записи нет — перебираем чаты
    * пользователя узла и сверяем CRC16(chatId) (и сохраняем соответствие).
    */
-  async function resolveChatByRef(chatRef: number, userId: string | null): Promise<{ chat_id: string } | null> {
-    const known = await one<{ chat_id: string }>(
+  /**
+   * Текст сохранённого сообщения для kMesh-ответов (лента/история).
+   * Расшифровываем только серверные чаты; E2E остаётся недоступным Hub.
+   */
+  async function storedMessageText(
+    chatId: string,
+    header: unknown,
+    objectId?: string | null,
+    userId?: string,
+  ): Promise<string> {
+    try {
+      const h = (header ?? {}) as Record<string, unknown>;
+      if (String(h.scheme ?? 'server') === 'e2e') return '';
+      let ciphertextB64 = String(h.ciphertextB64 ?? '');
+      const nonceB64 = String(h.nonceB64 ?? h.nonce ?? '');
+      if (!ciphertextB64 && objectId && userId) {
+        // HTTP-сообщение: конверт лежит на нодах, в header только nonce.
+        const frag = await one<{ index: number; node_id: string; public_url: string; ticket_secret: string }>(
+          `SELECT f.index, n.id AS node_id, n.public_url, n.ticket_secret
+             FROM fragments f JOIN nodes n ON n.id = f.node_id
+            WHERE f.object_id = $1 AND f.state = 'ok' AND n.status <> 'banned'
+            ORDER BY (n.status = 'online') DESC, n.reputation DESC LIMIT 1`,
+          [objectId],
+        );
+        if (!frag) return '';
+        const stream = await getFragment(
+          { id: frag.node_id, public_url: frag.public_url, ticket_secret: frag.ticket_secret },
+          objectId,
+          frag.index,
+          userId,
+        );
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of stream) {
+          const buf = chunk as Buffer;
+          total += buf.length;
+          if (total > 4096) break;
+          chunks.push(buf);
+        }
+        if (!total || total > 4096) return '';
+        ciphertextB64 = Buffer.concat(chunks).toString('base64');
+      }
+      if (!ciphertextB64 || !nonceB64) return '';
+      const serverKey = await getOrCreateServerKey(chatId);
+      if (!serverKey) return '';
+      const data = Buffer.from(ciphertextB64, 'base64');
+      if (data.length < 17) return '';
+      const decipher = createDecipheriv('aes-256-gcm', Buffer.from(serverKey.key, 'base64'), Buffer.from(nonceB64, 'base64'));
+      decipher.setAuthTag(data.subarray(data.length - 16));
+      const plain = Buffer.concat([decipher.update(data.subarray(0, data.length - 16)), decipher.final()]);
+      const parsed = JSON.parse(plain.toString('utf8')) as { text?: unknown };
+      return typeof parsed.text === 'string' ? parsed.text.slice(0, 120) : '';
+    } catch {
+      return '';
+    }
+  }
+
+  async function resolveChatByRef(chatRef: number, userId: string | null): Promise<{ chat_id: string } | null> {    const known = await one<{ chat_id: string }>(
       `SELECT chat_id::text FROM kmesh_v1_chat_refs WHERE chat_ref = $1 LIMIT 1`,
       [chatRef],
     );
@@ -499,6 +558,61 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (prefix.op === RpcOp.MSG_RECEIPT) {
+      const receipt = decodeReceipt(plain);
+      if (!receipt) return false;
+      const chat = await resolveChatByRef(receipt.chatRef, userId);
+      if (!chat) return false;
+      const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chat.chat_id, userId]);
+      if (!member) return false;
+      const outbound = new Map<string, Array<{ msgUuid: bigint; read: boolean }>>();
+      for (const entry of receipt.items) {
+        const uuid = entry.msgUuid.toString(16).padStart(16, '0');
+        const msg = await one<{ id: string; seq: number; sender_user_id: string }>(
+          `SELECT id::text, seq, sender_user_id::text FROM messages
+            WHERE chat_id = $1 AND msg_uuid = $2 LIMIT 1`,
+          [chat.chat_id, uuid],
+        );
+        if (!msg || msg.sender_user_id === userId) continue;
+        if (entry.read) {
+          await query(
+            `UPDATE chat_members SET last_read_seq = GREATEST(last_read_seq, $3)
+              WHERE chat_id = $1 AND user_id = $2`,
+            [chat.chat_id, userId, msg.seq],
+          );
+          publishRealtime(msg.sender_user_id, {
+            type: 'message_read', chatId: chat.chat_id, seq: msg.seq, userId,
+          });
+        } else {
+          await query(
+            `INSERT INTO message_receipts (message_id, user_id) VALUES ($1,$2)
+             ON CONFLICT DO NOTHING`,
+            [msg.id, userId],
+          );
+          publishRealtime(msg.sender_user_id, {
+            type: 'message_delivered', chatId: chat.chat_id, messageId: msg.id, userId,
+          });
+        }
+        const list = outbound.get(msg.sender_user_id) ?? [];
+        list.push({ msgUuid: entry.msgUuid, read: entry.read });
+        outbound.set(msg.sender_user_id, list);
+      }
+      // Отправитель может быть на kMesh без интернета: одна короткая квитанция
+      // на пачку сообщений в downlink его узла (без ACK, не грузит эфир).
+      for (const [senderUserId, entries] of outbound) {
+        const senderTarget = await nodeForUser(senderUserId);
+        if (!senderTarget || !senderTarget.nodeId || senderTarget.nodeId === packet.srcId) continue;
+        await queuePacket({
+          gatewayId: senderTarget.gatewayId || gatewayId,
+          dstNodeId: senderTarget.nodeId,
+          srcNodeId: gatewayId,
+          msgUuid: randomU64(),
+          rpc: encodeReceipt(receipt.chatRef, entries.slice(0, 6)),
+        });
+      }
+      return true;
+    }
+
     if (prefix.op === RpcOp.SEARCH_REQ) {
       const req = decodeSearchRequest(plain);
       if (!req) return false;
@@ -542,14 +656,16 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       if (!req) return false;
       const rows = await query<{
         id: string; title: string; msg_uuid: string | null; created_at: string | null; unread: string;
+        last_seq: string; header: unknown; object_id: string | null;
       }>(
         `SELECT c.id::text, c.title, m.msg_uuid, m.created_at::text,
                 (SELECT count(*)::text FROM messages x
-                  WHERE x.chat_id = c.id AND x.seq > cm.last_read_seq) AS unread
+                  WHERE x.chat_id = c.id AND x.seq > cm.last_read_seq) AS unread,
+                COALESCE(m.seq, 0)::text AS last_seq, m.header, m.object_id
            FROM chat_members cm
            JOIN chats c ON c.id = cm.chat_id
            LEFT JOIN LATERAL (
-             SELECT msg_uuid, created_at FROM messages
+             SELECT msg_uuid, created_at, seq, header, object_id FROM messages
               WHERE chat_id = c.id ORDER BY seq DESC LIMIT 1
            ) m ON true
           WHERE cm.user_id = $1
@@ -557,13 +673,18 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
           LIMIT 5`,
         [userId],
       );
-      const entries = rows.map((r) => ({
-        chatRef: crc16(Buffer.from(r.id, 'utf8')),
-        unreadCount: Math.min(65535, Number(r.unread) || 0),
-        lastMsgUuid: r.msg_uuid ? BigInt(`0x${r.msg_uuid}`) : 0n,
-        timestamp: r.created_at ? Math.floor(new Date(r.created_at).getTime() / 1000) : 0,
-        preview: r.title.slice(0, 48),
-      }));
+      const entries = [];
+      for (const r of rows) {
+        const text = r.header ? await storedMessageText(r.id, r.header, r.object_id, userId) : '';
+        entries.push({
+          chatRef: crc16(Buffer.from(r.id, 'utf8')),
+          unreadCount: Math.min(65535, Number(r.unread) || 0),
+          lastMsgUuid: r.msg_uuid ? BigInt(`0x${r.msg_uuid}`) : 0n,
+          timestamp: r.created_at ? Math.floor(new Date(r.created_at).getTime() / 1000) : 0,
+          preview: text.slice(0, 40),
+          lastSeq: Number(r.last_seq) || 0,
+        });
+      }
       return queuePacket({
         gatewayId: target.gatewayId || gatewayId,
         dstNodeId: target.nodeId,
@@ -581,19 +702,26 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       // История — только участнику чата (запись в chat_refs могла быть создана другим пользователем).
       const isMember = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chat.chat_id, userId]);
       if (!isMember) return false;
-      const rows = await query<{ msg_uuid: string; sender_node_id: string; synced_at: string }>(
-        `SELECT msg_uuid, sender_node_id::text, synced_at::text
-           FROM kmesh_v1_messages
-          WHERE chat_id = $1
-          ORDER BY synced_at DESC LIMIT $2`,
-        [chat.chat_id, Math.min(8, Math.max(1, req.limit || 8))],
+      // Последние сообщения именно от собеседников (не мои): их и показываем без сети.
+      const rows = await query<{
+        msg_uuid: string; sender_user_id: string; created_at: string; header: unknown; object_id: string | null;
+      }>(
+        `SELECT msg_uuid, sender_user_id::text, created_at::text, header, object_id
+           FROM messages
+          WHERE chat_id = $1 AND sender_user_id <> $2 AND msg_uuid IS NOT NULL
+          ORDER BY seq DESC LIMIT 3`,
+        [chat.chat_id, userId],
       );
-      const items = rows.map((r) => ({
-        msgUuid: BigInt(`0x${r.msg_uuid}`),
-        senderId: Number(r.sender_node_id) || 0,
-        timestamp: Math.floor(new Date(r.synced_at).getTime() / 1000),
-        text: '',
-      }));
+      const items = [];
+      for (const r of rows) {
+        const text = await storedMessageText(chat.chat_id, r.header, r.object_id, userId);
+        items.push({
+          msgUuid: BigInt(`0x${r.msg_uuid}`),
+          senderId: fnv1a32(r.sender_user_id),
+          timestamp: Math.floor(new Date(r.created_at).getTime() / 1000),
+          text: text.slice(0, 40),
+        });
+      }
       return queuePacket({
         gatewayId: target.gatewayId || gatewayId,
         dstNodeId: target.nodeId,
@@ -684,6 +812,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
           senderUsername: sender?.username ?? '',
           kind: envelope.kind,
           createdAt: row.created_at,
+          msgUuid: uuid,
           nonce: nonceB64,
           // Схема и версия ключа нужны получателю, чтобы расшифровать как обычное сообщение.
           header: JSON.parse(header),

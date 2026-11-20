@@ -40,6 +40,8 @@ export interface EnvelopeDownlinkInput {
   kind: string;
   nonceB64: string;
   ciphertextB64: string;
+  /** Сообщение в БД: получаем/запоминаем msg_uuid для квитанций. */
+  messageId?: string;
   /** Кому не отправлять (автор сообщения). */
   excludeUserId: string;
   srcNodeId: number;
@@ -59,6 +61,15 @@ export async function queueEnvelopeDownlink(input: EnvelopeDownlinkInput): Promi
     [input.chatId],
   );
   let queued = 0;
+  const msgUuid = randomBytes(8).readBigUInt64LE(0) || 1n;
+  if (input.messageId) {
+    // Один и тот же uuid у всех получателей: квитанции доставки/прочтения
+    // находят исходное HTTP-сообщение на Hub.
+    await query(
+      'UPDATE messages SET msg_uuid = COALESCE(msg_uuid, $2) WHERE id = $1',
+      [input.messageId, msgUuid.toString(16).padStart(16, '0')],
+    ).catch(() => undefined);
+  }
   for (const member of members) {
     if (member.user_id === input.excludeUserId) continue;
     const target = await targetForUser(member.user_id);
@@ -73,7 +84,6 @@ export async function queueEnvelopeDownlink(input: EnvelopeDownlinkInput): Promi
     // Пакет целиком должен влезть в один кадр KMesh (payload <= 255).
     if (rpc.length + 6 > 255) continue;
     const packetId = randomBytes(4).readUInt32LE(0) || 1;
-    const msgUuid = randomBytes(8).readBigUInt64LE(0) || 1n;
     const sealed = sealTemp(
       config.tempMeshKey,
       {

@@ -66,6 +66,10 @@ export interface ViewMessage {
   scheme?: 'server' | 'e2e';
   commentsCount?: number;
   delivered: boolean;
+  /** Получатель открыл чат: две галочки. */
+  read?: boolean;
+  /** KMesh msg_uuid: по нему приходят квитанции. */
+  msgUuid?: string;
   failed: boolean;
   pending: boolean;
   /* ---- оптимистичная отправка (локальные данные, сервер их не присылает) ---- */
@@ -868,7 +872,9 @@ export function envelopeToView(
     kind: env.kind,
     text: payload?.text ?? '',
     file: payload?.file,
-    delivered: true,
+    delivered: env.delivered ?? true,
+    read: env.read ?? false,
+    msgUuid: env.msgUuid,
     failed: !payload,
     pending: false,
     clientId: env.clientId ?? undefined,

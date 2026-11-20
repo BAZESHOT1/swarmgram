@@ -188,6 +188,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const v1UnsubRef = useRef<(() => void) | null>(null);
   const unsubInfoRef = useRef<(() => void) | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const outboxTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -322,6 +323,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           clearInterval(presenceTimerRef.current);
           presenceTimerRef.current = null;
         }
+        if (outboxTimerRef.current) {
+          clearInterval(outboxTimerRef.current);
+          outboxTimerRef.current = null;
+        }
         // Wearable больше не подключён к клиенту — честно сообщаем серверу.
         if (last?.moduleId && last.role === 'wearable') {
           void api.detachModule(last.moduleId).catch(() => undefined);
@@ -453,6 +458,52 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           },
           onFeed: (entries, more) => emitKmeshFeed({ entries, more }),
           onHistory: (chatRef, messages, more) => emitKmeshHistory({ chatRef, messages, more }),
+          onReceipt: (chatRef, entries) => {
+            const chatId = resolveChat(chatRef);
+            if (!chatId) return;
+            const now = Date.now();
+            qc.setQueryData<unknown[]>(['messages', chatId], (prev) => {
+              const rows = Array.isArray(prev) ? [...prev] : [];
+              let changed = false;
+              for (const entry of entries) {
+                const index = rows.findIndex((row) => {
+                  const m = row as { id?: string; msgUuid?: string };
+                  return (
+                    m.msgUuid === entry.msgUuid ||
+                    m.id === entry.msgUuid ||
+                    m.id === `mesh-${entry.msgUuid}`
+                  );
+                });
+                if (index < 0) continue;
+                const row = rows[index] as { delivered?: boolean; read?: boolean };
+                if (row.read === true) continue;
+                rows[index] = {
+                  ...(rows[index] as object),
+                  delivered: true,
+                  ...(entry.read ? { read: true } : {}),
+                };
+                changed = true;
+              }
+              return changed ? rows : prev;
+            });
+            // Кэш: иначе после закрытия чата квитанция пропадёт.
+            void (async () => {
+              const cached = await loadCachedMessages(chatId).catch(() => null);
+              if (!Array.isArray(cached)) return;
+              let changed = false;
+              const patched = cached.map((row) => {
+                const m = row as { id?: string; msgUuid?: string; read?: boolean };
+                const entry = entries.find(
+                  (e) => m.msgUuid === e.msgUuid || m.id === e.msgUuid || m.id === `mesh-${e.msgUuid}`,
+                );
+                if (!entry || m.read === true) return row;
+                changed = true;
+                return { ...(row as object), delivered: true, ...(entry.read ? { read: true } : {}) };
+              });
+              if (changed) saveMessages(chatId, patched);
+            })();
+            console.log('[kmesh]', 'receipt', { chatId, count: entries.length, read: entries.some((e) => e.read), at: now });
+          },
           onStatus: (event) => {
             void (async () => {
               const item = await kmeshV1Get(event.msgUuid).catch(() => null);
@@ -514,6 +565,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   ...(rows[index] as object),
                   pending: !delivered && !failed,
                   delivered,
+                  msgUuid: event.msgUuid,
                   failed,
                   storedOnGateway: event.status === 3,
                   kmeshLabel: label,
@@ -535,6 +587,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                     ...(row as object),
                     pending: !delivered && !failed,
                     delivered,
+                    msgUuid: event.msgUuid,
                     failed,
                     storedOnGateway: event.status === 3,
                     kmeshLabel: label,
@@ -557,6 +610,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                 message.nonce,
               );
               if (text == null) return;
+              // Квитанция «доставлено» — коротким пакетом, без ACK и без текста.
+              v1.sendReceipt(message.chatId, message.chatRef, [{ msgUuid: message.msgUuid, read: false }]);
               console.log('[kmesh]', 'secure message', {
                 chatId: message.chatId,
                 src: message.srcNodeId,
@@ -583,6 +638,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               const createdAt = new Date().toISOString();
               const entry = {
                 id: `mesh-${message.msgUuid}`,
+                msgUuid: message.msgUuid,
                 chatId: message.chatId,
                 seq: 0,
                 kind: message.kind.startsWith('text') ? 'text' : message.kind,
@@ -612,11 +668,14 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
             })();
           },
           onMessage: (message) => {
-            if (!message.text || message.srcNodeId === v1.getNodeId()) return;            const chatId = resolveChat(message.chatRef);
+            if (!message.text || message.srcNodeId === v1.getNodeId()) return;
+            const chatId = resolveChat(message.chatRef);
             if (!chatId) return;
+            v1.sendReceipt(chatId, message.chatRef, [{ msgUuid: message.msgUuid, read: false }]);
             const createdAt = new Date(message.createdAt || Date.now()).toISOString();
             const entry = {
               id: message.msgUuid,
+              msgUuid: message.msgUuid,
               chatId,
               seq: 0,
               kind: 'text',
@@ -661,12 +720,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           void (async () => {
             await new Promise((resolve) => setTimeout(resolve, 4000));
             const cachedChats = qc.getQueryData<Array<{ id?: unknown; encryption?: unknown }>>(['chats', session?.username]) ?? [];
-            for (const chat of cachedChats.slice(0, 12)) {
+            for (const chat of cachedChats.slice(0, 4)) {
               if (typeof chat?.id !== 'string' || chat.encryption === 'e2e') continue;
               if (v1ClientRef.current !== v1) return;
               if (await peekServerChatKey(chat.id).catch(() => null)) continue;
               await v1.requestChatKey(chat.id, refOf(chat.id)).catch(() => false);
-              await new Promise((resolve) => setTimeout(resolve, 600));
+              await new Promise((resolve) => setTimeout(resolve, 900));
             }
           })();
         }
@@ -702,6 +761,11 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           if (v1ClientRef.current !== v1) return;
           void v1.resendUnconfirmed().catch(() => 0);
         }, 3500);
+        if (outboxTimerRef.current) clearInterval(outboxTimerRef.current);
+        outboxTimerRef.current = setInterval(() => {
+          if (v1ClientRef.current !== v1) return;
+          void v1.resendUnconfirmed(2).catch(() => 0);
+        }, 20_000);
         // Первичная привязка на уровне прошивки: если модуль ещё свободен,
         // сразу пишем в него prefix/net из оффлайн-кэша пользователя.
         if ((nextInfo.ownerPrefix ?? '00000000').toLowerCase() === '00000000') {

@@ -28,13 +28,13 @@ function nextReqId(): number {
  * (клиент заменяется новым). Каждый раз берём актуальный активный клиент.
  */
 async function withRetry(run: (client: KMeshV1Client) => Promise<boolean>): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     const client = active;
     if (client) {
       const ok = await run(client).catch(() => false);
       if (ok) return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
   }
   return false;
 }
@@ -55,4 +55,14 @@ export async function requestKmeshFeed(lastSyncTs: number): Promise<boolean> {
 export async function requestKmeshHistory(chatRef: number, limit = 8): Promise<boolean> {
   if (!active) return false;
   return withRetry((client) => client.chatHistory(chatRef, 0n, limit));
+}
+
+/** Квитанция о прочтении по kMesh (9 байт на сообщение, без ACK). */
+export function sendKmeshReadReceipt(
+  chatId: string,
+  chatRef: number,
+  entries: Array<{ msgUuid: string; read: boolean }>,
+): boolean {
+  if (!active || !entries.length) return false;
+  return active.sendReceipt(chatId, chatRef, entries);
 }

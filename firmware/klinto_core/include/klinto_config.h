@@ -29,15 +29,15 @@
 #define KL_ANY_GATEWAY_ID 0x00000001u
 #define KL_INVALID_ID 0x00000000u
 
-#define KL_DEFAULT_TTL 7
-#define KL_DEFAULT_GW_HOPS 8
+#define KL_DEFAULT_TTL 10
+#define KL_DEFAULT_GW_HOPS 10
 #define KL_DEFAULT_PRESENCE_MS 30000u
 /* Стационарные узлы (роутеры/шлюзы) шлют телеметрию по Trickle реже. */
 #define KL_DEFAULT_STATION_PRESENCE_MS 120000u
 #define KL_DEFAULT_GW_BEACON_MS 5000u
 #define KL_DEFAULT_ROUTE_EXPIRY_MS 30000u
-#define KL_DEFAULT_ACK_TIMEOUT_MS 1800u
-#define KL_DEFAULT_ACK_RETRIES 3
+#define KL_DEFAULT_ACK_TIMEOUT_MS 4000u
+#define KL_DEFAULT_ACK_RETRIES 4
 
 /* Архитектура чипа для телеметрии и OTA. */
 enum kl_chip_arch_t : uint8_t {
@@ -89,7 +89,7 @@ enum kl_ota_state_t : uint8_t {
 #define KL_HAS_MQTT 0
 #endif
 #ifndef KL_FIRMWARE_VERSION
-#define KL_FIRMWARE_VERSION "1.4.8"
+#define KL_FIRMWARE_VERSION "1.4.9"
 #endif
 #ifndef KL_FIRMWARE_BUILD
 #define KL_FIRMWARE_BUILD 1

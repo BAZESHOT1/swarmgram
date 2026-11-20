@@ -454,7 +454,7 @@ function RealtimeBridge() {
             );
           } else if (event.type === 'message_read') {
             qc.setQueriesData<any>({ queryKey: ['messages', event.chatId] }, (prev: any) =>
-              Array.isArray(prev) ? prev.map((m: any) => (m.seq <= event.seq && m.mine ? { ...m, delivered: true, pending: false } : m)) : prev,
+              Array.isArray(prev) ? prev.map((m: any) => (m.seq <= event.seq && m.mine ? { ...m, delivered: true, read: true, pending: false } : m)) : prev,
             );
             // Собственное прочтение обнуляет счётчик в списке чатов.
             if (event.userId && event.userId === getSession()?.userId) {
@@ -794,7 +794,7 @@ function RealtimeBridge() {
       const vm = await decryptEnvelopeAuto(env as never, chat as never, meName);
       queryClient.setQueryData<any[]>(['messages', env.chatId], (prev) => {
         if (!Array.isArray(prev)) return prev;
-        if (prev.some((m) => m && (m.id === vm.id || (vm.clientId && m.clientId === vm.clientId)))) return prev;
+        if (prev.some((m) => m && (m.id === vm.id || (vm.msgUuid && m.msgUuid === vm.msgUuid) || (vm.clientId && m.clientId === vm.clientId)))) return prev;
         const next = [...prev, vm];
         next.sort((a, b) => {
           const sa = a?.seq || Number.MAX_SAFE_INTEGER;
@@ -820,7 +820,7 @@ function RealtimeBridge() {
     const messages = queryClient.getQueryData<any[]>(['messages', env.chatId]);
     if (Array.isArray(messages)) {
       const index = messages.findIndex(
-        (m) => m && (m.id === env.id || (env.clientId && m.clientId === env.clientId)),
+        (m) => m && (m.id === env.id || (env.msgUuid && m.msgUuid === env.msgUuid) || (env.clientId && m.clientId === env.clientId)),
       );
       if (index >= 0) {
         const next = [...messages];
@@ -830,6 +830,7 @@ function RealtimeBridge() {
           seq: env.seq,
           kind: env.kind,
           createdAt: env.createdAt,
+          ...(env.msgUuid ? { msgUuid: env.msgUuid } : {}),
           reactions: env.reactions ?? next[index].reactions,
           edited: env.edited ?? next[index].edited,
           delivered: true,
