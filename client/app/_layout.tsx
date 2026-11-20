@@ -653,10 +653,30 @@ function RealtimeBridge() {
       }
     }, 25_000);
 
-    // Возврат приложения из фона: переподключаемся и догоняем данные.
+    /** Полный переподключение после блокировки/возврата: старый сокет мог «умереть» в OPEN. */
+    const forceReconnect = () => {
+      if (disposed) return;
+      if (!getSession()?.refreshToken) return;
+      try {
+        socket?.close();
+      } catch {
+        /* ignore */
+      }
+      socket = null;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      reconnectAttempt = 0;
+      lastInboundAt = Date.now();
+      void connect();
+    };
+
+    // Возврат приложения из фона (в том числе после блокировки экрана):
+    // принудительно переподнимаем сокет, даже если старый висит в OPEN/CLOSING.
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
-      reconnectNow();
+      forceReconnect();
       catchUp();
     });
 

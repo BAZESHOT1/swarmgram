@@ -294,7 +294,7 @@ export class KMeshV1Client {
   }
 
   /** То же, но другому узлу через mesh (RPC 0x30): [epoch u32][sig_len u8][sig][p]. */
-  async sendNodeConfig(dstNodeId: number, p: string, epoch: number, sigHex: string): Promise<boolean> {
+  async sendNodeConfig(dstNodeId: number, p: string, epoch: number, sigHex: string): Promise<string | null> {
     const sig: number[] = [];
     for (let i = 0; i + 1 < sigHex.length; i += 2) sig.push(parseInt(sigHex.slice(i, i + 2), 16));
     const pb = new TextEncoder().encode(p);
@@ -304,8 +304,10 @@ export class KMeshV1Client {
     body[8] = sig.length;
     body.set(sig, 9);
     body.set(pb, 9 + sig.length);
-    const up = encodeRpcUp(dstNodeId >>> 0, PacketFlag.NEED_ACK, 0n, body);
-    return this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+    const uuid = nextMsgUuid(this.nodeId);
+    const up = encodeRpcUp(dstNodeId >>> 0, PacketFlag.NEED_ACK, uuid, body);
+    const ok = await this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+    return ok ? msgUuidHex(uuid) : null;
   }
 
   /** Первичная локальная привязка (без подписи), только для модуля без владельца. */

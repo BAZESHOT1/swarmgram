@@ -190,6 +190,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
   const presenceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outboxTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deliveredUuidsRef = useRef<Set<string>>(new Set());
+  const configAckRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const unsubDisconnectRef = useRef<(() => void) | null>(null);
   const lastAttemptRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -513,6 +514,15 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
               } else if (deliveredUuidsRef.current.has(uuid)) {
                 // Hub уже подтвердил: поздние ACK/повторы не откатывают статус.
                 return;
+              }
+              const configTimer = configAckRef.current.get(uuid);
+              if (configTimer && event.status >= 2) {
+                clearTimeout(configTimer);
+                configAckRef.current.delete(uuid);
+                useStore.getState().pushToast({
+                  kind: 'success',
+                  message: 'Модуль получил настройки и перезагружается.',
+                });
               }
               const item = await kmeshV1Get(event.msgUuid).catch(() => null);
               const ref = messageRefForMsgUuid(event.msgUuid);
@@ -1091,11 +1101,13 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       const mac12 = (value: string) => value.toLowerCase().replace(/^esp32-/, '').replace(/[^0-9a-f]/g, '');
       const hubDeliver = async (): Promise<boolean> => {
         try {
+          useStore.getState().pushToast({ kind: 'info', message: 'Настройки: отправка через Hub → шлюз кластера…' });
           await api.kmeshV1ModuleConfigViaHub(target.mac, p);
           useStore.getState().pushToast({
             kind: 'success',
             message: 'Настройки отправлены через Hub и шлюз кластера. Модуль применит их и перезагрузится.',
           });
+          refreshLists();
           return true;
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
@@ -1108,6 +1120,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       };
       // Нет прямого подключения к модулям — доставляем через Hub → шлюз → kMesh.
       if (!v1 || !connectionRef.current?.isOpen || !current) return hubDeliver();
+      useStore.getState().pushToast({ kind: 'info', message: 'Настройки 1/3: готовим подпись Hub…' });
       let token: { epoch: number; sig: string };
       try {
         token = await api.kmeshV1ModuleConfigToken(target.mac, p);
@@ -1116,15 +1129,36 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       }
       const direct = mac12(current.hardwareId) === mac12(target.mac);
       if (!direct && !target.nodeId) return hubDeliver();
-      const ok = direct
-        ? await v1.sendHwConfig(p, token.epoch, token.sig)
-        : await v1.sendNodeConfig(target.nodeId as number, p, token.epoch, token.sig);
-      if (!ok) return fail('Команда не ушла в модуль. Проверьте подключение.');
       useStore.getState().pushToast({
-        kind: 'success',
-        message: direct
-          ? 'Настройки отправлены. Модуль перезагрузится.'
-          : 'Настройки отправлены по mesh. Модуль применит их и перезагрузится.',
+        kind: 'info',
+        message: direct ? 'Настройки 2/3: пишем в подключённый модуль…' : 'Настройки 2/3: отправляем по mesh…',
+      });
+      if (direct) {
+        const ok = await v1.sendHwConfig(p, token.epoch, token.sig);
+        if (!ok) return fail('Команда не ушла в модуль. Проверьте подключение.');
+        useStore.getState().pushToast({
+          kind: 'success',
+          message: 'Настройки 3/3 доставлены. Модуль применит их и перезагрузится.',
+        });
+        setTimeout(() => void restoreRef.current?.(), 3000);
+        return true;
+      }
+      const uuid = await v1.sendNodeConfig(target.nodeId as number, p, token.epoch, token.sig);
+      if (!uuid) {
+        // Прямой mesh-путь не сработал — пробуем через Hub, если есть интернет.
+        return hubDeliver();
+      }
+      const timer = setTimeout(() => {
+        configAckRef.current.delete(uuid);
+        useStore.getState().pushToast({
+          kind: 'info',
+          message: 'Настройки отправлены по mesh. Подтверждение не пришло — модуль применит их при следующей связи.',
+        });
+      }, 20_000);
+      configAckRef.current.set(uuid, timer);
+      useStore.getState().pushToast({
+        kind: 'info',
+        message: 'Настройки 3/3: ждём подтверждение модуля…',
       });
       return true;
     },
