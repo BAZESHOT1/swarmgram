@@ -455,6 +455,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onStatus: (event) => {
             void (async () => {
               const item = await kmeshV1Get(event.msgUuid).catch(() => null);
+              console.log('[kmesh]', 'status', { uuid: event.msgUuid, status: event.status, found: Boolean(item), client: item?.clientId ?? '-' });
               if (!item) return;
               const nextState =
                 event.status === 5
@@ -493,7 +494,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   if (item.clientId && m.clientId === item.clientId) return true;
                   return m.text === item.text && Boolean(m.pending);
                 });
-                if (index < 0) return prev;
+                if (index < 0) {
+                  console.log('[kmesh]', 'status: bubble not found', { rows: rows.length });
+                  return prev;
+                }
                 rows[index] = {
                   ...(rows[index] as object),
                   pending: !delivered && !failed,
