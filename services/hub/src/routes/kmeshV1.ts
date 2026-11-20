@@ -1217,7 +1217,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY (kind = 'packet') DESC, id ASC LIMIT 8`,
+        ORDER BY (kind = 'ack') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
       // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.
@@ -1259,7 +1259,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY (kind = 'packet') DESC, id ASC LIMIT 8`,
+        ORDER BY (kind = 'ack') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
       // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.

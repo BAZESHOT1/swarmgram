@@ -667,6 +667,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         });
         void v1.hello();
         void v1.syncOutbox().catch(() => undefined);
+        // После переподключения модуля повторяем сообщения, чьё подтверждение Hub
+        // потерялось (перезагрузка модуля/обрыв): тот же msg_uuid и nonce, без дублей.
+        setTimeout(() => {
+          if (v1ClientRef.current !== v1) return;
+          void v1.resendUnconfirmed().catch(() => 0);
+        }, 3500);
         // Первичная привязка на уровне прошивки: если модуль ещё свободен,
         // сразу пишем в него prefix/net из оффлайн-кэша пользователя.
         if ((nextInfo.ownerPrefix ?? '00000000').toLowerCase() === '00000000') {

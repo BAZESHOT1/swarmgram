@@ -646,6 +646,57 @@ export class KMeshV1Client {
       .catch(() => false);
   }
 
+  /**
+   * Повторно отправить в mesh сообщения, которые уже ушли в модуль, но
+   * подтверждение Hub потерялось (перезагрузка модуля, обрыв ESP-NOW).
+   *
+   * Используем сохранённый конверт (тот же nonce), поэтому получатель не
+   * покажет дубликат: Hub дедуплицирует по msg_uuid, приложение — по nonce.
+   * Шлём только серверные копии: сообщения под ключом пары переотправляет
+   * resendPairViaGateway после получения серверного ключа.
+   */
+  async resendUnconfirmed(limit = 6): Promise<number> {
+    if (!this.nodeId) return 0;
+    const items = (await kmeshV1List().catch(() => []))
+      .filter(
+        (row) =>
+          row.state !== 'SYNCED_PERMANENT' &&
+          Boolean(row.ciphertextB64 && row.nonce && row.text) &&
+          Date.now() - Date.parse(row.createdAt || '') < 48 * 3600_000,
+      )
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, limit);
+    let sent = 0;
+    for (const item of items) {
+      try {
+        const rpc = encodeEnvelopeRpc({
+          chatRef: item.chatRef,
+          chatId: item.chatId,
+          kind: 'text',
+          nonce: b64ToBytes(item.nonce),
+          ciphertext: b64ToBytes(item.ciphertextB64),
+        });
+        const up = encodeRpcUp(
+          ANY_GATEWAY_ID,
+          PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE | PacketFlag.NEED_ACK,
+          msgUuidFromHex(item.msgUuid),
+          rpc,
+        );
+        const ok = await this.link.send(encodeClientFrame(ClientFrameType.RPC_UP, up, this.seq++));
+        if (ok) {
+          item.state = 'SYNC_PENDING';
+          item.attempts += 1;
+          await kmeshV1Update(item).catch(() => undefined);
+          sent += 1;
+        }
+      } catch {
+        /* следующее сообщение */
+      }
+    }
+    if (sent) console.log('[kmesh]', 're-sent unconfirmed outbox', sent);
+    return sent;
+  }
+
   /** Feed bytes from the BLE notification stream. */
   handleData(chunk: Uint8Array): void {
     for (const frame of this.decoder.push(chunk)) {
