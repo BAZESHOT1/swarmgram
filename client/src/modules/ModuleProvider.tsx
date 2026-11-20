@@ -797,11 +797,14 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
         // потерялось (перезагрузка модуля/обрыв): тот же msg_uuid и nonce, без дублей.
         setTimeout(() => {
           if (v1ClientRef.current !== v1) return;
+          // Интернет уже есть — повтор идёт через HTTP (syncOutbox), не по радио.
+          if (useStore.getState().transportOnline) return;
           void v1.resendUnconfirmed().catch(() => 0);
         }, 3500);
         if (outboxTimerRef.current) clearInterval(outboxTimerRef.current);
         outboxTimerRef.current = setInterval(() => {
           if (v1ClientRef.current !== v1) return;
+          if (useStore.getState().transportOnline) return;
           void v1.resendUnconfirmed(2).catch(() => 0);
         }, 20_000);
         // Первичная привязка на уровне прошивки: если модуль ещё свободен,

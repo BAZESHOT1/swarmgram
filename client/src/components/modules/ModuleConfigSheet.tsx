@@ -153,7 +153,7 @@ export function ModuleConfigSheet({
     setError('');
     setProgress({ step: 0, total: 3, text: 'Готовим команду…' });
     const ok = await connection.applyHardware(
-      { mac: target.mac, nodeId: nodeIdFromMac(target.mac) || undefined },
+      { mac: target.mac, nodeId: live?.nodeId || nodeIdFromMac(target.mac) || undefined },
       p,
       (next) => setProgress(next),
     );
