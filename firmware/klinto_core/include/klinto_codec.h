@@ -27,6 +27,7 @@ enum kl_rpc_op_t : uint8_t {
   KL_RPC_FEED_SYNC_RESP = 0x0B,
   KL_RPC_CHAT_HISTORY_REQ = 0x0C,
   KL_RPC_CHAT_HISTORY_RESP = 0x0D,
+  KL_RPC_SEND_ENVELOPE = 0x0E,
   KL_RPC_MSG_RECEIPT = 0x22,
   /* Подписанная владельцем настройка железа узла: [epoch u32][sig_len u8][sig][p ASCII]. */
   KL_RPC_NODE_CONFIG = 0x30

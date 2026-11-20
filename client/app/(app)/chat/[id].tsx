@@ -524,13 +524,13 @@ export default function ChatScreen() {
     // пользователь доскроллит и счётчик непрочитанных обнулится. В личном чате
     // открытие = прочтение, в том числе без интернета (квитанция уйдёт по kMesh).
     if (unreadCount > 0 && chat.type !== 'direct') return;
-    const receiptKey = `${chatId}:${lastSeq}:${allMessages.length}`;
-    if (lastReadReceiptRef.current === receiptKey) return;
-    lastReadReceiptRef.current = receiptKey;
     const meshEntries = allMessages
       .filter((m) => !m.mine && m.msgUuid)
       .slice(-6)
       .map((m) => ({ msgUuid: m.msgUuid as string, read: true }));
+    const receiptKey = `${chatId}:${lastSeq}:${meshEntries.map((e) => e.msgUuid).join(',')}`;
+    if (lastReadReceiptRef.current === receiptKey) return;
+    lastReadReceiptRef.current = receiptKey;
     if (meshEntries.length) {
       // Даже без интернета: короткая квитанция уйдёт через kMesh/шлюз/соседей.
       sendKmeshReadReceipt(chatId, crc16(new TextEncoder().encode(chatId)) || 1, meshEntries);

@@ -126,6 +126,13 @@ async function storeArchive(body: Record<string, unknown>, gatewayId: number) {
   const wireUuid = packet.subarray(6, 14).reverse().toString('hex');
   if (wireUuid !== uuid) throw badRequest('msg_uuid_mismatch');
 
+  // В архив попадают только сообщения. Сервисные RPC (поиск/лента/ключ)
+  // и квитанции идут тем же uplink, но историей не являются.
+  const plain = openTemp(config.tempMeshKey, parsePacket(packet) as never);
+  if (!plain || (plain[0] !== 1 && plain[0] !== 0x0e)) {
+    return { uuid, status: 'ignored' };
+  }
+
   const src = packet.readUInt32LE(14);
   const dst = packet.readUInt32LE(18);
   const packetId = packet.readUInt32LE(2);
@@ -673,18 +680,17 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
           LIMIT 5`,
         [userId],
       );
-      const entries = [];
-      for (const r of rows) {
+      const entries = await Promise.all(rows.map(async (r) => {
         const text = r.header ? await storedMessageText(r.id, r.header, r.object_id, userId) : '';
-        entries.push({
+        return {
           chatRef: crc16(Buffer.from(r.id, 'utf8')),
           unreadCount: Math.min(65535, Number(r.unread) || 0),
           lastMsgUuid: r.msg_uuid ? BigInt(`0x${r.msg_uuid}`) : 0n,
           timestamp: r.created_at ? Math.floor(new Date(r.created_at).getTime() / 1000) : 0,
-          preview: text.slice(0, 40),
+          preview: text.slice(0, 16),
           lastSeq: Number(r.last_seq) || 0,
-        });
-      }
+        };
+      }));
       return queuePacket({
         gatewayId: target.gatewayId || gatewayId,
         dstNodeId: target.nodeId,
@@ -1049,10 +1055,36 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       return reply.send({ ok: true, status: 200, kind: 'presence', node_id: nodeId });
     }
 
-    await storeArchive(body, gatewayId);
+    const relayWire = String(body.packet_b64 ?? '');
+    let needArchive = true;
+    let needAck = true;
+    if (relayWire) {
+      try {
+        const parsed = parsePacket(Buffer.from(relayWire, 'base64'));
+        if (parsed) {
+          needArchive = (parsed.flags & 0x20) !== 0;
+          needAck = (parsed.flags & 0x01) !== 0;
+        }
+      } catch {
+        /* старый формат — обрабатываем как раньше */
+      }
+    }
+    if (needArchive) {
+      // Архив — только для сообщений. Сервисные RPC (поиск/лента/ключ)
+      // и квитанции идут тем же uplink, но не должны попадать в историю.
+      let op = -1;
+      try {
+        const parsed = parsePacket(Buffer.from(relayWire, 'base64'));
+        const plain = parsed ? openTemp(config.tempMeshKey, parsed) : null;
+        op = plain ? plain[0] : -1;
+      } catch {
+        /* ignore */
+      }
+      if (op < 0 || op === 1 || op === 0x0e) await storeArchive(body, gatewayId);
+    }
     const src = num(body.src_id);
     const packetId = num(body.packet_id);
-    if (src > 1 && packetId > 0) {
+    if (needAck && src > 1 && packetId > 0) {
       await query(
         `INSERT INTO kmesh_v1_downlink (gateway_id, dst_node_id, kind, packet_id, msg_uuid, expires_at)
          VALUES ($1,$2,'ack',$3,$4, now() + interval '24 hours')`,
@@ -1310,7 +1342,24 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     );
 
     const relayBody = { ...body, gateway_id: gatewayId };
-    await storeArchive(relayBody, gatewayId);
+    let needArchive = true;
+    try {
+      const parsed = parsePacket(Buffer.from(packetB64, 'base64'));
+      if (parsed) needArchive = (parsed.flags & 0x20) !== 0;
+    } catch {
+      /* old format */
+    }
+    if (needArchive) {
+      let op = -1;
+      try {
+        const parsed = parsePacket(Buffer.from(packetB64, 'base64'));
+        const plain = parsed ? openTemp(config.tempMeshKey, parsed) : null;
+        op = plain ? plain[0] : -1;
+      } catch {
+        /* ignore */
+      }
+      if (op < 0 || op === 1 || op === 0x0e) await storeArchive(relayBody, gatewayId);
+    }
     await routeRelayedPacket(relayBody, gatewayId);
 
     // ACK в downlink здесь не нужен: телефон сам подтверждает сообщение модулю

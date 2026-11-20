@@ -469,11 +469,15 @@ void KlintoClientBridge::handle_rpc_up(const uint8_t *payload, size_t len) {
   }
 
   kl_packet_t pkt;
-  const bool no_ack = op == KL_RPC_MSG_RECEIPT;
+  const bool is_receipt = op == KL_RPC_MSG_RECEIPT;
+  const bool is_message = op == KL_RPC_SEND_TEXT || op == KL_RPC_SEND_ENVELOPE;
   kl_packet_init(&pkt, KL_TYPE_DATA, cfg_.node_id, dst, KL_BROADCAST_ID,
-                 (uint8_t)(app_flags | (no_ack ? 0 : KL_FLAG_NEED_ACK) | KL_FLAG_TEMP_MESH_KEY |
-                           (dst == KL_BROADCAST_ID ? 0 : KL_FLAG_NEED_CLOUD_ARCHIVE)));
-  pkt.msg_uuid = uuid ? uuid : kl_snowflake_next(cfg_.node_id, kl_uptime_ms());
+                 (uint8_t)(app_flags | (is_message ? KL_FLAG_NEED_ACK : 0) |
+                           KL_FLAG_TEMP_MESH_KEY |
+                           (dst != KL_BROADCAST_ID ? KL_FLAG_NEED_CLOUD_ARCHIVE : 0)));
+  pkt.msg_uuid = uuid ? uuid : ((is_message || is_receipt)
+                                    ? kl_snowflake_next(cfg_.node_id, kl_uptime_ms())
+                                    : 0);
 
   if (cfg_.has_temp_key) {
     kl_crypto_aad_t aad;
