@@ -36,10 +36,13 @@ export function AttachmentMenu({
   visible,
   onClose,
   onPicked,
+  onError,
 }: {
   visible: boolean;
   onClose: () => void;
   onPicked: (file: PickedFile) => void;
+  /** Ошибка выбора (например, нет доступа к галерее). */
+  onError?: (message: string) => void;
 }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
@@ -57,6 +60,18 @@ export function AttachmentMenu({
     onPicked({ name: f.name || 'file', mime: f.type || 'application/octet-stream', bytes });
     if (input) input.value = '';
     onClose();
+  };
+
+  // «Фото» на телефоне — системная галерея (фото и видео), а не файловый менеджер.
+  const pickGallery = async () => {
+    onClose();
+    try {
+      const { pickFromGallery } = await import('../../data/galleryPicker');
+      const file = await pickFromGallery({ videos: true });
+      if (file) onPicked(file);
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : 'Не удалось открыть галерею');
+    }
   };
 
   const pickNative = async (accept?: string) => {
@@ -95,7 +110,7 @@ export function AttachmentMenu({
             label="Фото"
             hint="Изображение из галереи"
             color={theme.accent}
-            onPress={() => (web ? photoRef.current?.click() : void pickNative('image/*'))}
+            onPress={() => (web ? photoRef.current?.click() : void pickGallery())}
           />
           <AttachItem
             icon="document-outline"

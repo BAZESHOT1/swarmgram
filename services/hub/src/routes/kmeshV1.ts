@@ -2436,13 +2436,15 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     // Дельта-патчи от предыдущих канонических сборок того же чипа и варианта.
     const previous = await query<{ build_number: number; image: Buffer }>(
       `SELECT build_number, image FROM kmesh_ota_releases
-        WHERE chip = $1 AND variant = $2 AND build_number < $3 ORDER BY build_number DESC LIMIT 6`,
+        WHERE chip = $1 AND variant = $2 AND build_number < $3 ORDER BY build_number DESC LIMIT 2`,
       [chip, variant, build],
     );
     for (const prev of previous) {
       const delta = buildDeltaPatch(Buffer.from(prev.image), image);
       const totalChunks = Math.ceil(delta.patch.length / 180);
-      if (totalChunks <= 0 || totalChunks > 12288 || delta.patch.length >= image.length) continue;
+      /* Патч имеет смысл, только если он заметно меньше полного образа.
+       * Иначе он занимает столько же эфира (LoRa) и только запутывает раскатку. */
+      if (totalChunks <= 0 || totalChunks > 12288 || delta.patch.length >= image.length * 0.6) continue;
       const manifest: OtaManifest = {
         chip, variant, baseBuild: prev.build_number, targetBuild: build, version, totalChunks,
         patchSize: delta.patch.length, patchSha256: delta.patchSha256, targetSha256: delta.targetSha256,

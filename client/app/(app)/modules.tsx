@@ -37,6 +37,7 @@ import { motion } from '../../src/theme/motion';
 import { useReducedMotion } from '../../src/components/useReducedMotion';
 import { useStore } from '../../src/state/useStore';
 import { GlassCard, SettingsPage, SettingsSection } from '../../src/components/settings/SettingsUI';
+import { PressableScale } from '../../src/components/profile/PressableScale';
 import { CardsSkeleton } from '../../src/components/skeletons/PageSkeletons';
 import {
   HeaderIconButton,
@@ -285,44 +286,63 @@ function ConnectedModuleCard({
             </View>
           </View>
 
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={{ color: theme.textSecondary, fontSize: 12 }}>Заряд</Text>
-            <Text
-              style={{
-                color: batteryColor,
-                fontSize: 12,
-                fontWeight: '700',
-                fontVariant: ['tabular-nums'] as never,
-              }}
-            >
-              {batteryPct}%
-            </Text>
+          {/* Показатели: каждый один раз, крупно. */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {[
+              { icon: 'battery-half-outline', label: 'Заряд', value: `${batteryPct}%`, color: batteryColor },
+              { icon: 'cellular-outline', label: 'Сигнал', value: rssi === 0 ? '—' : `${rssi} dBm`, color: rssi === 0 ? theme.textDisabled : theme.textPrimary },
+              { icon: 'git-network-outline', label: 'Соседи', value: String(neighbors), color: neighbors > 0 ? theme.accent : theme.textPrimary },
+              { icon: 'time-outline', label: 'Связь', value: formatRelative(lastSeen), color: theme.textPrimary },
+            ].map((item) => (
+              <View
+                key={item.label}
+                style={{ flexGrow: 1, flexBasis: '45%', padding: 10, borderRadius: 14, borderWidth: 1, borderColor: theme.line, gap: 3 }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Ionicons name={item.icon as never} size={13} color={theme.textSecondary} />
+                  <Text style={{ color: theme.textSecondary, fontSize: 11.5 }}>{item.label}</Text>
+                </View>
+                <Text style={{ color: item.color, fontSize: 17, fontWeight: '800' }} numberOfLines={1}>
+                  {item.value}
+                </Text>
+              </View>
+            ))}
           </View>
           <ProgressBar pct={batteryPct} tone={batteryTone} />
 
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            <StatusBadge text={`${neighbors} соседей`} tone={neighbors > 0 ? 'accent' : 'neutral'} />
             <StatusBadge text={moduleEnvironmentLabel(module.kind, module.transport)} tone="neutral" />
             {firmware ? <StatusBadge text={`прошивка ${firmware}`} tone="neutral" /> : null}
           </View>
 
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 2 }}>
-            <MiniStat icon="battery-half-outline" label="Заряд" value={`${batteryPct}%`} color={batteryColor} />
-            <MiniStat
-              icon="wifi-outline"
-              label="RSSI"
-              value={rssi === 0 ? '—' : `${rssi} dBm`}
-              color={rssi === 0 ? theme.textDisabled : theme.textPrimary}
-            />
-            <MiniStat icon="time-outline" label="Последний контакт" value={formatRelative(lastSeen)} />
-            <MiniStat icon="git-network-outline" label="Соседи" value={String(neighbors)} />
-          </View>
-
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-            <Btn title="Отключить" size="s" variant="ghost" onPress={onDisconnect} />
-            <Btn title="Обновить" size="s" variant="ghost" onPress={onOta} />
-            <Btn title="Заблокировать" size="s" variant="danger" onPress={onBlock} />
-            <Btn title="Отвязать" size="s" variant="danger" onPress={onUnbind} />
+          {/* Действия плитками, опасные — красным. */}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {[
+              { key: 'off', icon: 'power-outline', label: 'Отключить', onPress: onDisconnect, danger: false },
+              { key: 'ota', icon: 'cloud-download-outline', label: 'Обновить', onPress: onOta, danger: false },
+              { key: 'block', icon: 'ban-outline', label: 'Блок', onPress: onBlock, danger: true },
+              { key: 'unbind', icon: 'unlink-outline', label: 'Отвязать', onPress: onUnbind, danger: true },
+            ].map((a) => (
+              <PressableScale
+                key={a.key}
+                onPress={a.onPress}
+                accessibilityRole="button"
+                accessibilityLabel={a.label}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 16,
+                  alignItems: 'center',
+                  gap: 5,
+                  backgroundColor: a.danger ? theme.dangerSoft : theme.accentSoft,
+                }}
+              >
+                <Ionicons name={a.icon as never} size={22} color={a.danger ? theme.danger : theme.accent} />
+                <Text style={{ color: a.danger ? theme.danger : theme.textPrimary, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>
+                  {a.label}
+                </Text>
+              </PressableScale>
+            ))}
           </View>
         </View>
       </GlassCard>
@@ -913,14 +933,24 @@ export default function ModulesScreen() {
             onOta={() => setOtaTarget(directModule)}
           />
         </SettingsSection>
-      ) : autoStatus ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 2, marginBottom: 12 }}>
-          <Ionicons name={autoStatus.icon} size={14} color={autoStatus.color} />
-          <Text style={{ color: autoStatus.color, fontSize: 12, flex: 1 }} numberOfLines={1}>
-            {autoStatus.text}
-          </Text>
-        </View>
-      ) : null}
+      ) : (
+        <SettingsSection title="Подключённый модуль" delay={0}>
+          <GlassCard>
+            <View style={{ padding: 16, gap: 10, alignItems: 'center' }}>
+              <View style={{ width: 56, height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.accentSoft }}>
+                <Ionicons name={autoStatus?.icon ?? 'bluetooth-outline'} size={26} color={autoStatus?.color ?? theme.accent} />
+              </View>
+              <Text style={{ color: theme.textPrimary, fontSize: 16, fontWeight: '800', textAlign: 'center' }}>
+                {autoStatus ? autoStatus.text : 'Модуль не подключён'}
+              </Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12.5, textAlign: 'center', lineHeight: 18 }}>
+                Свой модуль подключается автоматически, когда он рядом и включён. Новый модуль добавьте по Bluetooth или USB.
+              </Text>
+              <Btn title="Подключить модуль" onPress={() => router.push('/modules-add')} />
+            </View>
+          </GlassCard>
+        </SettingsSection>
+      )}
 
       {/* 2. КАРТА КЛАСТЕРА — от последнего подключённого носимого, данные модуля + Hub. */}
       <SettingsSection

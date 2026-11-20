@@ -175,10 +175,10 @@ export function PhoneDock() {
         <SideCapsule
           fromX={-20}
           reduced={reduced}
-          style={[styles.sideCapsule, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)', maxWidth: narrow ? 66 : compact ? 74 : 96 }]}
+          style={[styles.sideCapsule, { backgroundColor: theme.dark ? '#161618' : 'rgba(255,255,255,0.92)', borderColor: theme.dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', maxWidth: narrow ? 66 : compact ? 74 : 96 }]}
         >
           <View style={[styles.dot, { backgroundColor: clusterOnline ? '#30D158' : '#FF9F0A' }]} />
-          <Text numberOfLines={1} style={styles.sideText}>
+          <Text numberOfLines={1} style={[styles.sideText, { color: theme.dark ? '#D1D1D6' : theme.textPrimary }]}>
             {leftText}
           </Text>
         </SideCapsule>
@@ -204,7 +204,7 @@ export function PhoneDock() {
               width: tileWidth,
               height: 50,
               borderRadius: 25,
-              backgroundColor: '#2C2C2E',
+              backgroundColor: theme.dark ? '#2C2C2E' : 'rgba(0,0,0,0.07)',
             }}
           />
         ) : null}
@@ -235,7 +235,7 @@ export function PhoneDock() {
                   {tile.id === 'settings' && me ? (
                     <Avatar name={me.displayName || me.username || 'Я'} size={20} radius={7} avatar={me.avatar ?? null} />
                   ) : (
-                    <Ionicons name={tile.icon} size={20} color={active ? '#FFFFFF' : '#8E8E93'} />
+                    <Ionicons name={tile.icon} size={20} color={active ? theme.textPrimary : theme.textSecondary} />
                   )}
                   {tile.badge ? (
                     <View style={[styles.badge, { backgroundColor: '#3A3A3C' }]}>
@@ -245,7 +245,7 @@ export function PhoneDock() {
                     </View>
                   ) : null}
                 </View>
-                <Text numberOfLines={1} style={{ color: active ? '#FFFFFF' : '#8E8E93', fontSize: 11, fontWeight: active ? '600' : '500' }}>
+                <Text numberOfLines={1} style={{ color: active ? theme.textPrimary : theme.textSecondary, fontSize: 11, fontWeight: active ? '600' : '500' }}>
                   {tile.label}
                 </Text>
               </View>
@@ -264,10 +264,10 @@ export function PhoneDock() {
             }}
             accessibilityRole="button"
             accessibilityLabel={`Модуль Kinto подключён, узлов ${routeCount}`}
-            style={[styles.sideCapsule, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)', maxWidth: narrow ? 52 : compact ? 58 : 68 }]}
+            style={[styles.sideCapsule, { backgroundColor: theme.dark ? '#161618' : 'rgba(255,255,255,0.92)', borderColor: theme.dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', maxWidth: narrow ? 52 : compact ? 58 : 68 }]}
           >
             <View style={[styles.dot, { backgroundColor: '#30D158' }]} />
-            <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{routeCount}</Text>
+            <Text style={{ color: theme.textPrimary, fontSize: 13, fontWeight: '600' }}>{routeCount}</Text>
             <Ionicons name="swap-horizontal" size={15} color="#FFD60A" />
           </Pressable>
         </SideCapsule>
@@ -282,7 +282,7 @@ export function PhoneDock() {
               from={{ opacity: 0, translateY: reduced ? 0 : 10, scale: reduced ? 1 : 0.96 }}
               animate={{ opacity: 1, translateY: 0, scale: 1 }}
               transition={reduced ? { type: 'timing', duration: 0 } : motion.spring}
-              style={[styles.menuCard, { backgroundColor: '#161618', borderColor: 'rgba(255,255,255,0.08)' }]}
+              style={[styles.menuCard, { backgroundColor: theme.dark ? '#161618' : 'rgba(255,255,255,0.92)', borderColor: theme.dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }]}
             >
               <Pressable
                 onPress={() => {
@@ -296,12 +296,12 @@ export function PhoneDock() {
                 accessibilityLabel={unread ? `Прочитать все, непрочитанных ${unread}` : 'Нет непрочитанных сообщений'}
                 style={({ pressed }) => [styles.menuItem, { opacity: unread ? (pressed ? 0.65 : 1) : 0.45 }]}
               >
-                <View style={[styles.menuIcon, { backgroundColor: '#2C2C2E' }]}>
-                  <Ionicons name="checkmark-done" size={17} color="#FFFFFF" />
+                <View style={[styles.menuIcon, { backgroundColor: theme.dark ? '#2C2C2E' : 'rgba(0,0,0,0.06)' }]}>
+                  <Ionicons name="checkmark-done" size={17} color={theme.textPrimary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: '#FFFFFF', fontSize: 14, fontWeight: '600' }}>Прочитать все</Text>
-                  <Text style={{ color: '#8E8E93', fontSize: 11.5, marginTop: 1 }}>
+                  <Text style={{ color: theme.textPrimary, fontSize: 14, fontWeight: '600' }}>Прочитать все</Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11.5, marginTop: 1 }}>
                     {unread ? `${unread} непрочитанных` : 'Нет непрочитанных'}
                   </Text>
                 </View>

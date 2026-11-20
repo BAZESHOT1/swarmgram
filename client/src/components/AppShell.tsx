@@ -23,7 +23,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const wide = useIsWide();
   const theme = useTheme();
   const pathname = usePathname();
-  void pathname;
+  // Чат и профиль рисуют фон на весь экран: оболочка не добавляет им отступов
+  // (иначе контейнер экрана обрезал фон и по краям оставались полосы).
+  const fullBleed = !wide && /^\/(chat|user)\/[^/]+$/.test(pathname ?? '');
   useBodyBackground();
   const shellBackground = theme.background;
 
@@ -34,13 +36,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         styles.root,
         {
           backgroundColor: shellBackground,
-          paddingTop: (inset.top || 12) + 12,
+          paddingTop: fullBleed ? 0 : (inset.top || 12) + 12,
           // Док/сайдбар плавающие: фоновая полоса под ними не нужна.
           paddingBottom: wide ? 32 : 0,
           // Одинаковые боковые отступы на всех мобильных экранах: смена
           // padding при переходе чат ↔ список вызывала дёрганье ширины.
-          paddingLeft: wide ? (inset.left || 0) + SIDEBAR_WIDTH + 24 : 16,
-          paddingRight: wide ? 28 : 16,
+          paddingLeft: wide ? (inset.left || 0) + SIDEBAR_WIDTH + 24 : fullBleed ? 0 : 16,
+          paddingRight: wide ? 28 : fullBleed ? 0 : 16,
         },
       ]}
     >

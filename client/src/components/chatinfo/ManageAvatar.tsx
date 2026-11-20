@@ -127,6 +127,13 @@ async function pickImage(): Promise<PickedImage | null> {
     });
   }
 
+  // Телефон: фото из галереи (разрешение запрашивается при первом выборе).
+  if ((Platform.OS as string) !== 'web') {
+    const { pickFromGallery } = await import('../../data/galleryPicker');
+    const picked = await pickFromGallery();
+    if (picked) return picked;
+    return null;
+  }
   const DocumentPicker = await import('expo-document-picker');
   const result = await DocumentPicker.getDocumentAsync({ type: 'image/*', copyToCacheDirectory: true });
   if (result.canceled || !result.assets?.length) return null;

@@ -1,8 +1,8 @@
 {
   "name": "@klinto/client",
-  "version": "1.10.79",
+  "version": "1.10.80",
   "private": true,
-  "main": "expo-router/entry",
+  "main": "index.js",
   "scripts": {
     "web": "expo start --web",
     "build": "expo export -p web",
@@ -41,6 +41,7 @@
     "expo-haptics": "~14.0.1",
     "expo-image": "~2.0.7",
     "expo-image-manipulator": "~13.0.6",
+    "expo-image-picker": "~16.0.6",
     "expo-linear-gradient": "~14.0.2",
     "expo-linking": "~7.0.5",
     "expo-router": "^4.0.22",

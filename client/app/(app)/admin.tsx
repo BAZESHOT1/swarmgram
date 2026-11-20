@@ -274,18 +274,12 @@ export default function AdminScreen() {
         </SummaryGrid>
       </SettingsSection>
 
-      {/* Сегмент-табы */}
-      <View
-        style={{
-          flexDirection: 'row',
-          gap: 4,
-          padding: 4,
-          borderRadius: 16,
-          borderWidth: 1,
-          borderColor: theme.glassBorder,
-          backgroundColor: theme.glass,
-          marginBottom: 12,
-        }}
+      {/* Вкладки: прокручиваемые «таблетки» — на телефоне все 8 разделов читаемы и легко нажимаются. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, paddingVertical: 2, paddingRight: 8 }}
+        style={{ marginBottom: 14, flexGrow: 0 }}
       >
         {TABS.map((item) => {
           const active = tab === item.id;
@@ -300,26 +294,23 @@ export default function AdminScreen() {
               accessibilityState={{ selected: active }}
               accessibilityLabel={`Вкладка ${item.label}`}
               style={({ pressed }) => ({
-                flex: 1,
+                flexDirection: 'row',
                 alignItems: 'center',
-                justifyContent: 'center',
-                gap: 2,
-                paddingVertical: 7,
-                borderRadius: 12,
-                backgroundColor: active ? theme.accentSoft : pressed ? theme.surfacePressed : 'transparent',
+                gap: 7,
+                paddingHorizontal: 14,
+                minHeight: 40,
+                borderRadius: 999,
+                borderWidth: 1,
+                borderColor: active ? theme.accent : theme.glassBorder,
+                backgroundColor: active ? theme.accent : pressed ? theme.surfacePressed : theme.glass,
               })}
             >
-              <Ionicons name={item.icon} size={15} color={active ? theme.accent : theme.textSecondary} />
-              <Text
-                style={{ color: active ? theme.accent : theme.textSecondary, fontSize: 10.5, fontWeight: '700' }}
-                numberOfLines={1}
-              >
-                {item.label}
-              </Text>
+              <Ionicons name={item.icon} size={16} color={active ? theme.onAccent : theme.textSecondary} />
+              <Text style={{ color: active ? theme.onAccent : theme.textPrimary, fontSize: 13.5, fontWeight: '700' }}>{item.label}</Text>
             </Pressable>
           );
         })}
-      </View>
+      </ScrollView>
 
       {err ? (
         <View

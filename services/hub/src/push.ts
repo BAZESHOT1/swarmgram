@@ -206,7 +206,22 @@ export async function sendNotification(id: string): Promise<void> {
             tokens: chunk.map((t) => t.token),
             data: dataStrings,
             ...(isAndroid
-              ? { android: { priority: 'high' as const, ttl: 3600_000 } }
+              ? {
+                  // Системное уведомление: Android покажет его сам, даже если приложение выгружено
+                  // (data-обработчик в закрытом приложении срабатывает не на всех прошивках).
+                  notification: variant,
+                  android: {
+                    priority: 'high' as const,
+                    ttl: 3600_000,
+                    notification: {
+                      channelId: notification.data?.kind === 'system' ? 'klinto-system' : 'klinto-messages',
+                      tag: String(notification.data?.chatId ?? 'klinto'),
+                      sound: 'default',
+                      defaultVibrateTimings: true,
+                      notificationCount: 1,
+                    },
+                  },
+                }
               : {
                   notification: variant,
                   ...(platform === 'ios'

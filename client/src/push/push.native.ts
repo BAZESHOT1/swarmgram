@@ -589,6 +589,17 @@ export async function initNativePush(session: PushSession | null | undefined): P
     registerForegroundPressHandler(),
   ];
 
+  // Системное уведомление (Android, приложение было закрыто): переход в чат по нажатию.
+  try {
+    const messaging = getMessagingSafe();
+    if (messaging) {
+      void messaging.getInitialNotification().then((m) => m && handleChatPress(m.data as never, true)).catch(() => undefined);
+      cleanups.push(messaging.onNotificationOpenedApp((m) => handleChatPress(m.data as never, true)));
+    }
+  } catch {
+    /* необязательно */
+  }
+
   cleanups.push(await registerNativePush(session));
 
   // Background fetch intentionally keeps running after cleanup: it is the

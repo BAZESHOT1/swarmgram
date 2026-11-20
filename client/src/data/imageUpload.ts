@@ -67,13 +67,9 @@ export async function pickImage(): Promise<PickedImage | null> {
       input.click();
     });
   }
-  const DocumentPicker = await import('expo-document-picker');
-  const result = await DocumentPicker.getDocumentAsync({ type: 'image/*', copyToCacheDirectory: true });
-  if (result.canceled || !result.assets?.length) return null;
-  const asset = result.assets[0];
-  const FileSystem = await import('expo-file-system');
-  const b64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
-  return { name: asset.name, mime: asset.mimeType ?? 'image/jpeg', bytes: fromB64(b64) };
+  // Телефон: фон и фото — из галереи (с запросом разрешения при первом выборе).
+  const { pickFromGallery } = await import('./galleryPicker');
+  return pickFromGallery();
 }
 
 type Stage = 'compress' | 'encrypt' | 'upload' | 'register';

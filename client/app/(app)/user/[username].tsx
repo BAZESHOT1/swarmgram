@@ -3,6 +3,7 @@ import { Platform, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Tex
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../../src/theme/useTheme';
 import { motion } from '../../../src/theme/motion';
 import { EmptyState } from '../../../src/components/EmptyState';
@@ -1036,6 +1037,8 @@ function BrightProfile({
   const reduced = useReducedMotion();
   const { width } = useWindowDimensions();
   const desktop = width >= 900 && !forceMobile;
+  const insets = useSafeAreaInsets();
+  const topPad = desktop ? 0 : Platform.OS === 'web' ? 14 : insets.top + 6;
   const badges = buildProfileBadges(badgeFacts, theme);
   const [badgesOpen, setBadgesOpen] = React.useState(false);
 
@@ -1055,10 +1058,10 @@ function BrightProfile({
   const featured = profile.featuredChat ?? null;
 
   const Row = ({ label, value, accent, onPencil, last }: { label: string; value: string; accent?: boolean; onPencil?: () => void; last?: boolean }) => (
-    <View style={[styles.pRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.16)' }]}>
+    <View style={[styles.pRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line }]}>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={styles.pRowLabel}>{label}</Text>
-        <Text style={[styles.pRowValue, accent && { color: theme.accent, fontSize: 28 }]} numberOfLines={3}>
+        <Text style={[styles.pRowLabel, { color: theme.textSecondary }]}>{label}</Text>
+        <Text style={[styles.pRowValue, { color: theme.textPrimary }, accent && { color: theme.accent, fontSize: 28 }]} numberOfLines={3}>
           {value}
         </Text>
       </View>
@@ -1082,21 +1085,21 @@ function BrightProfile({
         moduleOnline={moduleOnline}
       />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
-        <Text style={styles.pName} numberOfLines={2}>
+        <Text style={[styles.pName, { color: theme.textPrimary }]} numberOfLines={2}>
           {title || 'Пользователь'}
         </Text>
         {roleLabel ? (
           <Glass radius={16} fill={glassFill} style={{ paddingHorizontal: 12, paddingVertical: 6 }}>
-            <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }}>{roleLabel}</Text>
+            <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }}>{roleLabel}</Text>
           </Glass>
         ) : null}
         {isSelf && onEdit ? (
           <Pressable onPress={() => onEdit('displayName', title)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Изменить имя">
-            <Ionicons name="pencil-outline" size={16} color="rgba(255,255,255,0.75)" />
+            <Ionicons name="pencil-outline" size={16} color={theme.textSecondary} />
           </Pressable>
         ) : null}
       </View>
-      <Text style={styles.pOnline}>{online ? 'в сети' : statusText}</Text>
+      <Text style={[styles.pOnline, { color: theme.textSecondary }]}>{online ? 'в сети' : statusText}</Text>
 
       <View style={styles.pTiles}>
         {[...actions, ...(moreActions.length ? [{ key: 'more', icon: 'ellipsis-horizontal', label: 'ещё', onPress: () => setMoreOpen(true) } as ProfileAction] : [])].map((action) => (
@@ -1106,10 +1109,10 @@ function BrightProfile({
             disabled={action.disabled || action.loading}
             accessibilityRole="button"
             accessibilityLabel={action.label}
-            style={[styles.pTile, { opacity: action.disabled ? 0.5 : 1 }]}
+            style={[styles.pTile, { backgroundColor: theme.dark ? 'rgba(30,26,20,0.82)' : 'rgba(255,255,255,0.85)', borderWidth: theme.dark ? 0 : 1, borderColor: 'rgba(0,0,0,0.06)', opacity: action.disabled ? 0.5 : 1 }]}
           >
             <Ionicons name={action.loading ? 'hourglass-outline' : action.icon} size={34} color={theme.accent} />
-            <Text style={styles.pTileText} numberOfLines={1} adjustsFontSizeToFit>
+            <Text style={[styles.pTileText, { color: theme.textPrimary }]} numberOfLines={1} adjustsFontSizeToFit>
               {action.label}
             </Text>
           </PressableScale>
@@ -1141,7 +1144,7 @@ function BrightProfile({
 
   const channelCard = featured ? (
     <View>
-      <Text style={styles.pSection}>{featured.type === 'channel' ? 'Канал' : 'Группа'}</Text>
+      <Text style={[styles.pSection, { color: theme.textSecondary }]}>{featured.type === 'channel' ? 'Канал' : 'Группа'}</Text>
       <PressableScale
         onPress={() => onOpenChat(featured.id)}
         accessibilityRole="button"
@@ -1150,11 +1153,11 @@ function BrightProfile({
         <Glass radius={26} fill={glassFill} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10 }}>
           <Avatar name={featured.title} size={64} radius={16} avatar={featured.avatar ?? null} />
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: '800' }} numberOfLines={1}>
+            <Text style={{ color: theme.textPrimary, fontSize: 17, fontWeight: '800' }} numberOfLines={1}>
               {featured.title}
             </Text>
             {featured.description ? (
-              <Text style={{ color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 18 }} numberOfLines={3}>
+              <Text style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 18 }} numberOfLines={3}>
                 {featured.description}
               </Text>
             ) : null}
@@ -1194,24 +1197,24 @@ function BrightProfile({
 
   const activityCard = (
     <View>
-      <Text style={styles.pSection}>Активность</Text>
+      <Text style={[styles.pSection, { color: theme.textSecondary }]}>Активность</Text>
       <Glass radius={26} fill={glassFill} style={{ padding: 16, gap: 8 }}>
-        <Text style={styles.pStat}>
+        <Text style={[styles.pStat, { color: theme.textPrimary }]}>
           Носимых модулей: <Text style={styles.pStatNum}>{byRole.wearable}</Text>
         </Text>
-        <Text style={styles.pStat}>
+        <Text style={[styles.pStat, { color: theme.textPrimary }]}>
           Ретрансляторов: <Text style={styles.pStatNum}>{byRole.repeater}</Text>
         </Text>
-        <Text style={styles.pStat}>
+        <Text style={[styles.pStat, { color: theme.textPrimary }]}>
           Шлюзов: <Text style={styles.pStatNum}>{byRole.gateway}</Text>
         </Text>
-        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.18)', marginVertical: 4 }} />
-        <Text style={{ color: '#FFFFFF', fontSize: 16 }}>
+        <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: theme.line, marginVertical: 4 }} />
+        <Text style={{ color: theme.textPrimary, fontSize: 16 }}>
           Примерная площадь покрытия:{' '}
           <Text style={{ color: theme.accent, fontWeight: '800', textDecorationLine: 'underline' }}>{coverage}км²</Text>
         </Text>
         {nodesTotal > 0 || contribution > 0 ? (
-          <Text style={{ color: 'rgba(255,255,255,0.62)', fontSize: 13 }}>
+          <Text style={{ color: theme.textSecondary, fontSize: 13 }}>
             Узлы: {nodesOnline} из {nodesTotal} онлайн{contribution > 0 ? ` · вклад ${formatBytes(contribution)}` : ''}
           </Text>
         ) : null}
@@ -1233,10 +1236,10 @@ function BrightProfile({
               paddingVertical: 11,
               borderRadius: 22,
               alignItems: 'center',
-              backgroundColor: tab === key ? 'rgba(255,255,255,0.14)' : 'transparent',
+              backgroundColor: tab === key ? (theme.dark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.07)') : 'transparent',
             }}
           >
-            <Text style={{ color: '#FFFFFF', fontSize: 17, fontWeight: tab === key ? '800' : '600' }}>{label}</Text>
+            <Text style={{ color: theme.textPrimary, fontSize: 17, fontWeight: tab === key ? '800' : '600' }}>{label}</Text>
           </Pressable>
         ))}
       </Glass>
@@ -1249,13 +1252,13 @@ function BrightProfile({
                   <Ionicons
                     name={m.role === 'wearable' ? 'watch-outline' : m.role === 'repeater' ? 'git-network-outline' : 'wifi-outline'}
                     size={28}
-                    color={m.online ? theme.success : 'rgba(255,255,255,0.5)'}
+                    color={m.online ? theme.success : theme.textSecondary}
                   />
                   <View>
-                    <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }} numberOfLines={2}>
+                    <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }} numberOfLines={2}>
                       {m.name}
                     </Text>
-                    <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11 }}>
                       {m.role === 'wearable' ? 'Носимый' : m.role === 'repeater' ? 'Ретранслятор' : 'Шлюз'} · {m.online ? 'онлайн' : 'офлайн'}
                     </Text>
                   </View>
@@ -1263,10 +1266,10 @@ function BrightProfile({
               ))}
             </View>
           ) : (
-            <Text style={styles.pEmpty}>Модулей пока нет</Text>
+            <Text style={[styles.pEmpty, { color: theme.textSecondary }]}>Модулей пока нет</Text>
           )
         ) : (
-          <Text style={styles.pEmpty}>{tab === 'gifts' ? 'Подарки появятся скоро' : 'Истории появятся скоро'}</Text>
+          <Text style={[styles.pEmpty, { color: theme.textSecondary }]}>{tab === 'gifts' ? 'Подарки появятся скоро' : 'Истории появятся скоро'}</Text>
         )}
       </View>
     </View>
@@ -1274,7 +1277,7 @@ function BrightProfile({
 
   const shared = !isSelf && profile.sharedChats.length ? (
     <View>
-      <Text style={styles.pSection}>Общие чаты · {profile.sharedChats.length}</Text>
+      <Text style={[styles.pSection, { color: theme.textSecondary }]}>Общие чаты · {profile.sharedChats.length}</Text>
       <Glass radius={26} fill={glassFill} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
         {profile.sharedChats.slice(0, 8).map((chat) => (
           <PressableScale
@@ -1287,12 +1290,12 @@ function BrightProfile({
             <Ionicons
               name={chat.type === 'channel' ? 'megaphone-outline' : chat.type === 'group' ? 'people-outline' : 'chatbubble-outline'}
               size={17}
-              color="rgba(255,255,255,0.7)"
+              color={theme.textSecondary}
             />
-            <Text style={{ color: '#FFFFFF', fontSize: 15, flex: 1 }} numberOfLines={1}>
+            <Text style={{ color: theme.textPrimary, fontSize: 15, flex: 1 }} numberOfLines={1}>
               {chat.title}
             </Text>
-            <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.4)" />
+            <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
           </PressableScale>
         ))}
       </Glass>
@@ -1302,19 +1305,19 @@ function BrightProfile({
   const achievements = badges.length ? (
     <View>
       <Pressable onPress={() => setBadgesOpen((v) => !v)} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        <Text style={styles.pSection}>Достижения · {badges.length}</Text>
+        <Text style={[styles.pSection, { color: theme.textSecondary }]}>Достижения · {badges.length}</Text>
         <Ionicons name={badgesOpen ? 'chevron-up' : 'chevron-down'} size={14} color={theme.accent} />
       </Pressable>
       {badgesOpen ? (
         <Glass radius={26} fill={glassFill} style={{ padding: 12, flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           {badges.map((badge) => (
-            <View key={badge.key} style={[styles.bBadge, { borderColor: 'rgba(255,255,255,0.14)' }]}>
+            <View key={badge.key} style={[styles.bBadge, { borderColor: theme.line }]}>
               <View style={[styles.bBadgeIcon, { backgroundColor: badge.soft, borderColor: badge.color }]}>
                 <Ionicons name={badge.icon} size={15} color={badge.color} />
               </View>
               <View style={{ minWidth: 0, flex: 1 }}>
-                <Text style={{ color: '#FFFFFF', fontSize: 12.5, fontWeight: '700' }} numberOfLines={1}>{badge.title}</Text>
-                <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 10.5 }} numberOfLines={1}>{badge.description}</Text>
+                <Text style={{ color: theme.textPrimary, fontSize: 12.5, fontWeight: '700' }} numberOfLines={1}>{badge.title}</Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 10.5 }} numberOfLines={1}>{badge.description}</Text>
               </View>
             </View>
           ))}
@@ -1325,23 +1328,23 @@ function BrightProfile({
 
   return (
     <View style={styles.bPage}>
-      <View style={[styles.bInner, desktop ? styles.bInnerDesktop : null]}>
-        <View style={styles.pTopBar}>
+      <View style={[styles.bInner, desktop ? styles.bInnerDesktop : { paddingTop: topPad }]}>
+        <View style={[styles.pTopBar, { top: desktop ? 6 : topPad }]}>
           <PressableScale onPress={onBack} accessibilityRole="button" accessibilityLabel="Назад" hitSlop={10}>
             <Glass radius={26} fill={glassFill} style={styles.pRound}>
-              <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
+              <Ionicons name="chevron-back" size={24} color={theme.textPrimary} />
             </Glass>
           </PressableScale>
           {isSelf && onEditProfile ? (
             <PressableScale onPress={onEditProfile} accessibilityRole="button" accessibilityLabel="Редактировать профиль" hitSlop={10}>
               <Glass radius={26} fill={glassFill} style={styles.pEditBtn}>
-                <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '800' }}>Изм.</Text>
+                <Text style={{ color: theme.textPrimary, fontSize: 20, fontWeight: '800' }}>Изм.</Text>
               </Glass>
             </PressableScale>
           ) : (
             <PressableScale onPress={onShare} accessibilityRole="button" accessibilityLabel="Поделиться профилем" hitSlop={10}>
               <Glass radius={26} fill={glassFill} style={styles.pRound}>
-                <Ionicons name="share-outline" size={22} color="#FFFFFF" />
+                <Ionicons name="share-outline" size={22} color={theme.textPrimary} />
               </Glass>
             </PressableScale>
           )}
@@ -1423,7 +1426,7 @@ const styles = StyleSheet.create({
   mBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 8, flexGrow: 1, flexBasis: '46%', minWidth: 140 },
   mBadgeIcon: { width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   bPage: { flexGrow: 1, minHeight: '100%', backgroundColor: 'transparent' },
-  pTopBar: { position: 'absolute', top: 6, left: 14, right: 14, zIndex: 5, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  pTopBar: { position: 'absolute', top: 0, left: 14, right: 14, zIndex: 5, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   pTiles: { flexDirection: 'row', gap: 10, marginTop: 16, width: '100%' },
   pTile: { flex: 1, aspectRatio: 1.02, maxHeight: 112, borderRadius: 24, backgroundColor: 'rgba(30,26,20,0.82)', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 4 },
   pTileText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },

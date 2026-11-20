@@ -56,7 +56,11 @@ export function Wallpaper({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const wideShell = Platform.OS === 'web' && width >= 900;
-  const bleedStyle = bleed && !wideShell ? { left: -16, right: -16, top: -((insets.top || 12) + 12), bottom: 0 } : null;
+  // На смартфоне оболочка уже не даёт отступов этим экранам — фон и так во весь экран.
+  void bleed;
+  void insets;
+  void wideShell;
+  const bleedStyle = null;
   const theme = useTheme();
   const loaded = useEncryptedImage(image);
   const uri = previewUri ?? loaded;

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kinto",
     "slug": "klinto",
-    "version": "1.10.79",
+    "version": "1.10.80",
     "orientation": "portrait",
     "scheme": "klinto",
     "userInterfaceStyle": "dark",
@@ -68,12 +68,18 @@
         {
           "microphonePermission": "Kinto использует микрофон для записи голосовых сообщений."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Kinto открывает галерею, чтобы отправлять фото и видео и ставить фон чатов и профиля."
+        }
       ]
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "11079",
+      "buildNumber": "11080",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
@@ -87,12 +93,13 @@
           "bluetooth-central"
         ],
         "FirebaseAppDelegateProxyEnabled": true,
-        "NSMicrophoneUsageDescription": "Kinto использует микрофон для записи голосовых сообщений."
+        "NSMicrophoneUsageDescription": "Kinto использует микрофон для записи голосовых сообщений.",
+        "NSPhotoLibraryUsageDescription": "Kinto открывает галерею, чтобы отправлять фото и видео и ставить фон чатов и профиля."
       }
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 11079,
+      "versionCode": 11080,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {

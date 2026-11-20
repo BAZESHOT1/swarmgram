@@ -2123,9 +2123,9 @@ export default function ChatScreen() {
             style={[
               styles.input,
               {
-                backgroundColor: 'rgba(255,255,255,0.10)',
+                backgroundColor: theme.dark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.75)',
                 color: theme.textPrimary,
-                borderColor: editing ? theme.accent : 'rgba(255,255,255,0.10)',
+                borderColor: editing ? theme.accent : theme.dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)',
                 maxWidth: 860,
                 height: inputHeight,
               },
@@ -2156,9 +2156,9 @@ export default function ChatScreen() {
               ]}
             >
               {editing ? (
-                <Ionicons name="checkmark" size={21} color={theme.onAccent} />
+                <Ionicons name="checkmark" size={25} color={theme.onAccent} />
               ) : (
-                <Ionicons name="paper-plane" size={18} color={theme.onAccent} />
+                <Ionicons name="arrow-up" size={26} color={theme.onAccent} />
               )}
             </Pressable>
           </Animated.View>
@@ -2169,6 +2169,7 @@ export default function ChatScreen() {
           visible={attachOpen}
           onClose={() => setAttachOpen(false)}
           onPicked={onAttach}
+          onError={(message) => pushToast({ kind: 'error', message })}
         />
 
         <ChatMenu
@@ -2375,7 +2376,7 @@ const styles = StyleSheet.create({
   },
   input: { flex: 1, borderWidth: 1, borderRadius: 26, paddingHorizontal: 18, paddingVertical: 12, minHeight: 52, textAlignVertical: 'top', fontSize: 17 },
   attach: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center' },
-  send: { width: 42, height: 42, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  send: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
   dropOverlay: {
     zIndex: 80,
     backgroundColor: 'rgba(5,9,15,0.55)',
