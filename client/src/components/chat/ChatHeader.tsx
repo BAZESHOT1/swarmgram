@@ -185,7 +185,8 @@ export function ChatHeader({
       style={[
         styles.header,
         {
-          paddingTop: Platform.OS === 'web' ? 10 : insets.top + 6,
+          // Safe-area сверху уже учитывает AppShell — здесь только небольшой зазор.
+          paddingTop: 2,
           paddingHorizontal: wide ? 16 : 12,
           opacity: enter,
           transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],
@@ -234,15 +235,11 @@ export function ChatHeader({
           </Glass>
         </PressableScale>
 
-        <PressableScale pressedScale={0.9} onPress={onMenu} accessibilityRole="button" accessibilityLabel="Меню чата" hitSlop={6}>
-          <Glass radius={wide ? 23 : 25} fill={GLASS_FILL_BUTTON} style={[styles.round, { width: wide ? 46 : 50, height: wide ? 46 : 50 }]}>
-            <Ionicons name="ellipsis-horizontal" size={20} color={theme.textPrimary} />
-          </Glass>
-        </PressableScale>
 
         <PressableScale
           pressedScale={0.92}
           onPress={onAvatarPress ?? onOpenInfo}
+          onLongPress={onMenu}
           accessibilityRole="button"
           accessibilityLabel={chatType === 'direct' ? 'Профиль собеседника' : 'Информация о чате'}
         >
@@ -267,7 +264,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 12, paddingBottom: 8, zIndex: 5 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   round: { width: 56, height: 56, alignItems: 'center', justifyContent: 'center' },
-  pill: { height: 58, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18 },
+  pill: { height: 58, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 18, alignSelf: 'stretch' },
   dotWrap: { width: 9, height: 9, alignItems: 'center', justifyContent: 'center' },
   dot: { width: 7, height: 7, borderRadius: 4 },
   pulseRing: { position: 'absolute', width: 7, height: 7, borderRadius: 4 },

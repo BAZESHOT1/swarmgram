@@ -2,7 +2,7 @@
   "expo": {
     "name": "Kinto",
     "slug": "klinto",
-    "version": "1.10.76",
+    "version": "1.10.77",
     "orientation": "portrait",
     "scheme": "klinto",
     "userInterfaceStyle": "dark",
@@ -55,17 +55,25 @@
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": true,
-          "modes": ["central"],
+          "modes": [
+            "central"
+          ],
           "bluetoothAlwaysPermission": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети."
         }
       ],
       "expo-sqlite",
-      "expo-build-properties"
+      "expo-build-properties",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Kinto использует микрофон для записи голосовых сообщений."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pink-project.kintoapp",
-      "buildNumber": "11076",
+      "buildNumber": "11077",
       "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "development"
@@ -73,13 +81,18 @@
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Kinto подключается к модулям связи по Bluetooth для работы mesh-сети.",
         "NSBluetoothPeripheralUsageDescription": "Kinto использует Bluetooth для связи с носимыми модулями.",
-        "UIBackgroundModes": ["fetch", "remote-notification", "bluetooth-central"],
-        "FirebaseAppDelegateProxyEnabled": true
+        "UIBackgroundModes": [
+          "fetch",
+          "remote-notification",
+          "bluetooth-central"
+        ],
+        "FirebaseAppDelegateProxyEnabled": true,
+        "NSMicrophoneUsageDescription": "Kinto использует микрофон для записи голосовых сообщений."
       }
     },
     "android": {
       "package": "com.pink_project.kintoapp",
-      "versionCode": 11076,
+      "versionCode": 11077,
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
@@ -96,7 +109,8 @@
         "BLUETOOTH_ADMIN",
         "BLUETOOTH_SCAN",
         "BLUETOOTH_CONNECT",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "extra": {

@@ -1144,7 +1144,23 @@ export default function ChatScreen() {
     }).start();
   }
 
+  /** Принудительная очистка: автозамена (T9) на iOS/Android может дописать исправленное слово уже
+   * после clear(), поэтому повторяем очистку после того, как клавиатура применит правку. */
+  function hardClearInput() {
+    setText('');
+    inputRef.current?.clear();
+    setInputHeight(42);
+    for (const ms of [30, 120, 300]) {
+      setTimeout(() => {
+        inputRef.current?.clear();
+        setText('');
+      }, ms);
+    }
+  }
+  const body0Ref = useRef('');
+
   async function onSend() {
+    body0Ref.current = text.trim();
     const body = text.trim();
     // Текст не блокируем на время чужой медиа-загрузки: оптимистичное
     // сообщение уходит в кэш сразу, а транспорт решает HTTP/mesh.
@@ -1187,9 +1203,7 @@ export default function ChatScreen() {
     const clientId = makeClientId();
     const replyId = replyTo?.id;
     const postAsChannel = isChannel ? true : asChannel && canPostAsChannel;
-    setText('');
-    inputRef.current?.clear();
-    setInputHeight(42);
+    hardClearInput();
     setReplyTo(null);
     atBottomRef.current = true;
     setAtBottom(true);
@@ -2124,6 +2138,7 @@ export default function ChatScreen() {
               disabled={!canCompose}
             />
           ) : null}
+          {text.trim() || editing ? (
           <Animated.View style={{ transform: [{ scale: sendScale }] }}>
             <Pressable
               onPress={() => void onSend()}
@@ -2147,6 +2162,7 @@ export default function ChatScreen() {
               )}
             </Pressable>
           </Animated.View>
+          ) : null}
         </View>
 
         <AttachmentMenu
