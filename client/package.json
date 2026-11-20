@@ -1,6 +1,6 @@
 {
   "name": "@klinto/client",
-  "version": "1.10.71",
+  "version": "1.10.72",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {

@@ -26,6 +26,7 @@ async function mirrorToKmesh(input: {
   nonce: string;
   objectId: string;
   messageId: string;
+  createdAt?: string;
   senderUserId: string;
   senderNodeId: number;
 }): Promise<void> {
@@ -62,6 +63,7 @@ async function mirrorToKmesh(input: {
         nonceB64: input.nonce,
         ciphertextB64: ciphertext.toString('base64'),
         messageId: input.messageId,
+        createdAt: input.createdAt,
         excludeUserId: input.senderUserId,
         srcNodeId: input.senderNodeId,
       });
@@ -130,11 +132,15 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       pushText?: string;
     };
 
-    // Публикация от имени канала: только в каналах и только при праве publish.
-    const asChannel = body.asChannel === true;
-    if (asChannel) {
-      if (chat.type !== 'channel') throw forbidden('as_channel_not_allowed');
+    // Канал: писать может только владелец/админ с правом publish, и всегда
+    // от имени канала. В сообществе (группе) публикация от имени сообщества
+    // остаётся переключаемой, в личном чате — запрещена.
+    let asChannel = body.asChannel === true;
+    if (chat.type === 'channel') {
       if (!(await can(chatId, me, 'publish'))) throw forbidden('no_publish_permission');
+      asChannel = true;
+    } else if (asChannel && chat.type !== 'group') {
+      throw forbidden('as_channel_not_allowed');
     }
 
     const objectId = String(body.objectId ?? '');
@@ -253,6 +259,7 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
           nonce,
           objectId,
           messageId: id,
+          createdAt: row!.created_at,
           senderUserId: me,
           senderNodeId: senderNode ? Number(senderNode.node_id) : 0,
         });
@@ -302,6 +309,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
       cond = ' AND m.seq > $3';
       params.push(after);
     }
+    const meParam = params.length + 1;
+    params.push(me);
 
     const rows = await query<MsgRow>(
       `SELECT m.id, m.seq, m.kind, m.header, m.object_id, o.size_bytes, m.reply_to, m.created_at,
@@ -316,6 +325,8 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
          JOIN users u ON u.id = m.sender_user_id
          LEFT JOIN objects o ON o.id = m.object_id
         WHERE m.chat_id = $1${cond}
+          AND NOT EXISTS (SELECT 1 FROM message_hidden h
+                           WHERE h.message_id = m.id AND h.user_id = $${meParam})
         ORDER BY m.seq DESC LIMIT $2`,
       params,
     );
@@ -623,17 +634,32 @@ const messageRoutes: FastifyPluginAsync = async (app) => {
   /* ------------------------------------------------------------ удаление - */
   app.delete('/chats/:id/messages/:messageId', { onRequest: [requireAuth()] }, async (req, reply) => {
     const { id: chatId, messageId } = req.params as { id: string; messageId: string };
+    const me = req.auth!.userId;
+    const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [chatId, me]);
+    if (!member) throw forbidden('not_a_member');
     const msg = await one<{ sender_user_id: string; object_id: string | null; kind: string }>(
       'SELECT sender_user_id, object_id, kind FROM messages WHERE id = $1 AND chat_id = $2',
       [messageId, chatId],
     );
     if (!msg) throw notFound('message');
-    if (msg.sender_user_id !== req.auth!.userId) {
-      // Служебные сообщения может удалять также тот, кому это позволяет роль чата.
-      if (msg.kind !== 'system' || !(await can(chatId, req.auth!.userId, 'deleteMessages'))) {
-        throw forbidden('not_your_message');
-      }
+    const chat = await one<{ type: string }>('SELECT type FROM chats WHERE id = $1', [chatId]);
+    // В каналах удаление всегда «для всех»; остальное — по запросу.
+    let scope = String((req.query as { scope?: string }).scope ?? 'all') === 'me' ? 'me' : 'all';
+    if (chat?.type === 'channel') scope = 'all';
+
+    if (scope === 'me') {
+      await query(
+        `INSERT INTO message_hidden (message_id, user_id) VALUES ($1,$2)
+         ON CONFLICT DO NOTHING`,
+        [messageId, me],
+      );
+      // Другие устройства этого же пользователя тоже скрывают сообщение.
+      publish(me, { type: 'message_deleted', chatId, messageId, scope: 'me' });
+      return reply.send({ ok: true, scope: 'me' });
     }
+
+    const canDeleteAny = await can(chatId, me, 'deleteMessages').catch(() => false);
+    if (msg.sender_user_id !== me && !canDeleteAny) throw forbidden('not_your_message');
 
     await query('DELETE FROM messages WHERE id = $1', [messageId]);
     if (msg.object_id) {

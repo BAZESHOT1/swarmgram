@@ -37,6 +37,8 @@ import { ReplyBar } from '../../../src/components/chat/ReplyBar';
 import { TypingIndicator } from '../../../src/components/chat/TypingIndicator';
 import { ScrollToBottom } from '../../../src/components/chat/ScrollToBottom';
 import { findCachedChat, getCachedMessages, loadCachedMessages, saveMessages } from '../../../src/data/cache';
+import { kmeshV1List, kmeshV1Remove } from '../../../src/data/db';
+import { cancelMeshText } from '../../../src/modules/meshLink';
 import { crc16 } from '../../../src/kmesh/v1/protocol';
 import { sendKmeshReadReceipt } from '../../../src/kmesh/v1/runtime';
 import { MessageActionSheet } from '../../../src/components/chat/MessageActionSheet';
@@ -340,7 +342,11 @@ export default function ChatScreen() {
         return !seen.has(key) && !seen.has(`i:${m.id}`) && !(m.clientId && seen.has(`c:${m.clientId}`));
       })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    return [...out, ...pending];
+    // Сортируем по времени отправки: сообщение из kMesh могло прийти позже,
+    // но должно стоять в ленте на своём месте.
+    return [...out, ...pending].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
   }, [older, data, optimistic]);
 
   /**
@@ -576,8 +582,6 @@ export default function ChatScreen() {
   const secret = isE2e;
   const pinned = (chat as ChatExt | null)?.pinnedMessage ?? null;
   /** Серверный чат не требует локального ключа; E2E — требует. */
-  const canCompose = Boolean(chat) && (!isE2e || Boolean(rawKey));
-
   /** Роли участников: цвет имени в пузыре и права на посты от имени канала. */
   const rolesByUsername = useMemo(() => {
     const map = new Map<string, string>();
@@ -592,12 +596,18 @@ export default function ChatScreen() {
 
   /** Owner/admin/mod с правом publish могут писать в канал от его имени. */
   const canPostAsChannel = useMemo(() => {
-    if (!chat || chat.type !== 'channel') return false;
+    if (!chat) return false;
+    // В сообществе публикация «от имени сообщества» — переключаемая опция.
+    if (chat.type === 'group') return true;
+    if (chat.type !== 'channel') return false;
     if (myRole === 'owner') return true;
     if (myRole === 'admin') return chat.permissions?.admin?.publish !== false;
     if (myRole === 'moderator') return Boolean(chat.permissions?.moderator?.publish);
     return false;
   }, [chat, myRole]);
+
+  /** В канале писать можно только владельцу/админу с правом publish. */
+  const canCompose = Boolean(chat) && (!isE2e || Boolean(rawKey)) && (!isChannel || canPostAsChannel);
 
   // Для stable onViewableItemsChanged (ref, чтобы не пересоздавать колбэк).
   const isChannelRef = useRef(isChannel);
@@ -1172,7 +1182,7 @@ export default function ChatScreen() {
     /* --- текст: optimistic update через useMutation --- */
     const clientId = makeClientId();
     const replyId = replyTo?.id;
-    const postAsChannel = asChannel && canPostAsChannel;
+    const postAsChannel = isChannel ? true : asChannel && canPostAsChannel;
     setText('');
     inputRef.current?.clear();
     setInputHeight(42);
@@ -1265,7 +1275,7 @@ export default function ChatScreen() {
 
   function startMediaUpload(file: PickedFile, replyId?: string) {
     const clientId = makeClientId();
-    const postAsChannel = asChannel && canPostAsChannel;
+    const postAsChannel = isChannel ? true : asChannel && canPostAsChannel;
     const optimisticMessage: ViewMessage = {
       id: clientId,
       clientId,
@@ -1483,21 +1493,78 @@ export default function ChatScreen() {
     }
   }
 
+  function removeLocalMessage(m: ViewMessage) {
+    const key = m.clientId ?? m.id;
+    removeOptimistic(key);
+    removeOptimistic(m.id);
+    qc.setQueryData<any[]>(['messages', chatId], (prev) =>
+      Array.isArray(prev) ? prev.filter((row) => row?.id !== m.id && row?.clientId !== m.clientId) : prev,
+    );
+    void (async () => {
+      const cached = await loadCachedMessages(chatId).catch(() => null);
+      if (Array.isArray(cached)) {
+        saveMessages(chatId, cached.filter((row: any) => row?.id !== m.id && row?.clientId !== m.clientId));
+      }
+    })();
+  }
+
+  async function cancelPendingSend(m: ViewMessage) {
+    const item = (await kmeshV1List().catch(() => [])).find(
+      (row) => (m.clientId && row.clientId === m.clientId) || (!m.clientId && row.msgUuid === m.id),
+    );
+    cancelMeshText({ clientId: m.clientId, chatId, text: m.text });
+    if (item) await kmeshV1Remove(item.msgUuid).catch(() => undefined);
+    const upload = m.clientId ? uploadsRef.current.get(m.clientId) : undefined;
+    upload?.controller.abort();
+    if (m.clientId) uploadsRef.current.delete(m.clientId);
+    removeLocalMessage(m);
+    pushToast({ kind: 'info', message: 'Отправка отменена' });
+  }
+
   function confirmDelete(m: ViewMessage) {
     setSheetMessage(null);
-    Alert.alert('Удалить сообщение?', 'Шифротекст будет удалён с узлов сети.', [
-      { text: 'Отмена', style: 'cancel' },
-      {
-        text: 'Удалить',
+    if (m.pending || m.failed || String(m.id).startsWith('loc-')) {
+      void cancelPendingSend(m);
+      return;
+    }
+    const ownerOrAdmin = chat?.myRole === 'owner' || chat?.myRole === 'admin';
+    const canDeleteAll = m.mine || ownerOrAdmin;
+    if (chat?.type === 'channel') {
+      if (!canDeleteAll) {
+        pushToast({ kind: 'error', message: 'Удалять сообщения в канале может только владелец или администратор.' });
+        return;
+      }
+      void deleteMsg
+        .mutateAsync({ messageId: m.id, scope: 'all' })
+        .then(() => chatQuery.refetch())
+        .catch((e: unknown) => pushToast({ kind: 'error', message: humanError(e) }));
+      return;
+    }
+    const buttons: Array<{ text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }> = [];
+    if (canDeleteAll) {
+      buttons.push({
+        text: 'Удалить у всех',
         style: 'destructive',
         onPress: () => {
           void deleteMsg
-            .mutateAsync(m.id)
+            .mutateAsync({ messageId: m.id, scope: 'all' })
             .then(() => chatQuery.refetch())
             .catch((e: unknown) => pushToast({ kind: 'error', message: humanError(e) }));
         },
+      });
+    }
+    buttons.push({
+      text: 'Удалить у себя',
+      style: 'destructive',
+      onPress: () => {
+        removeLocalMessage(m);
+        void deleteMsg
+          .mutateAsync({ messageId: m.id, scope: 'me' })
+          .catch(() => undefined);
       },
-    ]);
+    });
+    buttons.push({ text: 'Отмена', style: 'cancel' });
+    Alert.alert('Удалить сообщение?', 'Выберите, где удалить.', buttons);
   }
 
   async function createSecretChat() {

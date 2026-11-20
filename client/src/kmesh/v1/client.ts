@@ -107,6 +107,7 @@ export interface KMeshV1ClientOptions {
     nonce: string;
     ciphertext: string;
     srcNodeId: number;
+    createdAt?: number;
   }) => void;
   onStatus?: (event: KMeshV1StatusEvent) => void;
   onInfo?: (info: { nodeId: number; role: number; mtu: number; queue: number; gateway: boolean }) => void;
@@ -353,6 +354,7 @@ export class KMeshV1Client {
     clientId?: string;
   }): Promise<{ msgUuid: string; state: KMeshV1SyncState }> {
     const t0 = Date.now();
+    const createdAtSec = Math.floor(t0 / 1000);
     const keys = await storage.loadKeys();
     if (!keys) throw new Error('device_keys_missing');
     if (!this.nodeId) throw new Error('mesh_node_not_connected');
@@ -540,6 +542,7 @@ export class KMeshV1Client {
       kind: keyKind === 'pair' ? 'text:pair' : 'text',
       nonce: nonceBytes,
       ciphertext: ciphertextBytes,
+      timestamp: createdAtSec,
     });
     const flags =
       (keyKind === 'pair'
@@ -608,6 +611,7 @@ export class KMeshV1Client {
         kind: 'text',
         nonce: b64ToBytes(sealed.nonce),
         ciphertext: b64ToBytes(sealed.ciphertext),
+        timestamp: Math.floor((Date.parse(item.createdAt) || Date.now()) / 1000),
       });
       const up = encodeRpcUp(item.peerNodeId || ANY_GATEWAY_ID,
         PacketFlag.TO_INTERNET | PacketFlag.NEED_CLOUD_ARCHIVE | PacketFlag.NEED_ACK,
@@ -689,6 +693,7 @@ export class KMeshV1Client {
           kind: 'text',
           nonce: b64ToBytes(item.nonce),
           ciphertext: b64ToBytes(item.ciphertextB64),
+          timestamp: Math.floor((Date.parse(item.createdAt) || Date.now()) / 1000),
         });
         const up = encodeRpcUp(
           ANY_GATEWAY_ID,
@@ -859,6 +864,7 @@ export class KMeshV1Client {
                 nonce: bytesToB64(envelope.nonce),
                 ciphertext: bytesToB64(envelope.ciphertext),
                 srcNodeId: packet.srcId,
+                createdAt: envelope.createdAt,
               });
             }
             break;

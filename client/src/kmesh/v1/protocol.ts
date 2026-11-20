@@ -280,9 +280,10 @@ export function encodeEnvelopeRpc(input: {
   kind: string;
   nonce: Uint8Array;
   ciphertext: Uint8Array;
+  timestamp?: number;
 }): Uint8Array {
   const nonce = input.nonce.subarray(0, 12);
-  const out = new Uint8Array(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16);
+  const out = new Uint8Array(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16 + 4);
   out[0] = RpcOp.SEND_ENVELOPE;
   out[1] = 0;
   new DataView(out.buffer).setUint16(2, input.chatRef & 0xffff, true);
@@ -292,6 +293,10 @@ export function encodeEnvelopeRpc(input: {
   new DataView(out.buffer).setUint16(6 + nonce.length, input.ciphertext.length, true);
   out.set(input.ciphertext, 8 + nonce.length);
   out.set(uuidToBytes(input.chatId), 8 + nonce.length + input.ciphertext.length);
+  // Время отправки (Unix seconds): Hub сохраняет его как created_at, чтобы
+  // сообщение не «переезжало» на время прихода в Hub.
+  new DataView(out.buffer).setUint32(8 + nonce.length + input.ciphertext.length + 16,
+    (input.timestamp ?? Math.floor(Date.now() / 1000)) >>> 0, true);
   return out;
 }
 
@@ -345,6 +350,7 @@ export function decodeEnvelopeRpc(payload: Uint8Array): {
   kind: string;
   nonce: Uint8Array;
   ciphertext: Uint8Array;
+  createdAt?: number;
 } | null {
   if (payload.length < 8 + 16 || payload[0] !== RpcOp.SEND_ENVELOPE) return null;
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -356,12 +362,14 @@ export function decodeEnvelopeRpc(payload: Uint8Array): {
   const cipherStart = 8 + nonceLen;
   const chatStart = cipherStart + cipherLen;
   if (chatStart + 16 > payload.length) return null;
+  const createdAt = chatStart + 20 <= payload.length ? view.getUint32(chatStart + 16, true) : undefined;
   return {
     chatRef,
     kind,
     nonce: payload.slice(6, 6 + nonceLen),
     ciphertext: payload.slice(cipherStart, chatStart),
     chatId: bytesToUuid(payload.subarray(chatStart, chatStart + 16)),
+    ...(createdAt ? { createdAt } : {}),
   };
 }
 

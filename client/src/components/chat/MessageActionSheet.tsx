@@ -88,9 +88,12 @@ export function MessageActionSheet({
             {message.mine ? (
               <Action icon={pinned ? 'pin-outline' : 'pin'} label={pinned ? 'Открепить' : 'Закрепить'} onPress={onPin} />
             ) : null}
-            {message.mine || message.kind === 'system' ? (
-              <Action icon="trash-outline" label="Удалить" danger onPress={onDelete} />
-            ) : null}
+            <Action
+              icon={message.pending || message.failed ? 'close-circle-outline' : 'trash-outline'}
+              label={message.pending || message.failed ? 'Отменить отправку' : 'Удалить'}
+              danger
+              onPress={onDelete}
+            />
           </MotiView>
         ) : null}
       </View>

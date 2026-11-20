@@ -346,6 +346,8 @@ export interface SecureEnvelope {
   kind: string;
   nonce: Buffer;
   ciphertext: Buffer;
+  /** Время отправки (Unix seconds), необязательно для старых прошивок. */
+  createdAt?: number;
 }
 
 /** Собрать SEND_ENVELOPE RPC (обратная операция к decodeEnvelopeRpc). */
@@ -355,10 +357,11 @@ export function encodeEnvelopeRpc(input: {
   kind: string;
   nonce: Buffer;
   ciphertext: Buffer;
+  timestamp?: number;
 }): Buffer {
   const nonce = Buffer.from(input.nonce.subarray(0, 12));
   const uuid = Buffer.from(input.chatId.replace(/[^0-9a-f]/gi, '').padEnd(32, '0').slice(0, 32), 'hex');
-  const out = Buffer.alloc(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16);
+  const out = Buffer.alloc(4 + 1 + 1 + nonce.length + 2 + input.ciphertext.length + 16 + 4);
   out[0] = RpcOp.SEND_ENVELOPE;
   out[1] = 0;
   out.writeUInt16LE(input.chatRef & 0xffff, 2);
@@ -368,6 +371,8 @@ export function encodeEnvelopeRpc(input: {
   out.writeUInt16LE(input.ciphertext.length, 6 + nonce.length);
   input.ciphertext.copy(out, 8 + nonce.length);
   uuid.copy(out, 8 + nonce.length + input.ciphertext.length);
+  out.writeUInt32LE((input.timestamp ?? Math.floor(Date.now() / 1000)) >>> 0,
+    8 + nonce.length + input.ciphertext.length + 16);
   return out;
 }
 
@@ -407,12 +412,14 @@ export function decodeEnvelopeRpc(payload: Buffer): SecureEnvelope | null {
   const chatStart = cipherStart + cipherLen;
   if (chatStart + 16 > payload.length) return null;
   const hex = payload.subarray(chatStart, chatStart + 16).toString('hex');
+  const createdAt = chatStart + 20 <= payload.length ? payload.readUInt32LE(chatStart + 16) : undefined;
   return {
     chatRef,
     kind,
     nonce: payload.subarray(6, 6 + nonceLen),
     ciphertext: payload.subarray(cipherStart, chatStart),
     chatId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+    ...(createdAt ? { createdAt } : {}),
   };
 }
 

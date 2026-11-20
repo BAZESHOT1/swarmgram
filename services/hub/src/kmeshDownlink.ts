@@ -42,6 +42,8 @@ export interface EnvelopeDownlinkInput {
   ciphertextB64: string;
   /** Сообщение в БД: получаем/запоминаем msg_uuid для квитанций. */
   messageId?: string;
+  /** Время отправки (ISO) для сохранения исходного created_at. */
+  createdAt?: string;
   /** Кому не отправлять (автор сообщения). */
   excludeUserId: string;
   srcNodeId: number;
@@ -80,6 +82,9 @@ export async function queueEnvelopeDownlink(input: EnvelopeDownlinkInput): Promi
       kind: input.kind,
       nonce,
       ciphertext,
+      ...(input.createdAt
+        ? { timestamp: Math.floor(new Date(input.createdAt).getTime() / 1000) }
+        : {}),
     });
     // Пакет целиком должен влезть в один кадр KMesh (payload <= 255).
     if (rpc.length + 6 > 255) continue;

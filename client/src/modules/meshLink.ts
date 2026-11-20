@@ -224,6 +224,20 @@ async function sendTextDirect(chatId: string, text: string, clientId?: string): 
   }
 }
 
+/** Отменить ещё не отправленный текст (пользователь удалил сообщение из очереди). */
+export function cancelMeshText(item: { clientId?: string; chatId?: string; text?: string }): void {
+  for (let i = pendingV1.length - 1; i >= 0; i -= 1) {
+    const entry = pendingV1[i];
+    const same =
+      (item.clientId && entry.clientId === item.clientId) ||
+      (!item.clientId && item.chatId && entry.chatId === item.chatId && entry.text === item.text);
+    if (!same) continue;
+    pendingV1.splice(i, 1);
+    if (entry.clientId && entry.clientId === activeClientId) activeClientId = undefined;
+  }
+  emitQueue();
+}
+
 /** Отправить конверт через модуль. false — модуль не подключён или ошибка. */
 export async function sendViaMesh(chatId: string, envelope: unknown): Promise<boolean> {
   const item = (envelope ?? {}) as { text?: unknown; kind?: unknown; clientId?: unknown };

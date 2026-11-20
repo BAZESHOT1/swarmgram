@@ -643,7 +643,9 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   /* это обычный текст */
                 }
               }
-              const createdAt = new Date().toISOString();
+              const createdAt = message.createdAt
+                ? new Date(message.createdAt * 1000).toISOString()
+                : new Date().toISOString();
               const entry = {
                 id: `mesh-${message.msgUuid}`,
                 msgUuid: message.msgUuid,
@@ -1481,7 +1483,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       void v1ClientRef.current?.syncOutbox().catch(() => undefined);
       void flushRelayQueue().catch(() => undefined);
     }, 30_000);
-    return () => clearInterval(timer);
+    // Интернет появился во время отправки через kMesh — сразу выгружаем
+    // очередь, не ждём 30-секундного тика.
+    const unsub = useStore.subscribe((state, prev) => {
+      if (!prev.transportOnline && state.transportOnline) {
+        void v1ClientRef.current?.syncOutbox().catch(() => undefined);
+        void flushRelayQueue().catch(() => undefined);
+      }
+    });
+    return () => {
+      clearInterval(timer);
+      unsub();
+    };
   }, []);
 
   /* Страховка от «connect/close»-цикла: если GATT уже открыт и модуль прислал

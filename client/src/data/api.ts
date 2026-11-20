@@ -1323,8 +1323,8 @@ export const api = {
   markRead: (chatId: string, seq: number) =>
     req(`/v1/chats/${chatId}/read`, { method: 'POST', body: JSON.stringify({ seq }) }),
 
-  deleteMessage: (chatId: string, messageId: string) =>
-    req(`/v1/chats/${chatId}/messages/${messageId}`, { method: 'DELETE' }),
+  deleteMessage: (chatId: string, messageId: string, scope: 'me' | 'all' = 'all') =>
+    req(`/v1/chats/${chatId}/messages/${messageId}?scope=${scope}`, { method: 'DELETE' }),
 
   /* ---- каналы ---- */
   listChannels: (search = '') =>

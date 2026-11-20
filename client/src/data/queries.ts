@@ -802,8 +802,9 @@ export function useRevokeDevice() {
 export function useDeleteMessage(chatId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageId: string) => api.api.deleteMessage(chatId, messageId),
-    onMutate: async (messageId) => {
+    mutationFn: (input: { messageId: string; scope?: 'me' | 'all' }) =>
+      api.api.deleteMessage(chatId, input.messageId, input.scope ?? 'all'),
+    onMutate: async ({ messageId }) => {
       await qc.cancelQueries({ queryKey: ['messages', chatId] });
       const previous = qc.getQueryData<ViewMessage[]>(['messages', chatId]);
       qc.setQueryData<ViewMessage[]>(['messages', chatId], (prev) =>

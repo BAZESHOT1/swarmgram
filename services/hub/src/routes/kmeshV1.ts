@@ -671,13 +671,18 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       }>(
         `SELECT c.id::text, c.title, m.msg_uuid, m.created_at::text,
                 (SELECT count(*)::text FROM messages x
-                  WHERE x.chat_id = c.id AND x.seq > cm.last_read_seq) AS unread,
+                  WHERE x.chat_id = c.id AND x.seq > cm.last_read_seq
+                    AND NOT EXISTS (SELECT 1 FROM message_hidden h
+                                     WHERE h.message_id = x.id AND h.user_id = cm.user_id)) AS unread,
                 COALESCE(m.seq, 0)::text AS last_seq, m.header, m.object_id
            FROM chat_members cm
            JOIN chats c ON c.id = cm.chat_id
            LEFT JOIN LATERAL (
              SELECT msg_uuid, created_at, seq, header, object_id FROM messages
-              WHERE chat_id = c.id ORDER BY seq DESC LIMIT 1
+              WHERE chat_id = c.id
+                AND NOT EXISTS (SELECT 1 FROM message_hidden h
+                                 WHERE h.message_id = messages.id AND h.user_id = cm.user_id)
+              ORDER BY seq DESC LIMIT 1
            ) m ON true
           WHERE cm.user_id = $1
           ORDER BY COALESCE(m.created_at, c.created_at) DESC
@@ -790,13 +795,16 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       nonceB64,
       nonce: nonceB64,
     });
+    const created = envelope.createdAt && envelope.createdAt > 0
+      ? new Date(envelope.createdAt * 1000)
+      : new Date();
     const inserted = await one<{ seq: number; id: string; created_at: string }>(
       `INSERT INTO messages
-         (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid)
-       VALUES ($1,$2,NULL,$3,$4,$5)
+         (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid, created_at)
+       VALUES ($1,$2,NULL,$3,$4,$5,$6)
        ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL DO NOTHING
        RETURNING seq, id, created_at`,
-      [envelope.chatId, senderId, envelope.kind, header, uuid],
+      [envelope.chatId, senderId, envelope.kind, header, uuid, created],
     );
     const row = inserted ?? await one<{ seq: number; id: string; created_at: string }>(
       'SELECT seq, id, created_at FROM messages WHERE chat_id = $1 AND msg_uuid = $2',
@@ -2720,13 +2728,13 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
 
     const inserted = await one<{ seq: number; id: string; created_at: string }>(
       `INSERT INTO messages
-         (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid)
-       VALUES ($1,$2,$3,$4,$5,$6)
+         (chat_id, sender_user_id, sender_device_id, kind, header, msg_uuid, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (chat_id, msg_uuid) WHERE msg_uuid IS NOT NULL
        DO UPDATE SET header = EXCLUDED.header
        RETURNING seq, id, created_at`,
       [chatId, auth.userId, device.id, str(String(body.kind ?? 'text'), 'kind', { max: 24 }),
-       JSON.stringify(header), uuid],
+       JSON.stringify(header), uuid, new Date(timestamp)],
     );
 
     let row = inserted;
