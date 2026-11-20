@@ -294,13 +294,11 @@ bool KlintoNode::loadConfig() {
   cfg_.batt_ratio_x100 = (uint16_t)(KL_BATT_RATIO * 100.0f + 0.5f);
 #endif
   loadHw();
-  /* Диапазон LoRa определяется чипом: SX1278 работает только в 433 МГц (137–525), остальные —
-   * в 868. Частота и sync word берутся из плана каналов для текущего канала соты. Узлы разных
-   * диапазонов (433 и 868) по LoRa друг друга не слышат — мостом между ними служит ESP-NOW. */
+  /* Все чипы (включая SX1278) работают на общей частоте сети 868/869 МГц: узлы в одном
+   * диапазоне слышат друг друга по LoRa. Частота и sync word — из плана каналов соты. */
   if (cfg_.lora_present) {
-    const bool want433 = cfg_.lora.chip == KL_LORA_SX1278;
     const bool is433 = cfg_.lora.freq_mhz > 0.0f && cfg_.lora.freq_mhz < 500.0f;
-    if (want433 != is433) cfg_.lora.freq_mhz = want433 ? 433.0625f : 868.1f;
+    if (is433 || cfg_.lora.freq_mhz <= 0.0f) cfg_.lora.freq_mhz = 868.1f;
     const uint8_t ch = cfg_.wifi_channel >= 1 && cfg_.wifi_channel <= KL_CHANNEL_COUNT ? cfg_.wifi_channel : 1;
     kl_channel_plan_apply(&cfg_, ch);
   }

@@ -1075,8 +1075,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           for (const item of remote.modules ?? []) {
             if (item.mod6) ownedMod6.add(String(item.mod6).toLowerCase());
           }
+          // Запоминаем список своих модулей: без интернета автоподключение работает по нему.
+          void kv.set('kl:owned-mod6', JSON.stringify([...ownedMod6])).catch?.(() => undefined);
         } catch {
-          /* оффлайн: доверяем кэшу идентичности и локальной очереди */
+          /* оффлайн: доверяем кэшу идентичности и сохранённому списку своих модулей */
+          try {
+            const cached = JSON.parse(String((await kv.get('kl:owned-mod6')) ?? '[]')) as unknown;
+            if (Array.isArray(cached)) {
+              for (const mod6 of cached) if (typeof mod6 === 'string') ownedMod6.add(mod6.toLowerCase());
+            }
+          } catch {
+            /* ignore */
+          }
         }
         const myPrefix = identity?.blePrefix ?? null;
         const scanTransport = getModuleTransport('ble');

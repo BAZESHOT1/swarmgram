@@ -23,7 +23,7 @@ struct kl_channel_plan_entry_t {
   uint32_t lora_freq_hz;   /* центр подканала */
   uint16_t lora_bw_khz;    /* 125 */
   uint8_t lora_sync_word;  /* уникален для соты */
-  uint8_t lora_sf;         /* 9 */
+  uint8_t lora_sf;         /* 7 */
 };
 
 /** Вернуть запись плана для Wi-Fi канала и диапазона. */

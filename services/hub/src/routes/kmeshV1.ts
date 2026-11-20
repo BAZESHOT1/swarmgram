@@ -329,8 +329,22 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     return presence?.user_id ?? null;
   }
 
+  /** Последний узел, к которому подключён телефон пользователя (по его запросам через mesh). */
+  const phoneAttach = new Map<string, { nodeId: number; gatewayId: number; at: number }>();
+  function noteAttach(userId: string | null, nodeId: number, gatewayId: number): void {
+    if (!userId || !nodeId) return;
+    phoneAttach.set(userId, { nodeId, gatewayId, at: Date.now() });
+  }
+
   /** Узел пользователя и шлюз, через который он сейчас слышен. */
   async function nodeForUser(userId: string): Promise<{ nodeId: number; gatewayId: number } | null> {
+    // Узел, через который телефон пользователя слал запросы последним, — туда и отвечаем.
+    // Раньше брали самый свежий presence: у пользователя несколько модулей (носимый, ретранслятор),
+    // и ответы уходили на модуль, к которому телефон не подключён.
+    const attached = phoneAttach.get(userId);
+    if (attached && Date.now() - attached.at < 15 * 60_000) {
+      return { nodeId: attached.nodeId, gatewayId: attached.gatewayId };
+    }
     const presence = await one<{ node_id: string; gateway_id: string }>(
       `SELECT node_id::text, gateway_id::text FROM kmesh_v1_presence
         WHERE user_id = $1 AND expires_at > now()
@@ -425,6 +439,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const rpc = decodeTextRpc(plain);
     if (!rpc) return;
     const sender = await userForNode(packet.srcId);
+    noteAttach(sender, packet.srcId, gatewayId);
     const chat = await resolveChatByRef(rpc.chatRef, sender);
     if (!chat) return;
     const members = await query<{ user_id: string }>(
@@ -451,8 +466,9 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!prefix) return false;
     const userId = await userForNode(packet.srcId);
     if (!userId) return false;
-    const target = await nodeForUser(userId);
-    if (!target) return false;
+    noteAttach(userId, packet.srcId, gatewayId);
+    // Ответ на сервисный запрос — тому узлу, откуда он пришёл.
+    const target = { nodeId: packet.srcId, gatewayId };
 
     if (prefix.op === RpcOp.CHAT_KEY_REQ) {
       const req = decodeChatKeyRequest(plain);
@@ -598,6 +614,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     if (!envelope) return false;
     const senderId = await userForNode(packet.srcId);
     if (!senderId) return true;
+    noteAttach(senderId, packet.srcId, gatewayId);
     const member = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2',
       [envelope.chatId, senderId]);
     if (!member) return true;
