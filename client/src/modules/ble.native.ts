@@ -602,6 +602,11 @@ export class NativeBleTransport implements ModuleConnection {
       } catch {
         /* iOS сам управляет MTU */
       }
+      if (Platform.OS === 'android') {
+        // Высокий приоритет: интервал соединения 7.5–15 мс вместо ~50 мс. Модуль делит радио между
+        // BLE и ESP-NOW и часть событий соединения пропускает — чем их больше, тем быстрее кадры.
+        await manager().requestConnectionPriorityForDevice(device.id, 1).catch(() => undefined);
+      }
     } catch (error) {
       this.deviceId = null;
       throw new ModuleTransportError(
@@ -899,16 +904,23 @@ export class NativeBleTransport implements ModuleConnection {
   private writeBytes(
     frame: Uint8Array,
     onProgress?: (sent: number, total: number) => void,
-    withoutResponse = false,
+    withoutResponse = true,
   ): Promise<void> {
+    const queuedAt = Date.now();
     const run = async (): Promise<void> => {
       const deviceId = this.deviceId;
       if (!deviceId || this.closing) {
         throw new ModuleTransportError('Bluetooth не подключён.', 'closed');
       }
-      // Прошивка собирает кадр из любых кусков (кольцо приёма), поэтому при нормальном MTU шлём
-      // по 100 байт: 300-байтный кадр был 15 записей с подтверждением (по ~0.1 с) и упирался в таймаут.
-      const chunkSize = this.mtu >= 103 ? 100 : 20;
+      // Кадр простоял в очереди дольше, чем его ждёт вызывающий: он уже считается неотправленным
+      // (и будет повторён), поэтому не пишем его — иначе очередь копила устаревшие кадры и задержка
+      // росла до десятков секунд.
+      if (Date.now() - queuedAt > 12_000) {
+        throw new Error('ble_frame_stale');
+      }
+      // Прошивка собирает кадр из любых кусков (кольцо приёма 4 КБ), поэтому шлём крупными
+      // кусками под MTU. Без подтверждения (Android) несколько кусков уходят за одно соединение.
+      const chunkSize = this.mtu >= 103 ? Math.min(this.mtu - 3, 240) : 20;
       for (let offset = 0; offset < frame.length; offset += chunkSize) {
         const chunk = frame.slice(offset, offset + chunkSize);
         const payload = bytesToBase64(chunk);
@@ -949,7 +961,7 @@ export class NativeBleTransport implements ModuleConnection {
           if (timer) clearTimeout(timer);
         }
         onProgress?.(Math.min(offset + chunkSize, frame.length), frame.length);
-        if (offset + chunkSize < frame.length) await delay(24);
+        if (offset + chunkSize < frame.length) await delay(withoutResponse ? 8 : 24);
       }
     };
     const next = this.writeChain.then(run, run);
@@ -984,7 +996,9 @@ export class NativeBleTransport implements ModuleConnection {
   async sendRaw(frame: Uint8Array): Promise<boolean> {
     if (!this.isOpen) return false;
     try {
-      await this.withFrameLimit(this.writeBytes(frame));
+      // Без подтверждения на Android: запись с ответом ждёт слот радио на каждый кусок
+      // (у C3 радио делится между BLE и ESP-NOW) — по секунде и больше на кадр.
+      await this.withFrameLimit(this.writeBytes(frame, undefined, true));
       return true;
     } catch (error) {
       dbg(`sendRaw failed: ${errorMessage(error)}`);

@@ -662,7 +662,7 @@ export function SimpleFirmwareWizard({
             {(
               [
                 { id: 'sx1262', title: 'SX1262', text: '868/915 МГц · нужен BUSY' },
-                { id: 'sx1278', title: 'SX1278', text: '433 МГц · Ra-02' },
+                { id: 'sx1278', title: 'SX1278', text: 'Ra-02 · частота сети 868 МГц' },
                 { id: 'sx1276', title: 'SX1276', text: '868/915 МГц · RFM95' },
                 { id: 'lr2021', title: 'LR2021', text: 'новое поколение Semtech · нужен BUSY' },
               ] as Array<{ id: LoraChip; title: string; text: string }>

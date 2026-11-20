@@ -63,7 +63,7 @@ const m = {
   targetSha256: delta.targetSha256,
 };
 assert.equal(manifestDigest(m).length, 64);
-assert.ok(manifestCanonical(m).startsWith('KLINTO-OTA1|2|120|130|'));
+assert.ok(manifestCanonical(m).startsWith('KLINTO-OTA2|2|0|120|130|'));
 
 // Подпись манифеста: тот же digest, что проверяет mbedTLS на устройстве.
 const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });

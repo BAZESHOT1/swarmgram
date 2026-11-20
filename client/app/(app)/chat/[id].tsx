@@ -263,7 +263,24 @@ export default function ChatScreen() {
   const queryMessages = chatQuery.data as ViewMessage[] | undefined;
   // Пока сети нет/идёт запрос — показываем сохранённую ленту, а не скелетон.
   const data = useMemo<ViewMessage[]>(() => {
-    if (queryMessages && queryMessages.length > 0) return queryMessages;
+    if (queryMessages && queryMessages.length > 0) {
+      // Без сервера в запросе бывают только сообщения, пришедшие через kMesh до открытия чата:
+      // дополняем их сохранённой историей, иначе лента «теряла» всё, кроме новых.
+      if (!chatQuery.isFetchedAfterMount && cachedMessages.length > 0) {
+        const seen = new Set<string>();
+        for (const m of queryMessages) {
+          seen.add(m.id);
+          if (m.clientId) seen.add(m.clientId);
+        }
+        const older = cachedMessages.filter((m) => !seen.has(m.id) && !(m.clientId && seen.has(m.clientId)));
+        if (older.length) {
+          return [...older, ...queryMessages].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+          );
+        }
+      }
+      return queryMessages;
+    }
     if (chatQuery.isFetchedAfterMount && queryMessages) return [];
     return cachedMessages;
   }, [queryMessages, cachedMessages, chatQuery.isFetchedAfterMount]);

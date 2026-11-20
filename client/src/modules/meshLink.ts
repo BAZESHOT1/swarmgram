@@ -15,7 +15,7 @@ let sender: MeshSender | null = null;
 let v1Sender: MeshV1Sender | null = null;
 const listeners = new Set<MeshListener>();
 /** Текст, отправленный во время переподключения: уйдёт, как только модуль будет готов. */
-const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number; paused?: boolean }> = [];
+const pendingV1: Array<{ chatId: string; text: string; clientId?: string; attempts: number; paused?: boolean; queuedAt?: number }> = [];
 /** После стольких неудач перестаём долбить модуль: сообщение остаётся в outbox. */
 const MAX_V1_ATTEMPTS = 3;
 const giveUpListeners = new Set<(item: { chatId: string; text: string; clientId?: string }) => void>();
@@ -79,6 +79,7 @@ async function flushV1Queue(): Promise<void> {
     while (pendingV1.length) {
       const item = pendingV1.find((entry) => !entry.paused);
       if (!item) break;
+      console.log('[kmesh]', 'queue pick', { waitMs: Date.now() - (item.queuedAt ?? Date.now()), left: pendingV1.length, attempt: item.attempts });
       activeClientId = item.clientId;
       emitQueue();
       try {
@@ -182,7 +183,7 @@ export async function sendTextViaMesh(
   if (!text) return false;
   // Все тексты идут через одну очередь строго по порядку: параллельные записи в BLE мешали друг
   // другу, а пользователь не видел, что сообщение ждёт. Модуль не подключён — ждём подключения.
-  pendingV1.push({ chatId, text, clientId, attempts: 0 });
+  pendingV1.push({ chatId, text, clientId, attempts: 0, queuedAt: Date.now() });
   emitQueue();
   if (!v1Sender) {
     console.log('[kmesh]', 'text queued until module connects', chatId);

@@ -25,7 +25,7 @@ import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { flushRelayQueue, queueRelay } from '../kmesh/v1/relay';
 import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
 import { KMeshV1Client } from '../kmesh/v1/client';
-import { storeServerChatKey } from '../data/chatkit';
+import { peekServerChatKey, storeServerChatKey } from '../data/chatkit';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
 import { setActiveKMeshV1 } from '../kmesh/v1/runtime';
@@ -36,6 +36,7 @@ import { loadCachedIdentity, refreshCachedIdentity, saveCachedIdentity } from '.
 import {
   addPendingBleClaim,
   listPendingBleClaims,
+  kmeshV1Get,
   kmeshV1List,
   kmeshV1Update,
   removePendingBleClaim,
@@ -453,8 +454,8 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onHistory: (chatRef, messages, more) => emitKmeshHistory({ chatRef, messages, more }),
           onStatus: (event) => {
             void (async () => {
-              const list = await kmeshV1List().catch(() => []);
-              const item = list.find((row) => row.msgUuid === event.msgUuid);
+              const item = await kmeshV1Get(event.msgUuid).catch(() => null);
+              console.log('[kmesh]', 'status', { uuid: event.msgUuid, status: event.status, found: Boolean(item), client: item?.clientId ?? '-' });
               if (!item) return;
               const nextState =
                 event.status === 5
@@ -493,7 +494,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                   if (item.clientId && m.clientId === item.clientId) return true;
                   return m.text === item.text && Boolean(m.pending);
                 });
-                if (index < 0) return prev;
+                if (index < 0) {
+                  console.log('[kmesh]', 'status: bubble not found', { rows: rows.length });
+                  return prev;
+                }
                 rows[index] = {
                   ...(rows[index] as object),
                   pending: !delivered && !failed,
@@ -616,6 +620,21 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           // Биндим в фоне: adopt не должен ждать HTTP, иначе мастер
           // подключения «висит» на медленной сети.
           void api.kmeshV1NodeBind(nextInfo.nodeId).catch(() => undefined);
+        }
+        // Без интернета заранее просим у Hub (через шлюз kMesh) серверные ключи последних чатов, которых
+        // нет на устройстве: иначе первая отправка ждёт ключ, а входящие нечем расшифровать.
+        if (!useStore.getState().transportOnline) {
+          void (async () => {
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+            const cachedChats = qc.getQueryData<Array<{ id?: unknown; encryption?: unknown }>>(['chats', session?.username]) ?? [];
+            for (const chat of cachedChats.slice(0, 12)) {
+              if (typeof chat?.id !== 'string' || chat.encryption === 'e2e') continue;
+              if (v1ClientRef.current !== v1) return;
+              if (await peekServerChatKey(chat.id).catch(() => null)) continue;
+              await v1.requestChatKey(chat.id, refOf(chat.id)).catch(() => false);
+              await new Promise((resolve) => setTimeout(resolve, 600));
+            }
+          })();
         }
         // Мобильный шлюз: модуль → приложение → Hub и обратно.
         mobileGatewayRef.current?.stop();
@@ -1075,8 +1094,18 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           for (const item of remote.modules ?? []) {
             if (item.mod6) ownedMod6.add(String(item.mod6).toLowerCase());
           }
+          // Запоминаем список своих модулей: без интернета автоподключение работает по нему.
+          void kv.set('kl:owned-mod6', JSON.stringify([...ownedMod6])).catch?.(() => undefined);
         } catch {
-          /* оффлайн: доверяем кэшу идентичности и локальной очереди */
+          /* оффлайн: доверяем кэшу идентичности и сохранённому списку своих модулей */
+          try {
+            const cached = JSON.parse(String((await kv.get('kl:owned-mod6')) ?? '[]')) as unknown;
+            if (Array.isArray(cached)) {
+              for (const mod6 of cached) if (typeof mod6 === 'string') ownedMod6.add(mod6.toLowerCase());
+            }
+          } catch {
+            /* ignore */
+          }
         }
         const myPrefix = identity?.blePrefix ?? null;
         const scanTransport = getModuleTransport('ble');

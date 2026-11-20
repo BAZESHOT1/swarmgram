@@ -41,7 +41,7 @@ void kl_config_defaults(kl_config_t *cfg) {
   cfg->lora.dio1 = 2;
   cfg->lora.busy = 10;
   cfg->lora.freq_mhz = 869.525f;
-  cfg->lora.sf = 9;
+  cfg->lora.sf = 7; /* SF7: в ~3 раза быстрее SF9 */
   cfg->lora.bw_khz = 125.0f;
   cfg->lora.cr = 5;
   cfg->lora.preamble = 8;
@@ -92,7 +92,7 @@ bool kl_config_validate(kl_config_t *cfg) {
     cfg->station_presence_ms = KL_DEFAULT_STATION_PRESENCE_MS;
   }
   if (cfg->gw_beacon_interval_ms < 5000) cfg->gw_beacon_interval_ms = 5000;
-  if (cfg->lora.sf < 6 || cfg->lora.sf > 12) cfg->lora.sf = 9;
+  if (cfg->lora.sf < 6 || cfg->lora.sf > 12) cfg->lora.sf = 7;
   if (cfg->lora.cr < 5 || cfg->lora.cr > 8) cfg->lora.cr = 5;
   if (cfg->lora.bw_khz <= 0) cfg->lora.bw_khz = 125.0f;
   if (cfg->lora.freq_mhz <= 0) cfg->lora.freq_mhz = 869.525f;

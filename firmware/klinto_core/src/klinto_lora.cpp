@@ -86,8 +86,11 @@ bool LoraInterface::init(const kl_config_t &cfg) {
     radio_ = r;
     state = r->begin(lc);
   } else {
+    /* SX1278 ведём классом SX1276 (тот же кристалл и регистры): класс SX1278 в RadioLib
+     * отказывает в частотах выше 525 МГц, а сеть работает на общей частоте 868/869 МГц —
+     * модули на SX1278 её держат. Так все узлы LoRa в одном диапазоне и слышат друг друга. */
     module_ = new Module(cs, irq, rst, (uint32_t)RADIOLIB_NC, SPI);
-    SX1278 *r = new SX1278(module_);
+    SX1276 *r = new SX1276(module_);
     phys_ = r;
     radio_ = r;
     state = r->begin(lc);

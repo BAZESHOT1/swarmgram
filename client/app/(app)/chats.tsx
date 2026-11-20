@@ -8,6 +8,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Animated,
   Easing,
 
@@ -47,7 +48,7 @@ import {
 } from '../../src/data/queries';
 import { loadChatMessages, searchMessagesAcrossChats, type MessageSearchHit } from '../../src/data/messaging';
 import { getServerChatKey } from '../../src/data/chatkit';
-import { saveMessages } from '../../src/data/cache';
+import { loadCachedMessages, saveMessages } from '../../src/data/cache';
 import { Avatar } from '../../src/components/Avatar';
 import { Glass, GLASS_FILL_BUTTON, PINNED_SURFACE } from '../../src/components/Glass';
 import { EmptyState } from '../../src/components/EmptyState';
@@ -598,6 +599,9 @@ export default function ChatsScreen() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [history, setHistory] = useState<SearchHistoryEntry[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  /** Идёт поиск или обновление через kMesh (ответ Hub приходит через шлюз за несколько секунд). */
+  const [meshSearching, setMeshSearching] = useState(false);
+  const [meshRefreshing, setMeshRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [busyUser, setBusyUser] = useState('');
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
@@ -1521,23 +1525,71 @@ export default function ChatsScreen() {
       setMeshHits([]);
       return undefined;
     }
-    const un = onKmeshSearch((event) => setMeshHits(event.results));
-    void requestKmeshSearch(activeQuery, 0);
-    return un;
+    setMeshSearching(true);
+    const stop = setTimeout(() => setMeshSearching(false), 25_000);
+    const un = onKmeshSearch((event) => {
+      setMeshHits(event.results);
+      setMeshSearching(false);
+    });
+    void requestKmeshSearch(activeQuery, 0).then((ok) => {
+      if (!ok) setMeshSearching(false);
+    });
+    return () => {
+      clearTimeout(stop);
+      un();
+      setMeshSearching(false);
+    };
   }, [activeQuery, transportOnline]);
+
+  // Ремонт превью: прежняя версия перетирала текст последнего сообщения пустым превью из ленты
+  // kMesh («Сообщение»). Восстанавливаем текст из кэша сообщений чата.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const previews = useStore.getState().chatPreviews;
+      for (const chat of allChats.slice(0, 60)) {
+        const p = previews[chat.id];
+        if (!p || p.text) continue;
+        const rows = (await loadCachedMessages(chat.id).catch(() => null)) as
+          | Array<{ id?: string; text?: string; kind?: string; mine?: boolean; createdAt?: string }>
+          | null;
+        if (cancelled) return;
+        const lastText = rows?.slice().reverse().find((m) => typeof m?.text === 'string' && m.text);
+        if (!lastText) continue;
+        useStore.getState().setChatPreview(chat.id, {
+          id: String(lastText.id ?? p.id),
+          text: String(lastText.text),
+          kind: lastText.kind ?? 'text',
+          mine: Boolean(lastText.mine),
+          at: p.at,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Один проход на набор чатов.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allChats.length]);
 
   useEffect(() => {
     if (transportOnline) return undefined;
     const un = onKmeshFeed((event) => {
       for (const entry of event.entries) {
         const chat = allChats.find((c) => crc16(new TextEncoder().encode(c.id)) === entry.chatRef);
-        if (!chat) continue;
+        if (!chat || !entry.timestamp) continue;
+        // Лента kMesh не несёт текста (Hub не читает зашифрованные сообщения): обновляем превью
+        // только если в чате появилось что-то новее известного, иначе не затираем последний текст.
+        const at = entry.timestamp * 1000;
+        const known = useStore.getState().chatPreviews[chat.id];
+        const knownAt = Math.max(activityOf(chat), known?.at ? new Date(known.at).getTime() || 0 : 0);
+        if (at <= knownAt + 1000) continue;
         useStore.getState().setChatPreview(chat.id, {
           id: entry.lastMsgUuid,
-          text: entry.preview,
+          text: 'Новое сообщение',
           kind: 'text',
           mine: false,
-          at: new Date((entry.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+          at: new Date(at).toISOString(),
         });
       }
     });
@@ -1593,7 +1645,25 @@ export default function ChatsScreen() {
       // HTTP-запросы не делаем — они только ждут таймаут и показывают ошибку.
       if (!useStore.getState().transportOnline) {
         const since = Math.floor((Date.now() - 24 * 3600_000) / 1000);
+        setMeshRefreshing(true);
+        // Ждём ответ ленты от Hub (через шлюз), чтобы индикатор обновления был честным.
+        const answered = new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            un();
+            resolve(false);
+          }, 20_000);
+          const un = onKmeshFeed(() => {
+            clearTimeout(timer);
+            un();
+            resolve(true);
+          });
+        });
         const ok = await requestKmeshFeed(since).catch(() => false);
+        const got = ok ? await answered : false;
+        setMeshRefreshing(false);
+        if (ok && !got) {
+          useStore.getState().pushToast({ kind: 'info', message: 'Hub не ответил через kMesh — попробуйте ещё раз.' });
+        }
         if (!ok) {
           useStore.getState().pushToast({
             kind: 'info',
@@ -1831,9 +1901,11 @@ export default function ChatsScreen() {
         </View>
       ) : null}
 
-      {error || queryError ? (
+      {/* Без интернета HTTP-ошибки ожидаемы: данные идут через kMesh, красную ошибку не показываем. */}
+      {(error || queryError) && transportOnline ? (
         <Text style={{ color: theme.danger, marginTop: 8, fontSize: 13 }}>{error || queryError}</Text>
       ) : null}
+      {meshRefreshing && !search.trim() ? <MeshLoadingBar theme={theme} label="Обновление чатов через kMesh…" /> : null}
 
       {search.trim() ? (
         <MotiView
@@ -1875,6 +1947,7 @@ export default function ChatsScreen() {
           busyUser={busyUser}
           messageLoading={messageSearch.loading}
           messageProgress={messageSearch.progress}
+          meshSearching={meshSearching}
           onCreate={() => router.push('/compose?mode=direct' as never)}
           onMenuChat={setMenuChat}
           onTogglePin={togglePin}
@@ -2141,6 +2214,22 @@ function SearchHistoryPanel({
 
 /* ------------------------------------------------------- результаты поиска */
 
+/** Полоса загрузки для запросов через kMesh: бегущий индикатор и подпись. */
+function MeshLoadingBar({ theme, label }: { theme: ReturnType<typeof useTheme>; label: string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 6, paddingVertical: 8 }}>
+      <ActivityIndicator size="small" color={theme.accent} />
+      <Text style={{ color: theme.textSecondary, fontSize: 13, fontWeight: '600' }}>{label}</Text>
+      <MotiView
+        from={{ opacity: 0.35 }}
+        animate={{ opacity: 1 }}
+        transition={{ type: 'timing', duration: 700, loop: true }}
+        style={{ flex: 1, height: 3, borderRadius: 2, backgroundColor: theme.accentSoft }}
+      />
+    </View>
+  );
+}
+
 function FilterTabs({
   theme,
   filter,
@@ -2240,6 +2329,7 @@ function SearchResults({
   busyUser,
   messageLoading,
   messageProgress,
+  meshSearching,
   onCreate,
   onMenuChat,
   onTogglePin,
@@ -2266,6 +2356,7 @@ function SearchResults({
   busyUser: string;
   messageLoading: boolean;
   messageProgress: number;
+  meshSearching: boolean;
   onCreate: () => void;
   onMenuChat: (chat: Chat) => void;
   onTogglePin: (id: string) => void;
@@ -2351,6 +2442,7 @@ function SearchResults({
   return (
     <View style={{ flex: 1 }}>
       <FilterTabs theme={theme} filter={filter} counts={counts} total={total} onFilter={onFilter} />
+      {meshSearching ? <MeshLoadingBar theme={theme} label="Поиск через kMesh…" /> : null}
       <FlashList
         data={rows}
         keyExtractor={(r, i) => `${rowKey(r)}-${i}`}

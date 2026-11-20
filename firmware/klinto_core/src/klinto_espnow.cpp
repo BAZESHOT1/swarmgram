@@ -181,7 +181,7 @@ void EspNowInterface::pump_tx(uint32_t now_ms) {
 void EspNowInterface::poll(uint32_t now_ms) {
   pump_tx(now_ms);
   kl_rx_frame_t frame;
-  int budget = 4;
+  int budget = 12; /* быстрый разбор пачек: кадры ESP-NOW идут каждые 6 мс */
   while (budget-- > 0 && rx_.pop(&frame)) {
     if (cb_) cb_(cb_ctx_, frame.data, frame.len, frame.rssi, KL_IFACE_ESPNOW);
   }
