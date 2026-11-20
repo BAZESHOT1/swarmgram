@@ -104,7 +104,14 @@ bool LoraInterface::init(const kl_config_t &cfg) {
     inited_ = false;
     return false;
   }
+  /* DIO0 у SX1278 часто оставлен неподключённым/висит в воздухе: без подтяжки
+   * пин читается как HIGH и задача LoRa крутится вхолостую. Подтяжка к земле
+   * не мешает подключённому DIO0 и убирает ложные срабатывания. */
+#if defined(ESP32)
+  pinMode(irq_pin_, INPUT_PULLDOWN);
+#else
   pinMode(irq_pin_, INPUT);
+#endif
   phys_->startReceive();
   inited_ = true;
   xTaskCreatePinnedToCore(&LoraInterface::taskEntry, "kl_lora", 6144, this, 2, nullptr, 0);
