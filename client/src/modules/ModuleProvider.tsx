@@ -24,7 +24,7 @@ import { prepareBle } from './ble';
 import { rememberIdentity } from '../mesh/MeshIdentityService';
 import { flushRelayQueue, queueRelay } from '../kmesh/v1/relay';
 import { emitMeshEnvelope, onMeshTextGaveUp, setMeshCapabilities, setMeshSender, setMeshV1Sender } from './meshLink';
-import { KMeshV1Client } from '../kmesh/v1/client';
+import { KMeshV1Client, messageRefForMsgUuid } from '../kmesh/v1/client';
 import { peekServerChatKey, storeServerChatKey } from '../data/chatkit';
 import { crc16 } from '../kmesh/v1/protocol';
 import { emitKmeshFeed, emitKmeshHistory, emitKmeshSearch } from '../kmesh/v1/events';
@@ -455,20 +455,25 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           onStatus: (event) => {
             void (async () => {
               const item = await kmeshV1Get(event.msgUuid).catch(() => null);
-              console.log('[kmesh]', 'status', { uuid: event.msgUuid, status: event.status, found: Boolean(item), client: item?.clientId ?? '-' });
-              if (!item) return;
-              const nextState =
-                event.status === 5
-                  ? 'FAILED'
-                  : event.status === 4
-                    ? 'SYNCED_PERMANENT'
-                    : event.status >= 2
-                      ? 'SYNC_PENDING'
-                      : item.state;
-              if (nextState !== item.state) {
-                await kmeshV1Update({ ...item, state: nextState, serverSeq: event.serverSeq }).catch(
-                  () => undefined,
-                );
+              const ref = messageRefForMsgUuid(event.msgUuid);
+              const clientId = item?.clientId ?? ref.clientId;
+              const chatId = item?.chatId ?? ref.chatId;
+              console.log('[kmesh]', 'status', { uuid: event.msgUuid, status: event.status, found: Boolean(item), client: clientId ?? '-' });
+              if (!chatId) return;
+              if (item) {
+                const nextState =
+                  event.status === 5
+                    ? 'FAILED'
+                    : event.status === 4
+                      ? 'SYNCED_PERMANENT'
+                      : event.status >= 2
+                        ? 'SYNC_PENDING'
+                        : item.state;
+                if (nextState !== item.state) {
+                  await kmeshV1Update({ ...item, state: nextState, serverSeq: event.serverSeq }).catch(
+                    () => undefined,
+                  );
+                }
               }
               // Оптимистичное сообщение в ленте: снимаем «часики» по ACK/доставке.
               const delivered = event.status === 2 || event.status === 4;
@@ -487,12 +492,12 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
                           : event.status === 5
                             ? 'Ошибка отправки'
                             : 'Отправка…';
-              qc.setQueryData<unknown[]>(['messages', item.chatId], (prev) => {
+              qc.setQueryData<unknown[]>(['messages', chatId], (prev) => {
                 const rows = Array.isArray(prev) ? [...prev] : [];
                 const index = rows.findIndex((row) => {
                   const m = row as { text?: string; clientId?: string; pending?: boolean };
-                  if (item.clientId && m.clientId === item.clientId) return true;
-                  return m.text === item.text && Boolean(m.pending);
+                  if (clientId && m.clientId === clientId) return true;
+                  return Boolean(item?.text) && m.text === item?.text && Boolean(m.pending);
                 });
                 if (index < 0) {
                   console.log('[kmesh]', 'status: bubble not found', { rows: rows.length });

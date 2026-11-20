@@ -27,7 +27,9 @@ import {
   encodeHistoryRequest,
   decodeHistoryResponse,
   encodeInetStatus,
+  encodeHubAckPacket,
   RpcOp,
+  PacketType,
 } from '../src/kmesh/v1/protocol';
 
 function hex(bytes: Uint8Array): string {
@@ -191,5 +193,24 @@ assert.strictEqual(hdec!.messages[0].text, 'ok');
 
 const inet = encodeInetStatus(true, 120, true);
 assert.deepStrictEqual(Array.from(inet), [1, 120, 0, 1]);
+
+// Hub ACK от телефона-шлюза: формат прошивочного build_ack (payload[4..7] — packet_id, [8]=1).
+const hubAck = decodeMeshPacket(
+  encodeHubAckPacket({
+    srcNodeId: 0x11223344,
+    dstNodeId: 0x55667788,
+    packetId: 0xa1b2c3d4,
+    msgUuid: 0x1122334455667788n,
+  }),
+);
+assert.ok(hubAck);
+assert.strictEqual(hubAck!.type, PacketType.ACK);
+assert.strictEqual(hubAck!.srcId, 0x11223344);
+assert.strictEqual(hubAck!.dstId, 0x55667788);
+assert.strictEqual(hubAck!.nextHopId, 0x55667788);
+assert.strictEqual(hubAck!.msgUuid, 0x1122334455667788n);
+assert.strictEqual(hubAck!.payload.length, 9);
+assert.strictEqual(new DataView(hubAck!.payload.buffer, hubAck!.payload.byteOffset).getUint32(4, true), 0xa1b2c3d4);
+assert.strictEqual(hubAck!.payload[8], 1);
 
 console.log('KMesh_v1 client codec: OK');

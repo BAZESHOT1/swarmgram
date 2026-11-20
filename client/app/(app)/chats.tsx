@@ -1607,16 +1607,33 @@ export default function ChatsScreen() {
     return onKmeshHistory((event) => {
       const chat = allChats.find((c) => crc16(new TextEncoder().encode(c.id)) === event.chatRef);
       if (!chat) return;
-      const incoming = event.messages.map((message) => ({
-        id: `mesh-${message.msgUuid}`,
-        chatId: chat.id,
-        seq: 0,
-        kind: 'text',
-        text: message.text,
-        createdAt: new Date((message.timestamp || 0) * 1000).toISOString(),
-        mine: false,
-        senderNodeId: message.senderId,
-      }));
+      // Hub отдаёт по kMesh только метаданные (текст зашифрован и в пакет не влезает).
+      // Подставляем текст из уже сохранённой локальной ленты, а пустые заглушки не показываем.
+      const rowsNow = (qc.getQueryData<Array<Record<string, unknown>>>(['messages', chat.id]) ?? []) as Array<
+        Record<string, unknown>
+      >;
+      const textByUuid = new Map<string, string>();
+      for (const row of rowsNow) {
+        const id = typeof row?.id === 'string' ? row.id : '';
+        if (!id) continue;
+        if (typeof row.text === 'string' && row.text) textByUuid.set(id.replace(/^mesh-/, ''), row.text);
+      }
+      const incoming = event.messages
+        .map((message) => {
+          const text = message.text || textByUuid.get(message.msgUuid) || '';
+          return {
+            id: `mesh-${message.msgUuid}`,
+            chatId: chat.id,
+            seq: 0,
+            kind: 'text',
+            text,
+            createdAt: new Date((message.timestamp || 0) * 1000).toISOString(),
+            mine: false,
+            senderNodeId: message.senderId,
+          };
+        })
+        .filter((row) => row.text);
+      if (!incoming.length) return;
       qc.setQueryData<unknown[]>(['messages', chat.id], (prev) => {
         const rows = Array.isArray(prev) ? prev : [];
         const seen = new Set(rows.map((row) => (row as { id?: string })?.id));

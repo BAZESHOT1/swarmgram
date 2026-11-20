@@ -399,6 +399,36 @@ bool KlintoRouter::forward_downlink(kl_packet_t *pkt, uint32_t now_ms) {
   return true;
 }
 
+bool KlintoRouter::confirm_delivery(uint32_t packet_id, bool hub_confirmed) {
+  KlintoGuard guard(lock_);
+  for (uint16_t i = 0; i < KL_ACK_TABLE; ++i) {
+    if (!acks_[i].used || acks_[i].pkt.packet_id != packet_id) continue;
+    const uint64_t uuid = acks_[i].pkt.msg_uuid;
+    const uint32_t pid = acks_[i].pkt.packet_id;
+    acks_[i].used = false;
+    stats_.acks_received++;
+    if (sink_.status) {
+      sink_.status(sink_.ctx, uuid, pid,
+                   hub_confirmed ? KL_STATUS_SYNCED_PERMANENT : KL_STATUS_ACKED_BY_GATEWAY);
+    }
+    return true;
+  }
+  /* Пакет уже подтверждён шлюзом (слот освобождён), а Hub-подтверждение пришло
+   * позже через телефон: находим uuid в recent_acks_ и тоже показываем «сохранено». */
+  if (hub_confirmed) {
+    for (int i = 0; i < 8; ++i) {
+      if (recent_acks_[i].packet_id != packet_id || recent_acks_[i].msg_uuid == 0) continue;
+      if (sink_.status) {
+        sink_.status(sink_.ctx, recent_acks_[i].msg_uuid, packet_id, KL_STATUS_SYNCED_PERMANENT);
+      }
+      recent_acks_[i].msg_uuid = 0;
+      stats_.acks_received++;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool KlintoRouter::send_rreq(uint32_t target, uint8_t iface_hint, uint32_t now_ms) {
   (void)iface_hint;
   kl_packet_t req;

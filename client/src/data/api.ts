@@ -1902,6 +1902,7 @@ export const api = {
         kind: string;
         dst_node_id: number;
         packet_id: number;
+        msg_uuid?: string;
         packet_b64?: string;
       }>;
     }>(`/v1/kmesh/v1/mobile/downlink?gateway_id=${gatewayId}&since=${since}`),

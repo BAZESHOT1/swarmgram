@@ -146,6 +146,12 @@ class KlintoRouter {
    */
   bool forward_downlink(kl_packet_t *pkt, uint32_t now_ms);
 
+  /**
+   * Подтверждение доставки, пришедшее от телефона-шлюза (мобильный шлюз):
+   * снимает пакет с повторов и отдаёт приложению статус «сохранено в Hub».
+   */
+  bool confirm_delivery(uint32_t packet_id, bool hub_confirmed);
+
   /** Entry point for every received frame. */
   void on_packet(const kl_packet_t *pkt, uint8_t iface, int16_t rssi, uint32_t now_ms);
 

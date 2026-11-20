@@ -57,7 +57,14 @@ import {
   type SearchResult,
 } from './protocol';
 import { b64ToBytes, bytesToB64, signPermanent } from './crypto';
-import { crc16, decodeLocalSearch, encodeLocalSearchReq, encodeLocalSearchResp, msgUuidFromHex } from './protocol';
+import {
+  crc16,
+  decodeLocalSearch,
+  encodeLocalSearchReq,
+  encodeLocalSearchResp,
+  encodeHubAckPacket,
+  msgUuidFromHex,
+} from './protocol';
 
 export interface KMeshV1Link {
   send(frame: Uint8Array): Promise<boolean>;
@@ -124,6 +131,18 @@ export interface KMeshV1ClientOptions {
 
 /** Общий для всех экземпляров: повтор после переподключения использует тот же uuid. */
 const uuidByClient = new Map<string, bigint>();
+/** Обратное соответствие: статус из модуля приходит по msg_uuid, UI ищет пузырь по clientId. */
+const clientByUuid = new Map<string, string>();
+const chatByUuid = new Map<string, string>();
+
+export function clientIdForMsgUuid(msgUuid: string): string | undefined {
+  return clientByUuid.get(String(msgUuid).toLowerCase());
+}
+
+export function messageRefForMsgUuid(msgUuid: string): { clientId?: string; chatId?: string } {
+  const key = String(msgUuid ?? '').toLowerCase();
+  return { clientId: clientByUuid.get(key), chatId: chatByUuid.get(key) };
+}
 
 export class KMeshV1Client {
   private link: KMeshV1Link;
@@ -137,6 +156,8 @@ export class KMeshV1Client {
   private proxyDay = '';
   private dailyProxyLimit = 10 * 1024 * 1024;
   private pendingKeyRefs = new Map<number, string>();
+  /** Подтверждения Hub по мобильному шлюзу: не дублируем статус и ACK. */
+  private relayConfirmed = new Set<string>();
   /**
    * clientId → msgUuid. Повторная отправка того же сообщения (очередь meshLink)
    * должна использовать тот же uuid, иначе каждая попытка создавала новую
@@ -337,6 +358,17 @@ export class KMeshV1Client {
       }
     }
     const uuidHex = msgUuidHex(msgUuid);
+    if (input.clientId) {
+      clientByUuid.set(uuidHex, input.clientId);
+      chatByUuid.set(uuidHex, input.chatId);
+      if (clientByUuid.size > 400) {
+        const first = clientByUuid.keys().next().value;
+        if (first !== undefined) {
+          clientByUuid.delete(first);
+          chatByUuid.delete(first);
+        }
+      }
+    }
     // Повторный вызов для уже принятого шлюзом сообщения не шлём заново: раньше очередь повторяла отправку,
     // и статус в пузыре гонялся «Подготовка kMesh» ↔ «Шлюз принял».
     if (knownUuid) {
@@ -581,6 +613,37 @@ export class KMeshV1Client {
     }
     if (sent) console.log('[kmesh]', 'pair messages re-sent with server key via gateway', sent);
     return sent;
+  }
+
+  /**
+   * Hub подтвердил сохранение сообщения, которое телефон переслал как шлюз.
+   *
+   * Раньше статус «Сохранено в Hub» появлялся только после ответного ACK по
+   * радиотракту: если телефон был подключён к модулю, у которого нет пути до
+   * LoRa-шлюза, подтверждение не приходило никогда. Теперь телефон сразу
+   * снимает ожидание в UI и отправляет модулю KMesh ACK, чтобы тот прекратил
+   * повторные передачи.
+   */
+  confirmRelayed(msgUuid: string, packetId: number): void {
+    const uuid = String(msgUuid ?? '').toLowerCase();
+    if (!uuid) return;
+    const pid = packetId >>> 0;
+    const key = `${uuid}:${pid}`;
+    if (this.relayConfirmed.has(key)) return;
+    this.relayConfirmed.add(key);
+    if (this.relayConfirmed.size > 1024) this.relayConfirmed.clear();
+    this.opts.onStatus?.({ msgUuid: uuid, packetId: pid, status: DeliveryStatus.SYNCED_PERMANENT });
+    const node = this.nodeId;
+    if (!node || !pid) return;
+    const ack = encodeHubAckPacket({
+      srcNodeId: node,
+      dstNodeId: node,
+      packetId: pid,
+      msgUuid: msgUuidFromHex(uuid),
+    });
+    void this.link
+      .send(encodeClientFrame(ClientFrameType.PROXY_DOWN, ack, this.seq++))
+      .catch(() => false);
   }
 
   /** Feed bytes from the BLE notification stream. */

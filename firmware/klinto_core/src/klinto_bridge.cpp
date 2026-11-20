@@ -348,6 +348,12 @@ void KlintoClientBridge::handle_proxy_down(const uint8_t *payload, size_t len) {
   if (!payload || !len || !router_) return;
   kl_packet_t pkt;
   if (!kl_packet_parse(payload, len, &pkt)) return;
+  /* Мобильный шлюз (телефон) присылает ACK от Hub: не пересылаем его в приложение,
+   * а подтверждаем пакет в таблице повторов и отдаём статус «сохранено в Hub». */
+  if (pkt.type == KL_TYPE_ACK && pkt.dst_id == cfg_.node_id && pkt.payload_len >= 9) {
+    const uint32_t acked = kl_read_le32(pkt.payload + 4);
+    if (router_->confirm_delivery(acked, pkt.payload[8] == 1)) return;
+  }
   router_->forward_downlink(&pkt, kl_uptime_ms());
 }
 

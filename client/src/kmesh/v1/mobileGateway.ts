@@ -103,6 +103,9 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
             rssi: item.rssi,
             iface: item.iface,
           });
+          // Hub уже сохранил сообщение в этом же запросе (archive + роутинг).
+          // Не ждём ACK по радио: телефон сам снимает ожидание и подтверждает модулю.
+          client.confirmRelayed(item.msgUuid, item.packetId);
           queue.shift();
         } catch {
           // сеть пропала/401 — повторим на следующем heartbeat
@@ -126,6 +129,12 @@ export function startMobileGateway(client: KMeshV1Client): MobileGatewayHandle {
       const res = await api.kmeshV1MobileDownlink(id, cursor);
       cursor = Number(res.cursor) || cursor;
       for (const item of res.items) {
+        // ACK от Hub (телефон был офлайн или приложение перезапустилось):
+        // сообщение уже сохранено, надо снять ожидание и остановить повторы модуля.
+        if (item.kind === 'ack') {
+          if (item.msg_uuid && item.packet_id) client.confirmRelayed(item.msg_uuid, item.packet_id);
+          continue;
+        }
         if (!item.packet_b64) continue;
         const packet = decodeMeshPacket(b64ToBytes(item.packet_b64));
         if (!packet) continue;

@@ -684,6 +684,40 @@ export function encodeProxyDown(packet: MeshPacket): Uint8Array {
   return encodeMeshPacket(packet);
 }
 
+/**
+ * Подтверждение «сохранено в Hub» от телефона-шлюза к подключённому модулю.
+ *
+ * Формат совпадает с прошивочным HttpGatewayTransport::build_ack: KMesh ACK,
+ * адресованный модулю, payload[4..7] — id подтверждаемого пакета, payload[8]=1
+ * означает «Hub сохранил», поэтому модуль снимает повторные отправки и
+ * показывает статус SYNCED_PERMANENT.
+ */
+export function encodeHubAckPacket(input: {
+  srcNodeId: number;
+  dstNodeId: number;
+  packetId: number;
+  msgUuid: bigint;
+}): Uint8Array {
+  const payload = new Uint8Array(9);
+  payload[0] = RpcOp.MSG_ACK;
+  payload[1] = 0;
+  new DataView(payload.buffer).setUint32(4, input.packetId >>> 0, true);
+  payload[8] = 1;
+  return encodeMeshPacket({
+    packetId: (Math.floor(Math.random() * 0xffffffff) >>> 0) || 1,
+    msgUuid: BigInt.asUintN(64, input.msgUuid),
+    srcId: input.srcNodeId >>> 0,
+    dstId: input.dstNodeId >>> 0,
+    nextHopId: input.dstNodeId >>> 0,
+    lastHopId: input.srcNodeId >>> 0,
+    type: PacketType.ACK,
+    flags: 0,
+    ttl: 8,
+    hopCount: 0,
+    payload,
+  });
+}
+
 /* ---------------------------------------------------------- snowflake ---- */
 
 const SEQ_MASK = 0x3ffn;

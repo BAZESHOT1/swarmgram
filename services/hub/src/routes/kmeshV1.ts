@@ -1210,13 +1210,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     );
     if (!bound || bound.user_id !== auth.userId) throw forbidden('node_not_bound');
     const rows = await query<{
-      id: string; dst_node_id: string; kind: string; packet_id: string | null; packet_b64: string | null;
+      id: string; dst_node_id: string; kind: string; packet_id: string | null; msg_uuid: string | null;
+      packet_b64: string | null;
     }>(
-      `SELECT id::text, dst_node_id::text, kind, packet_id::text, packet_b64
+      `SELECT id::text, dst_node_id::text, kind, packet_id::text, msg_uuid, packet_b64
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY id ASC LIMIT 8`,
+        ORDER BY (kind = 'packet') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
       // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.
@@ -1237,6 +1238,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         kind: r.kind,
         dst_node_id: Number(r.dst_node_id),
         packet_id: r.packet_id == null ? 0 : Number(r.packet_id),
+        ...(r.msg_uuid ? { msg_uuid: r.msg_uuid } : {}),
         ...(r.packet_b64 ? { packet_b64: r.packet_b64 } : {}),
       })),
     });
@@ -1250,13 +1252,14 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
     const since = Math.max(0, num(q.since));
     if (!Number.isInteger(gatewayId) || gatewayId <= 1) throw badRequest('gateway_id_required');
     const rows = await query<{
-      id: string; dst_node_id: string; kind: string; packet_id: string | null; packet_b64: string | null;
+      id: string; dst_node_id: string; kind: string; packet_id: string | null; msg_uuid: string | null;
+      packet_b64: string | null;
     }>(
-      `SELECT id::text, dst_node_id::text, kind, packet_id::text, packet_b64
+      `SELECT id::text, dst_node_id::text, kind, packet_id::text, msg_uuid, packet_b64
          FROM kmesh_v1_downlink
         WHERE (gateway_id = $1 OR gateway_id = 0)
           AND id > $2 AND delivered_at IS NULL AND expires_at > now()
-        ORDER BY id ASC LIMIT 8`,
+        ORDER BY (kind = 'packet') DESC, id ASC LIMIT 8`,
       // Курсор не используем: строки, вставленные позже с меньшим id, иначе терялись навсегда
       // (входящие для носимого так и висели недоставленными). Выдача и так помечает delivered_at.
       // LIMIT 8: ответ шлюзу должен влезть в его буфер 4 КБ.
@@ -1277,6 +1280,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
         kind: r.kind,
         dst_node_id: Number(r.dst_node_id),
         packet_id: r.packet_id == null ? 0 : Number(r.packet_id),
+        ...(r.msg_uuid ? { msg_uuid: r.msg_uuid } : {}),
         ...(r.packet_b64 ? { packet_b64: r.packet_b64 } : {}),
       })),
     });
