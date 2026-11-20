@@ -403,9 +403,10 @@ function RealtimeBridge() {
     };
 
     const pollTick = async () => {
+      const wasOffline = !useStore.getState().transportOnline;
       const online = await probeHub();
       if (online) {
-        catchUp();
+        if (wasOffline) catchUp();
       } else if (!socket || socket.readyState !== WebSocket.OPEN) {
         // Сокет уже открыт и живой — не сбрасываем режим из-за одного health-сбоя.
         useStore.getState().setTransportKnown(true);
@@ -739,8 +740,10 @@ function RealtimeBridge() {
     }, 10_000);
 
     void connect(session.accessToken);
-    // Не ждём исчерпания backoff: первый health-запрос сразу определяет,
-    // есть ли Hub по HTTP (например, когда WebSocket режет провайдер).
+    // Не ждём исчерпания backoff: health-опрос сразу определяет, есть ли Hub
+    // по HTTP (например, когда WebSocket режет провайдер), и работает каждые 5 с,
+    // пока сокет не поднимется.
+    startPolling();
     void probeHub();
 
     // Р’С…РѕРґСЏС‰РёРµ С‡РµСЂРµР· РјРѕРґСѓР»СЊ: РѕР±СЂР°Р±Р°С‚С‹РІР°РµРј РєР°Рє WS-СЃРѕР±С‹С‚РёРµ С‚РѕР»СЊРєРѕ РєРѕРіРґР°
