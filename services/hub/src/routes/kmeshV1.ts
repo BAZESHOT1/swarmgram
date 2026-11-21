@@ -1823,13 +1823,13 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
       const ids = modules.map((m) => nodeIdFromMac(m.module_mac)).filter((id) => id > 1);
       if (ids.length) {
         const rows = await query<{ node_id: string; gateway_id: string; last_seen_at: string; rssi: number | null; gw_name: string | null;
-          fw_build: number | null; fw_version_str: string | null; node_role: number | null; chip_arch: number | null }>(
+          fw_build: number | null; fw_version_str: string | null; node_role: number | null; chip_arch: number | null; radio_caps: number | null }>(
           `SELECT p.node_id::text, p.gateway_id::text, p.last_seen_at,
                   COALESCE(NULLIF(p.rssi, 0), (SELECT max(l.rssi) FROM kmesh_v1_links l
                    WHERE l.seen_at > now() - interval '30 minutes' AND l.rssi <> 0
                      AND (l.node_id = p.node_id OR l.neighbor_id = p.node_id))) AS rssi,
                   (SELECT display_name FROM kmesh_v1_presence g WHERE g.node_id = p.gateway_id LIMIT 1) AS gw_name,
-                  t.fw_build, t.fw_version_str, t.node_role, t.chip_arch
+                  t.fw_build, t.fw_version_str, t.node_role, t.chip_arch, t.radio_caps
              FROM kmesh_v1_presence p LEFT JOIN kmesh_nodes_telemetry t ON t.node_id = p.node_id
             WHERE p.node_id = ANY($1::bigint[])`,
           [ids],
@@ -1846,6 +1846,7 @@ const kmeshV1Routes: FastifyPluginAsync = async (app) => {
             fwBuild: r.fw_build ?? 0,
             fwVersion: r.fw_version_str ?? '',
             chip: CHIP_BY_ARCH[Number(r.chip_arch)] ?? '',
+             radioCaps: r.radio_caps ?? 0,
             roleName: ROLE_NAME[Number(r.node_role)] ?? '',
           });
         }

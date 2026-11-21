@@ -1169,6 +1169,7 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
       if (direct) {
         const ok = await v1.sendHwConfig(p, token.epoch, token.sig);
         if (!ok) return fail('Команда не ушла в модуль. Проверьте подключение.');
+        refreshLists();
         setTimeout(() => void restoreRef.current?.(), 3000);
         return succeed('Команда доставлена. Модуль применит настройки и перезагрузится.');
       }
@@ -1192,7 +1193,10 @@ export function ModuleProvider({ children }: { children: React.ReactNode }) {
           resolve(ok);
         });
       });
-      if (acked) return succeed('Модуль получил настройки и перезагружается.');
+      if (acked) {
+        refreshLists();
+        return succeed('Модуль получил настройки и перезагружается.');
+      }
       onProgress?.({ step: 3, total: 3, text: 'Команда отправлена по mesh, но подтверждение не пришло — модуль применит её при следующей связи.' });
       return succeed('Настройки отправлены по mesh. Подтверждение не пришло — модуль применит их при следующей связи.');
     },

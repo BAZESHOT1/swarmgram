@@ -983,7 +983,10 @@ bool KlintoNode::applySignedHw(const char *p, uint32_t epoch, const uint8_t *sig
   }
   if (hp.has_e) kl_nvs_set_uint("hw", "ep", (uint32_t)hp.e);
   if (hp.has_w) kl_nvs_set_uint("hw", "lw", (uint32_t)hp.w);
-  if (hp.has_r) kl_nvs_set_uint("hw", "rl", hp.role ? 2u : 1u);
+  if (hp.has_r) {
+    kl_nvs_set_uint("hw", "rl", hp.role ? 2u : 1u);
+    if (cfg_.role != KL_ROLE_GATEWAY) cfg_.role = hp.role ? KL_ROLE_ROUTER : KL_ROLE_CLIENT;
+  }
   if (hp.has_i) kl_nvs_set_uint("hw", "if", (uint32_t)hp.ifc);
   if (hp.has_d) kl_nvs_set_uint("hw", "ld", (uint32_t)(hp.led + 1));
   kl_nvs_set_uint("hw", "ev", epoch);

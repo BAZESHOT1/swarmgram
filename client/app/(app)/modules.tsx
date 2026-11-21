@@ -380,7 +380,7 @@ export default function ModulesScreen() {
   const [otaTarget, setOtaTarget] = useState<ModuleRow | null>(null);
   const [releases, setReleases] = useState<Record<string, string>>({});
   const [meshModules, setMeshModules] = useState<{
-    modules: Array<{ moduleMac: string; mod6: string; customName: string; bleName: string; online?: boolean }>;
+    modules: Array<{ moduleMac: string; mod6: string; customName: string; bleName: string; online?: boolean; roleName?: string; radioCaps?: number }>;
     incoming: Array<{ id: string; moduleMac: string; mod6: string; toUsername: string }>;
     outgoing: Array<{ id: string; moduleMac: string; mod6: string; fromUsername: string }>;
     identity: { blePrefix: string; netId: number };
@@ -833,6 +833,7 @@ export default function ModulesScreen() {
     online: boolean;
     rssi: number | null;
     battery: number | null;
+    lora?: boolean;
     mesh?: NonNullable<typeof meshModules>['modules'][number];
     legacy?: ModuleRow;
   };
@@ -852,6 +853,7 @@ export default function ModulesScreen() {
           ] ?? (node?.layer === 0 ? 'носимый' : node?.gateway ? 'шлюз' : ''),
         online: Boolean(m.online || node?.online),
         // 0 дБм — «нет данных», а не реальный сигнал: берём из карты связей или статуса Hub.
+        lora: ((m.radioCaps ?? 0) & 2) !== 0,
         rssi: (node?.rssi || (m as { rssi?: number | null }).rssi) || null,
         battery: node?.battery ?? null,
         mesh: m,
@@ -871,6 +873,7 @@ export default function ModulesScreen() {
         battery: live ? directInfo.battery : prev?.battery ?? (mod.battery != null ? Number(mod.battery) : null),
         mesh: prev?.mesh,
         legacy: mod,
+         lora: prev?.lora,
       };
       out.set(key, merged);
     }
@@ -1077,6 +1080,7 @@ export default function ModulesScreen() {
                       {r.name}
                     </Text>
                     {r.role ? <StatusBadge text={r.role} tone="neutral" /> : null}
+                    {r.lora ? <StatusBadge text="LoRa" tone="accent" /> : null}
                     {hasUpdate ? <StatusBadge text="обновление" tone="accent" /> : null}
                     <View style={{ flex: 1 }} />
                     <Text
