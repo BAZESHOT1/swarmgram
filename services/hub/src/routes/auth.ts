@@ -173,7 +173,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       [login],
     );
     if (!user) throw unauthorized('invalid_credentials');
-    if (user.status !== 'active') throw unauthorized('account_disabled');
+    // Заблокированный администрацией может войти: увидит только экран блокировки и выход.
+    if (user.status !== 'active' && user.status !== 'suspended') throw unauthorized('account_disabled');
     if (!(await verifyPassword(password, user.password_hash))) throw unauthorized('invalid_credentials');
 
     const deviceId = await upsertDevice(user.id, body.device ?? {});

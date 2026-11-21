@@ -299,6 +299,10 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!res.ok) {
+    // Аккаунт заблокирован администрацией: оболочка покажет экран блокировки.
+    if (res.status === 403 && data?.error === 'account_suspended') {
+      void import('../state/useStore').then(({ useStore }) => useStore.setState({ accountSuspended: true } as never));
+    }
     throw new ApiError(res.status, data?.error ?? 'error', data?.message ?? res.statusText, data?.details);
   }
   return data as T;

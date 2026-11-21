@@ -4,7 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { signToken, verifyToken, uuid } from './crypto.js';
 import { config } from './config.js';
 import { one, query } from './db.js';
-import { unauthorized } from './util.js';
+import { ApiError, unauthorized } from './util.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -58,6 +58,25 @@ export async function revokeRefresh(jti: string, rotatedTo?: string): Promise<vo
 const lastSeenWrites = new Map<string, number>();
 const LAST_SEEN_INTERVAL_MS = 60_000;
 
+/**
+ * Заблокированный администрацией аккаунт: остаётся в системе, но пользоваться им нельзя.
+ * Разрешены только /me (клиент показывает экран блокировки), выход и обновление токена.
+ * Статус кэшируем на 20 с; admin сбрасывает кэш при смене статуса.
+ */
+const statusCache = new Map<string, { status: string; at: number }>();
+export function forgetUserStatus(userId: string): void {
+  statusCache.delete(userId);
+}
+async function userStatus(userId: string): Promise<string> {
+  const cached = statusCache.get(userId);
+  if (cached && Date.now() - cached.at < 20_000) return cached.status;
+  const row = await one<{ status: string }>('SELECT status FROM users WHERE id = $1', [userId]).catch(() => null);
+  const status = row?.status ?? 'active';
+  statusCache.set(userId, { status, at: Date.now() });
+  return status;
+}
+const SUSPENDED_ALLOWED = [/^\/v1\/me$/, /^\/v1\/auth\//, /^\/v1\/devices\/push/];
+
 export function requireAuth(opts: { optional?: boolean } = {}) {
   return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const header = req.headers.authorization;
@@ -79,6 +98,14 @@ export function requireAuth(opts: { optional?: boolean } = {}) {
       throw unauthorized('invalid_token');
     }
     req.auth = { userId: claims.sub, deviceId: claims.did };
+
+    if ((await userStatus(claims.sub)) === 'suspended') {
+      const path = (req.url ?? '').split('?')[0] ?? '';
+      const readMe = path === '/v1/me' && req.method === 'GET';
+      if (!readMe && !SUSPENDED_ALLOWED.slice(1).some((re) => re.test(path))) {
+        throw new ApiError(403, 'account_suspended', 'Аккаунт заблокирован администрацией');
+      }
+    }
 
     // Обновляем last_seen_at не чаще раза в 60 секунд на пользователя.
     const now = Date.now();

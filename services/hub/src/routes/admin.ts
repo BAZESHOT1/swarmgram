@@ -1,6 +1,6 @@
 /** Админ-панель: управление пользователями, узлами, модулями, чатами/каналами. */
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
-import { requireAdmin } from '../auth.js';
+import { forgetUserStatus, requireAdmin } from '../auth.js';
 import { uuid } from '../crypto.js';
 import { one, query } from '../db.js';
 import { nodeEvent, resolveSubnet } from '../nodes.js';
@@ -54,10 +54,9 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       `UPDATE users SET status = $2, suspended_reason = $3 WHERE id = $1`,
       [id, status, status === 'suspended' ? str(body.reason ?? '', 'reason', { max: 300 }) : null],
     );
-    if (status === 'suspended') {
-      await query(`UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1`, [id]);
-      publish(id, { type: 'account_suspended' });
-    }
+    // Сессии не отзываем: пользователь видит экран «Аккаунт заблокирован», а API ему закрыт.
+    forgetUserStatus(id);
+    publish(id, { type: status === 'suspended' ? 'account_suspended' : 'account_restored' });
     await audit(ctx, `user_${status}`, id, body.reason ?? '');
     return reply.send({ ok: true, status });
   });

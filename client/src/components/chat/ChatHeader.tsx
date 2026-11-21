@@ -186,7 +186,7 @@ export function ChatHeader({
         styles.header,
         {
           // Safe-area сверху уже учитывает AppShell — здесь только небольшой зазор.
-          paddingTop: wide ? 2 : (Platform.OS === 'web' ? 12 : insets.top + 4),
+          paddingTop: wide ? 14 : (Platform.OS === 'web' ? 12 : insets.top + 4),
           paddingHorizontal: wide ? 16 : 12,
           opacity: enter,
           transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }],

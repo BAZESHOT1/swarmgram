@@ -111,11 +111,10 @@ export default function AdminScreen() {
 
   const refresh = () => void qc.invalidateQueries();
 
-  const requireReason = (): boolean => {
-    if (reason.trim()) return true;
-    setErr('Укажите причину действия — она попадёт в журнал модерации.');
-    return false;
-  };
+  // Причина необязательна: без неё в журнал попадёт «Нарушение правил». Раньше кнопка молча
+  // ставила ошибку вверху страницы, и казалось, что блокировка не работает.
+  const requireReason = (): boolean => true;
+  const reasonText = () => reason.trim() || 'Нарушение правил';
 
   const runPending = async () => {
     if (!pending) return;
@@ -123,8 +122,10 @@ export default function AdminScreen() {
     setErr('');
     try {
       await pending.run();
+      useStore.getState().pushToast({ kind: 'success', message: 'Готово' });
     } catch (error) {
       setErr(humanError(error));
+      useStore.getState().pushToast({ kind: 'error', message: humanError(error) });
     } finally {
       setBusy(false);
       setPending(null);
@@ -139,12 +140,12 @@ export default function AdminScreen() {
     setPending({
       title: suspending ? 'Заблокировать аккаунт?' : 'Разблокировать аккаунт?',
       message: suspending
-        ? `@${user.username} потеряет доступ, активные сессии будут отозваны. Причина: ${reason.trim()}`
+        ? `@${user.username} потеряет доступ, активные сессии будут отозваны. Причина: ${reasonText()}`
         : `@${user.username} снова сможет войти и пользоваться аккаунтом.`,
       confirmLabel: suspending ? 'Заблокировать' : 'Разблокировать',
       danger: suspending,
       run: async () => {
-        await api.api.adminUserStatus(user.id, suspending ? 'suspended' : 'active', reason.trim());
+        await api.api.adminUserStatus(user.id, suspending ? 'suspended' : 'active', reasonText());
         refresh();
       },
     });
@@ -159,12 +160,12 @@ export default function AdminScreen() {
       title: blocked ? 'Разблокировать узел?' : 'Заблокировать узел?',
       message: blocked
         ? `Узел «${node.name}» снова сможет принимать реплики.`
-        : `Узел «${node.name}» перестанет обслуживать объекты. Причина: ${reason.trim()}`,
+        : `Узел «${node.name}» перестанет обслуживать объекты. Причина: ${reasonText()}`,
       confirmLabel: blocked ? 'Разблокировать' : 'Заблокировать',
       danger: !blocked,
       run: async () => {
         if (blocked) await api.api.adminNodeUnblock(node.id, reason.trim() || undefined);
-        else await api.api.adminNodeBlock(node.id, reason.trim());
+        else await api.api.adminNodeBlock(node.id, reasonText());
         refresh();
       },
     });
@@ -179,12 +180,12 @@ export default function AdminScreen() {
       title: blocked ? 'Разблокировать модуль?' : 'Заблокировать модуль?',
       message: blocked
         ? `Модуль UUID ${module.board_uuid.slice(0, 12)}… снова сможет выходить на связь.`
-        : `Модуль UUID ${module.board_uuid.slice(0, 12)}… перестанет принимать конверты. Причина: ${reason.trim()}`,
+        : `Модуль UUID ${module.board_uuid.slice(0, 12)}… перестанет принимать конверты. Причина: ${reasonText()}`,
       confirmLabel: blocked ? 'Разблокировать' : 'Заблокировать',
       danger: !blocked,
       run: async () => {
         if (blocked) await api.api.adminModuleUnblock(module.id, reason.trim() || undefined);
-        else await api.api.adminModuleBlock(module.id, reason.trim());
+        else await api.api.adminModuleBlock(module.id, reasonText());
         refresh();
       },
     });
@@ -200,12 +201,12 @@ export default function AdminScreen() {
       title: blocked ? 'Разблокировать чат?' : 'Заблокировать чат?',
       message: blocked
         ? `«${title}» снова станет доступен участникам.`
-        : `«${title}» будет скрыт, отправка сообщений остановится. Причина: ${reason.trim()}`,
+        : `«${title}» будет скрыт, отправка сообщений остановится. Причина: ${reasonText()}`,
       confirmLabel: blocked ? 'Разблокировать' : 'Заблокировать',
       danger: !blocked,
       run: async () => {
         if (blocked) await api.api.adminChatUnblock(chat.id);
-        else await api.api.adminChatBlock(chat.id, reason.trim());
+        else await api.api.adminChatBlock(chat.id, reasonText());
         refresh();
       },
     });

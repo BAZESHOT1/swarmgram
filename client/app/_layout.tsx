@@ -596,6 +596,9 @@ function RealtimeBridge() {
               void qc.invalidateQueries({ queryKey: ['chats'] });
             }
             void qc.invalidateQueries({ queryKey: ['channels'] });
+          } else if (event.type === 'account_suspended' || event.type === 'account_restored') {
+            useStore.setState({ accountSuspended: event.type === 'account_suspended' } as never);
+            void qc.invalidateQueries({ queryKey: ['me'] });
           } else if (event.type === 'chat_updated') {
             const chatId = typeof event.chatId === 'string' ? event.chatId : '';
             if (event.chat && typeof event.chat === 'object' && chatId) {
