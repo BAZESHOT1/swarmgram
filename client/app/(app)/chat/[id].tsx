@@ -1,3 +1,4 @@
+import { DirectChatResolver, chatHref, directPeerFromParam } from '../../../src/components/chat/DirectChatResolver';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -116,7 +117,14 @@ function chatRowKey(r: Row): string {
 /** Максимальная высота многострочного ввода. */
 const INPUT_MAX = 120;
 
-export default function ChatScreen() {
+export default function ChatScreenRoute() {
+  const routeParams = useLocalSearchParams<{ id: string }>();
+  const peer = directPeerFromParam(String(routeParams.id ?? ''));
+  if (peer) return <DirectChatResolver username={peer} render={(id) => <ChatScreen forcedId={id} />} />;
+  return <ChatScreen />;
+}
+
+function ChatScreen({ forcedId }: { forcedId?: string } = {}) {
   const router = useRouter();
   const theme = useTheme();
   const wide = useIsWide();
@@ -127,7 +135,7 @@ export default function ChatScreen() {
   const qc = useQueryClient();
   const params = useLocalSearchParams<{ id: string; search?: string; msg?: string }>();
   const { id } = params;
-  const chatId = String(id);
+  const chatId = forcedId ?? String(id);
 
   const session = useStore((s) => s.session);
   const myUsername = session?.username ?? '';
@@ -1851,7 +1859,7 @@ export default function ChatScreen() {
           onMenu={() => setMenuOpen((v) => !v)}
           onOpenInfo={() => {
             setMenuOpen(false);
-            router.push(`/chat/${chatId}/info` as never);
+            router.push(chatHref(chat ?? { id: chatId }, myUsername, '/info') as never);
           }}
           onSearch={() => {
             setMenuOpen(false);
@@ -1860,7 +1868,7 @@ export default function ChatScreen() {
           onAvatarPress={() => {
             setMenuOpen(false);
             const peerName = chat?.type === 'direct' ? chat.members.find((m) => m.username !== myUsername)?.username : null;
-            router.push((peerName ? `/user/${peerName}` : `/chat/${chatId}/info`) as never);
+            router.push((peerName ? `/user/${peerName}` : chatHref(chat ?? { id: chatId }, myUsername, '/info')) as never);
           }}
           avatarRef={avatarRef}
           nodeOnline={peerPresence?.nodeOnline}
@@ -2123,7 +2131,7 @@ export default function ChatScreen() {
             style={[
               styles.input,
               {
-                backgroundColor: theme.dark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.75)',
+                backgroundColor: theme.glassUi === false ? theme.surface : theme.dark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.75)',
                 color: theme.textPrimary,
                 borderColor: editing ? theme.accent : theme.dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)',
                 maxWidth: 860,

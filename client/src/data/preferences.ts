@@ -31,6 +31,7 @@ const SEARCH_HISTORY_LIMIT = 20;
 /** Только поля настроек — ровно то, что синхронизируется с сервером. */
 type PrefSnapshot = {
   themeName: ThemeName;
+  uiStyle: 'glass' | 'flat';
   accentName: AccentName;
   locale: string;
   mutedChats: string[];
@@ -41,6 +42,7 @@ function snapshot(): PrefSnapshot {
   const s = useStore.getState();
   return {
     themeName: s.themeName,
+    uiStyle: s.uiStyle,
     accentName: s.accentName,
     locale: s.locale,
     mutedChats: [...s.mutedChats],
@@ -87,6 +89,7 @@ function parseHistory(raw: unknown): SearchHistoryEntry[] {
 function samePrefs(a: PrefSnapshot, b: PrefSnapshot): boolean {
   return (
     a.themeName === b.themeName &&
+    a.uiStyle === b.uiStyle &&
     a.accentName === b.accentName &&
     a.locale === b.locale &&
     a.mutedChats.length === b.mutedChats.length &&
@@ -107,6 +110,8 @@ export function applyServerPreferences(user: Partial<User> | null): void {
     if (typeof user.themeName === 'string' && (THEMES as readonly string[]).includes(user.themeName)) {
       useStore.getState().setThemeName(user.themeName as ThemeName);
     }
+    const uiStyle = (user as { uiStyle?: unknown }).uiStyle;
+    if (uiStyle === 'glass' || uiStyle === 'flat') useStore.getState().setUiStyle(uiStyle);
     if (typeof user.accentName === 'string' && user.accentName in ACCENTS) {
       useStore.getState().setAccent(user.accentName as AccentName);
     }
@@ -156,6 +161,7 @@ export function initPreferenceSync(): () => void {
       void api
         .patchMe({
           themeName: current.themeName,
+          uiStyle: current.uiStyle,
           accentName: current.accentName,
           locale: current.locale,
           mutedChats: current.mutedChats,

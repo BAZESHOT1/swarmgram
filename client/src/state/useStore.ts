@@ -37,6 +37,9 @@ interface SessionSummary {
 
 interface AppState {
   themeName: ThemeName;
+  /** Стиль интерфейса: стекло (по умолчанию) или монотонный. */
+  uiStyle: 'glass' | 'flat';
+  setUiStyle: (style: 'glass' | 'flat') => void;
   setThemeName: (t: ThemeName) => void;
   accentName: AccentName;
   setAccent: (name: AccentName) => void;
@@ -106,6 +109,11 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set, get) => ({
+  uiStyle: 'glass',
+  setUiStyle: (uiStyle) => {
+    set({ uiStyle });
+    void kv.set('sg:ui-style', uiStyle);
+  },
   themeName: 'system',
   setThemeName: (themeName) => {
     set({ themeName });

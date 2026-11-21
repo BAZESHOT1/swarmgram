@@ -69,6 +69,14 @@ function RealtimeBridge() {
   const qc = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
+  // Web: expo-router дописывает служебный ?__EXPO_ROUTER_key=… — убираем его из адресной строки.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('__EXPO_ROUTER_key')) return;
+    url.searchParams.delete('__EXPO_ROUTER_key');
+    window.history.replaceState(window.history.state, '', url.pathname + (url.search ? url.search : '') + url.hash);
+  }, [pathname]);
   const sounds = useSounds();
   const haptics = useHaptics();
 
@@ -1083,6 +1091,8 @@ export default function RootLayout() {
     void (async () => {
       const savedTheme = await kv.get('sg:theme');
       if (savedTheme === 'dark' || savedTheme === 'light' || savedTheme === 'system') useStore.getState().setThemeName(savedTheme);
+      const savedStyle = await kv.get('sg:ui-style');
+      if (savedStyle === 'glass' || savedStyle === 'flat') useStore.getState().setUiStyle(savedStyle);
       // РђРєС†РµРЅС‚РЅР°СЏ РїР°Р»РёС‚СЂР° С…СЂР°РЅРёС‚СЃСЏ РѕС‚РґРµР»СЊРЅРѕ РѕС‚ С‚РµРјС‹; РЅРµРёР·РІРµСЃС‚РЅРѕРµ Р·РЅР°С‡РµРЅРёРµ РёРіРЅРѕСЂРёСЂСѓРµРј.
       const savedAccent = await kv.get('sg:accent');
       if (savedAccent && savedAccent in ACCENTS) useStore.getState().setAccent(savedAccent as AccentName);

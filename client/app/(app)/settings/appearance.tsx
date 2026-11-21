@@ -43,6 +43,8 @@ export default function AppearanceScreen() {
   const setThemeName = useStore((s) => s.setThemeName);
   const accentName = useStore((s) => s.accentName);
   const setAccent = useStore((s) => s.setAccent);
+  const uiStyle = useStore((s) => s.uiStyle);
+  const setUiStyle = useStore((s) => s.setUiStyle);
 
   return (
     <SettingsPage title="Внешний вид" subtitle="Тема, акцентный цвет и язык интерфейса">
@@ -72,6 +74,38 @@ export default function AppearanceScreen() {
         </GlassCard>
         <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 }}>
           Системная тема автоматически следует настройке устройства. Переключение применяется сразу.
+        </Text>
+      </SettingsSection>
+
+      {/* ------------------------------------------------------ стиль ---- */}
+      <SettingsSection title="Стиль" delay={30}>
+        <GlassCard>
+          {([
+            { value: 'glass', label: 'Стекло', hint: 'Полупрозрачные кнопки, сообщения и панели с размытием', icon: 'water-outline' },
+            { value: 'flat', label: 'Монотонный', hint: 'Без прозрачности: сплошные серые и светлые заливки', icon: 'square-outline' },
+          ] as const).map((option, index) => {
+            const selected = uiStyle === option.value;
+            return (
+              <SettingsRow
+                key={option.value}
+                icon={option.icon}
+                title={option.label}
+                subtitle={option.hint}
+                delay={index * motion.staggerStepMs}
+                onPress={() => setUiStyle(option.value)}
+                right={
+                  selected ? (
+                    <Ionicons name="checkmark-circle" size={21} color={theme.accent} />
+                  ) : (
+                    <View style={[styles.radio, { borderColor: theme.line }]} />
+                  )
+                }
+              />
+            );
+          })}
+        </GlassCard>
+        <Text style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 }}>
+          Стиль сохраняется в аккаунте и применяется на всех устройствах.
         </Text>
       </SettingsSection>
 

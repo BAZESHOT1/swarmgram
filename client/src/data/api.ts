@@ -382,6 +382,7 @@ export interface User {
   bioVisibility?: BioVisibility;
   /* ---- синхронизируемые настройки интерфейса ---- */
   themeName?: string;
+  uiStyle?: 'glass' | 'flat';
   accentName?: string;
   locale?: string;
   mutedChats?: string[];
@@ -1071,6 +1072,7 @@ export const api = {
           lastSeenVisibility?: LastSeenVisibility;
           bioVisibility?: BioVisibility;
           themeName?: string;
+  uiStyle?: 'glass' | 'flat';
           accentName?: string;
           locale?: string;
           mutedChats?: string[];
@@ -1317,6 +1319,13 @@ export const api = {
   deleteChatBackground: (id: string) =>
     req<Chat>(`/v1/chats/${id}/background`, { method: 'DELETE' }),
 
+  /** Постоянная ссылка-приглашение публичной группы/канала (доступна участникам). */
+  chatShareLink: (id: string) => req<{ token: string }>(`/v1/chats/${id}/share-link`),
+  /** Кандидаты на приглашение: собеседники или поиск, с учётом их приватности. */
+  inviteCandidates: (id: string, q = '') =>
+    req<Array<{ userId: string; username: string; displayName: string; avatar: AvatarInfo | null; invitable: boolean; reason: string }>>(
+      `/v1/chats/${id}/invite-candidates${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+    ),
   directInvite: (id: string, username: string) =>
     req<{ ok: true; chatId: string; added: boolean }>(`/v1/chats/${id}/invite`, {
       method: 'POST',

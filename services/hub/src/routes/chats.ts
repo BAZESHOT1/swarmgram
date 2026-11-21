@@ -1310,10 +1310,90 @@ const chatRoutes: FastifyPluginAsync = async (app) => {
   }
 
   /* --------------------------------------------- прямое приглашение -------- */
+  /* ------------------------- постоянная ссылка публичной группы/канала ---- */
+  /** Участник публичной группы/канала (или с правом manageInvites) получает постоянную ссылку. */
+  async function canShareChat(id: string, me: string): Promise<{ ok: boolean; publicChat: boolean }> {
+    const chat = await one<{ type: string; visibility: string }>('SELECT type, visibility FROM chats WHERE id = $1', [id]);
+    if (!chat || chat.type === 'direct') return { ok: false, publicChat: false };
+    const member = await getMembership(id, me);
+    if (!member) return { ok: false, publicChat: false };
+    const publicChat = (parseVisibility(chat.visibility) ?? 'public') === 'public';
+    return { ok: publicChat || member.permissions.manageInvites || member.role === 'owner', publicChat };
+  }
+
+  app.get('/chats/:id/share-link', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    const access = await canShareChat(id, me);
+    if (!access.ok) throw forbidden('no_permission');
+    let row = await one<{ token: string }>(
+      `SELECT token FROM chat_invite_links
+        WHERE chat_id = $1 AND permanent = true AND revoked_at IS NULL LIMIT 1`,
+      [id],
+    ).catch(() => null);
+    if (!row) {
+      const owner = await one<{ owner_id: string | null }>('SELECT owner_id FROM chats WHERE id = $1', [id]);
+      const token = randomBytes(12).toString('base64url');
+      row = await one<{ token: string }>(
+        `INSERT INTO chat_invite_links (id, chat_id, token, role, expires_at, max_uses, created_by, permanent)
+         VALUES ($1,$2,$3,'member', NULL, NULL, $4, true) RETURNING token`,
+        [uuid(), id, token, owner?.owner_id ?? me],
+      );
+    }
+    return reply.send({ token: row!.token });
+  });
+
+  /** Кого можно пригласить: собеседники по личным чатам (или поиск), с учётом приватности. */
+  app.get('/chats/:id/invite-candidates', { onRequest: [requireAuth()] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const me = req.auth!.userId;
+    const access = await canShareChat(id, me);
+    if (!access.ok) throw forbidden('no_permission');
+    const q = String((req.query as { q?: string }).q ?? '').trim().replace(/^@/, '');
+    const rows = q.length >= 2
+      ? await query<{ id: string; username: string; display_name: string; invite_privacy: string; avatar_object_id: string | null; avatar_key: string; avatar_mime: string }>(
+          `SELECT id, username, display_name, invite_privacy, avatar_object_id, avatar_key, avatar_mime FROM users
+            WHERE status = 'active' AND id <> $2 AND (username ILIKE $1 OR display_name ILIKE $1)
+            ORDER BY username LIMIT 30`,
+          [`${q}%`, me],
+        )
+      : await query<{ id: string; username: string; display_name: string; invite_privacy: string; avatar_object_id: string | null; avatar_key: string; avatar_mime: string }>(
+          `SELECT DISTINCT ON (u.id) u.id, u.username, u.display_name, u.invite_privacy,
+                  u.avatar_object_id, u.avatar_key, u.avatar_mime
+             FROM chat_members mine
+             JOIN chats c ON c.id = mine.chat_id AND c.type = 'direct'
+             JOIN chat_members peer ON peer.chat_id = c.id AND peer.user_id <> $1
+             JOIN users u ON u.id = peer.user_id AND u.status = 'active'
+            WHERE mine.user_id = $1
+            LIMIT 60`,
+          [me],
+        );
+    const out = [];
+    for (const u of rows) {
+      const isMember = await one('SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2', [id, u.id]);
+      const privacy = u.invite_privacy === 'shared' || u.invite_privacy === 'chat' || u.invite_privacy === 'nobody' ? u.invite_privacy : 'everyone';
+      let invitable = !isMember;
+      let reason = isMember ? 'already_member' : '';
+      if (invitable && privacy === 'nobody') { invitable = false; reason = 'privacy'; }
+      if (invitable && privacy === 'shared' && !(await hasSharedChat(me, u.id))) { invitable = false; reason = 'privacy'; }
+      if (invitable && privacy === 'chat' && !(await hasDirectChat(me, u.id))) { invitable = false; reason = 'privacy'; }
+      out.push({
+        userId: u.id,
+        username: u.username,
+        displayName: u.display_name,
+        avatar: u.avatar_object_id && u.avatar_key && u.avatar_mime ? { objectId: u.avatar_object_id, key: u.avatar_key, mime: u.avatar_mime } : null,
+        invitable,
+        reason,
+      });
+    }
+    return reply.send(out);
+  });
+
   app.post('/chats/:id/invite', { onRequest: [requireAuth()] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const me = req.auth!.userId;
-    if (!(await can(id, me, 'manageInvites'))) throw forbidden('no_permission');
+    // Участники публичных групп/каналов тоже могут приглашать; в остальных — нужно право.
+    if (!(await can(id, me, 'manageInvites')) && !(await canShareChat(id, me)).publicChat) throw forbidden('no_permission');
 
     const body = (req.body ?? {}) as { username?: unknown };
     const username = str(body.username, 'username').toLowerCase();

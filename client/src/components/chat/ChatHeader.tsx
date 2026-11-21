@@ -207,7 +207,8 @@ export function ChatHeader({
           delayLongPress={380}
           accessibilityRole="button"
           accessibilityLabel={`${title || 'Диалог'}: информация, удержание — поиск по чату`}
-          style={{ flex: 1, minWidth: 0 }}
+          containerStyle={{ flex: 1, minWidth: 0 }}
+          style={{ flex: 1 }}
         >
           <Glass radius={wide ? 24 : 29} fill={GLASS_FILL_BUTTON} style={[styles.pill, wide && { height: 50 }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '100%' }}>

@@ -119,6 +119,8 @@ export const minTouch = 44;
 export const breakpoint = 900;
 
 export interface Theme extends Tokens {
+  /** Стеклянный стиль (полупрозрачность). false — монотонный: сплошные заливки. */
+  glassUi?: boolean;
   radiusS: typeof radius.s;
   radiusM: typeof radius.m;
   radiusL: typeof radius.l;

@@ -1,5 +1,7 @@
+import { DirectChatResolver, directPeerFromParam } from '../../../../src/components/chat/DirectChatResolver';
 import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { InviteMembersModal } from '../../../../src/components/chatinfo/InviteMembersModal';
 import { Ionicons } from '@expo/vector-icons';
 import { MotiView } from 'moti';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -23,7 +25,7 @@ import { PinnedCard } from '../../../../src/components/chatinfo/PinnedCard';
 import { InfoActions, type InfoActionItem } from '../../../../src/components/chatinfo/InfoActions';
 import { ManageTab } from '../../../../src/components/chatinfo/ManageTab';
 import { canOpenManage, hasRight, normalizeVisibility, roleOf, visibilityLabel } from '../../../../src/components/chatinfo/ManageTypes';
-import { joinByChatId, manageActions, manageError } from '../../../../src/components/chatinfo/ManageData';
+import { copyText, inviteUrl, joinByChatId, manageActions, manageError } from '../../../../src/components/chatinfo/ManageData';
 import { Avatar } from '../../../../src/components/Avatar';
 import { Btn } from '../../../../src/components/Btn';
 import { BackgroundSetting } from '../../../../src/components/BackgroundSetting';
@@ -46,7 +48,14 @@ import { useStore } from '../../../../src/state/useStore';
 const TYPE_LABEL: Record<string, string> = { direct: 'Диалог', group: 'Группа', channel: 'Канал' };
 
 /** Страница информации о чате: hero, быстрые действия, вкладки и управление чатом. */
-export default function ChatInfoScreen() {
+export default function ChatInfoScreenRoute() {
+  const routeParams = useLocalSearchParams<{ id: string }>();
+  const peer = directPeerFromParam(String(routeParams.id ?? ''));
+  if (peer) return <DirectChatResolver username={peer} render={(id) => <ChatInfoScreen forcedId={id} />} />;
+  return <ChatInfoScreen />;
+}
+
+function ChatInfoScreen({ forcedId }: { forcedId?: string } = {}) {
   const theme = useTheme();
   const router = useRouter();
   const reduced = useReducedMotion();
@@ -58,7 +67,7 @@ export default function ChatInfoScreen() {
     type?: string;
     members?: string;
   }>();
-  const chatId = String(params.id ?? '');
+  const chatId = forcedId ?? String(params.id ?? '');
 
   const session = useStore((s) => s.session);
   const myUsername = session?.username ?? '';
@@ -68,6 +77,8 @@ export default function ChatInfoScreen() {
   const toggleMuted = useStore((s) => s.toggleMuted);
 
   const [chat, setChat] = React.useState<Chat | null>(null);
+  const [inviteMenu, setInviteMenu] = React.useState(false);
+  const [inviteOpen, setInviteOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState('');
   const [tab, setTab] = React.useState('members');
@@ -384,7 +395,22 @@ export default function ChatInfoScreen() {
           },
         ]
       : []),
+    ...(!isDirect
+      ? [{ key: 'invite', icon: 'person-add-outline' as const, label: 'Пригласить', hint: 'ссылка или люди', onPress: () => setInviteMenu(true) }]
+      : []),
   ];
+
+  async function copyShareLink() {
+    setInviteMenu(false);
+    try {
+      const { token } = await api.api.chatShareLink(chatId);
+      const url = inviteUrl(token);
+      const ok = await copyText(url);
+      pushToast({ kind: ok ? 'success' : 'info', message: ok ? 'Ссылка-приглашение скопирована' : url });
+    } catch (e) {
+      pushToast({ kind: 'error', message: manageError(e) });
+    }
+  }
 
   const actions: InfoActionItem[] = [];
   if (isChannel && !isOwner) {
@@ -671,6 +697,28 @@ export default function ChatInfoScreen() {
           ) : null}
         </View>
       </ScrollView>
+
+      <Modal visible={inviteMenu} transparent animationType="fade" onRequestClose={() => setInviteMenu(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end', padding: 14 }} onPress={() => setInviteMenu(false)}>
+          <View style={{ borderRadius: 22, overflow: 'hidden', backgroundColor: theme.surfaceElevated, borderWidth: 1, borderColor: theme.line, width: '100%', maxWidth: 480, alignSelf: 'center' }}>
+            {[
+              { key: 'link', icon: 'link-outline' as const, label: 'Скопировать ссылку-приглашение', onPress: () => void copyShareLink() },
+              { key: 'add', icon: 'person-add-outline' as const, label: 'Добавить участников', onPress: () => { setInviteMenu(false); setInviteOpen(true); } },
+            ].map((item) => (
+              <Pressable
+                key={item.key}
+                onPress={item.onPress}
+                accessibilityRole="button"
+                style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 16, backgroundColor: pressed ? theme.surfacePressed : 'transparent' })}
+              >
+                <Ionicons name={item.icon} size={21} color={theme.accent} />
+                <Text style={{ color: theme.textPrimary, fontSize: 16, fontWeight: '600' }}>{item.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+      <InviteMembersModal visible={inviteOpen} chatId={chatId} title={chat?.title ?? ''} onClose={() => setInviteOpen(false)} />
 
       <ConfirmModal
         visible={confirm === 'leave'}

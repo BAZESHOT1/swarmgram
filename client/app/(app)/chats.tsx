@@ -6,6 +6,7 @@
  * каналы — через серверный поиск, сообщения — по последним 40 сообщениям
  * каждого чата (клиентская расшифровка). Фейковых строк нет.
  */
+import { chatHref } from '../../src/components/chat/DirectChatResolver';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -1080,7 +1081,7 @@ export default function ChatsScreen() {
     if (!transportOnline) {
       void requestKmeshHistory(crc16(new TextEncoder().encode(c.id)), 8);
     }
-    router.push(`/chat/${c.id}` as never);
+    router.push(chatHref(c, myUsername) as never);
   }, [transportOnline]);
 
   /** Сохранить историю и продублировать в store (серверная синхронизация). */

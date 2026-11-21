@@ -225,6 +225,7 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       last_seen_visibility: string;
       bio_visibility: string;
       theme_name: string;
+      ui_style: string;
       accent_name: string;
       locale: string;
       muted_chats: unknown;
@@ -235,7 +236,7 @@ const meRoutes: FastifyPluginAsync = async (app) => {
               quota_bytes, used_bytes, username_changed_at, created_at, account_pub, invite_privacy,
               avatar_object_id, avatar_key, avatar_mime, banner, links, location,
               to_char(birthday, 'YYYY-MM-DD') AS birthday,
-              last_seen_visibility, bio_visibility, theme_name, accent_name, locale, muted_chats,
+              last_seen_visibility, bio_visibility, theme_name, ui_style, accent_name, locale, muted_chats,
               search_history,
               EXISTS (SELECT 1 FROM nodes n WHERE n.owner_id = users.id AND n.status = 'online') AS node_online,
               EXISTS (SELECT 1 FROM modules m WHERE m.owner_id = users.id AND m.status = 'online') AS module_online
@@ -283,6 +284,7 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       lastSeenVisibility: user.last_seen_visibility,
       bioVisibility: user.bio_visibility,
       themeName: user.theme_name,
+      uiStyle: user.ui_style === 'flat' ? 'flat' : 'glass',
       accentName: user.accent_name,
       locale: user.locale,
       mutedChats: Array.isArray(user.muted_chats) ? user.muted_chats : [],
@@ -320,6 +322,7 @@ const meRoutes: FastifyPluginAsync = async (app) => {
       lastSeenVisibility?: unknown;
       bioVisibility?: unknown;
       themeName?: unknown;
+      uiStyle?: unknown;
       accentName?: unknown;
       locale?: unknown;
       mutedChats?: unknown;
@@ -383,6 +386,11 @@ const meRoutes: FastifyPluginAsync = async (app) => {
     if (body.themeName !== undefined) {
       params.push(str(body.themeName, 'themeName', { max: 32 }));
       sets.push(`theme_name = $${params.length}`);
+    }
+    if (body.uiStyle !== undefined) {
+      if (body.uiStyle !== 'glass' && body.uiStyle !== 'flat') throw badRequest('invalid_ui_style');
+      params.push(body.uiStyle);
+      sets.push(`ui_style = $${params.length}`);
     }
     if (body.accentName !== undefined) {
       params.push(str(body.accentName, 'accentName', { max: 32 }));

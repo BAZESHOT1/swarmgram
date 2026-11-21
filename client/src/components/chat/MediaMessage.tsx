@@ -348,31 +348,93 @@ function MediaVideo({ item, width = MEDIA_W }: { item: ViewMessage; width?: numb
   );
 }
 
-/** Голосовое сообщение (audio/*): карточка с воспроизведением на web. */
+/** Плеер голосового: web — HTMLAudio, iOS/Android — expo-av из временного файла. */
+interface VoicePlayer {
+  play(): Promise<void>;
+  pause(): Promise<void>;
+  release(): void;
+}
+
+async function createVoicePlayer(
+  bytes: Uint8Array,
+  mime: string,
+  on: { duration: (s: number) => void; position: (s: number) => void; ended: () => void },
+): Promise<VoicePlayer> {
+  if (Platform.OS === 'web') {
+    const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: mime || 'audio/webm' }));
+    const audio = new globalThis.Audio(url);
+    audio.onloadedmetadata = () => Number.isFinite(audio.duration) && on.duration(audio.duration);
+    audio.ontimeupdate = () => on.position(audio.currentTime);
+    audio.onended = () => on.ended();
+    return {
+      play: () => audio.play(),
+      pause: async () => audio.pause(),
+      release: () => {
+        audio.pause();
+        URL.revokeObjectURL(url);
+      },
+    };
+  }
+  const FS = await import('expo-file-system');
+  const { Audio: ExpoAudio } = await import('expo-av');
+  const ext = mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : mime.includes('ogg') ? 'ogg' : mime.includes('mpeg') ? 'mp3' : 'webm';
+  const path = `${FS.cacheDirectory}voice-${Date.now()}.${ext}`;
+  const { toB64 } = await import('../../crypto/core');
+  await FS.writeAsStringAsync(path, toB64(bytes), { encoding: FS.EncodingType.Base64 });
+  await ExpoAudio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false }).catch(() => undefined);
+  const { sound } = await ExpoAudio.Sound.createAsync({ uri: path }, { shouldPlay: false, progressUpdateIntervalMillis: 150 }, (st) => {
+    if (!st.isLoaded) return;
+    if (st.durationMillis) on.duration(st.durationMillis / 1000);
+    on.position(st.positionMillis / 1000);
+    if (st.didJustFinish) on.ended();
+  });
+  return {
+    play: async () => {
+      const st = await sound.getStatusAsync();
+      if (st.isLoaded && st.durationMillis && st.positionMillis >= st.durationMillis - 50) await sound.setPositionAsync(0);
+      await sound.playAsync();
+    },
+    pause: async () => {
+      await sound.pauseAsync();
+    },
+    release: () => {
+      void sound.unloadAsync().catch(() => undefined);
+      void FS.deleteAsync(path, { idempotent: true }).catch(() => undefined);
+    },
+  };
+}
+
+/** Детерминированная «волна» по id сообщения: у каждого голосового своя форма. */
+function waveOf(id: string, n: number): number[] {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i += 1) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  const out: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    out.push(0.25 + ((h >>> 0) % 1000) / 1333);
+  }
+  return out;
+}
+
+/** Голосовое сообщение: прозрачное поверх стеклянного пузыря, волна с прогрессом и время. */
 function MediaAudio({ item, width = MEDIA_W }: { item: ViewMessage; width?: number }) {
   const theme = useTheme();
+  const mine = Boolean(item.mine);
   const [playing, setPlaying] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [duration, setDuration] = React.useState<number | null>(null);
-  const audioRef = React.useRef<HTMLAudioElement | null>(null);
-  const urlRef = React.useRef<string | null>(null);
+  const [position, setPosition] = React.useState(0);
+  const playerRef = React.useRef<VoicePlayer | null>(null);
+  const bars = React.useMemo(() => waveOf(String(item.id), 30), [item.id]);
 
   const toggle = React.useCallback(async () => {
-    if (Platform.OS !== 'web') {
-      try {
-        const opened = await openMessageFile(item);
-        if (opened) await saveToDevice(opened.name, opened.mime, opened.bytes);
-      } catch {
-        /* не критично */
-      }
-      return;
-    }
-    if (audioRef.current) {
+    if (loading) return;
+    if (playerRef.current) {
       if (playing) {
-        audioRef.current.pause();
+        await playerRef.current.pause().catch(() => undefined);
         setPlaying(false);
       } else {
-        void audioRef.current.play();
+        await playerRef.current.play().catch(() => undefined);
         setPlaying(true);
       }
       return;
@@ -381,62 +443,62 @@ function MediaAudio({ item, width = MEDIA_W }: { item: ViewMessage; width?: numb
     try {
       const opened = await openMessageFile(item);
       if (!opened) return;
-      const blob = new Blob([opened.bytes as unknown as BlobPart], { type: opened.mime || 'audio/webm' });
-      const url = URL.createObjectURL(blob);
-      urlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onloadedmetadata = () => {
-        if (Number.isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
-      };
-      audio.onended = () => setPlaying(false);
-      audio.onpause = () => setPlaying(false);
-      audio.onplay = () => setPlaying(true);
-      await audio.play();
+      playerRef.current = await createVoicePlayer(opened.bytes, opened.mime || item.file?.mime || 'audio/webm', {
+        duration: (d) => setDuration(d),
+        position: (p) => setPosition(p),
+        ended: () => {
+          setPlaying(false);
+          setPosition(0);
+        },
+      });
+      await playerRef.current.play();
+      setPlaying(true);
     } catch {
-      /* автовоспроизведение может быть заблокировано */
+      /* воспроизведение недоступно */
     } finally {
       setLoading(false);
     }
-  }, [item, playing]);
+  }, [item, loading, playing]);
 
-  React.useEffect(
-    () => () => {
-      audioRef.current?.pause();
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    },
-    [],
-  );
+  React.useEffect(() => () => playerRef.current?.release(), []);
+
+  const progress = duration ? Math.min(1, position / duration) : 0;
+  const played = theme.dark || mine ? (mine && !theme.dark ? theme.onAccent : '#FFFFFF') : theme.accent;
+  const rest = theme.dark ? 'rgba(255,255,255,0.32)' : mine ? 'rgba(26,18,6,0.3)' : 'rgba(0,0,0,0.22)';
+  const timeColor = theme.dark ? 'rgba(255,255,255,0.7)' : theme.textSecondary;
+  const shown = playing || position > 0 ? position : duration;
 
   return (
     <Pressable
       onPress={() => void toggle()}
       accessibilityRole="button"
-      accessibilityLabel="Голосовое сообщение"
-      style={({ pressed }) => [
-        styles.audioCard,
-        { width, backgroundColor: theme.surface, borderColor: theme.line, opacity: pressed ? 0.9 : 1 },
-      ]}
+      accessibilityLabel={playing ? 'Пауза голосового сообщения' : 'Воспроизвести голосовое сообщение'}
+      style={({ pressed }) => [styles.audioCard, { width: Math.min(width, 280), opacity: pressed ? 0.85 : 1 }]}
     >
       <View style={[styles.audioPlay, { backgroundColor: theme.accent }]}>
-        {loading ? <ActivityIndicator size="small" color={theme.onAccent} /> : <Ionicons name={playing ? 'pause' : 'play'} size={18} color={theme.onAccent} />}
+        {loading ? (
+          <ActivityIndicator size="small" color={theme.onAccent} />
+        ) : (
+          <Ionicons name={playing ? 'pause' : 'play'} size={20} color={theme.onAccent} style={playing ? undefined : { marginLeft: 2 }} />
+        )}
       </View>
-      <View style={{ flex: 1, gap: 5 }}>
+      <View style={{ flex: 1, gap: 4 }}>
         <View style={styles.waveRow}>
-          {Array.from({ length: 22 }).map((_, i) => (
+          {bars.map((v, i) => (
             <View
               key={i}
               style={{
-                width: 2.5,
+                flex: 1,
+                maxWidth: 3,
                 borderRadius: 2,
-                height: 6 + ((i * 7) % 15),
-                backgroundColor: playing && i < 10 ? theme.accent : theme.line,
+                height: Math.round(4 + v * 20),
+                backgroundColor: (i + 0.5) / bars.length <= progress ? played : rest,
               }}
             />
           ))}
         </View>
-        <Text style={{ color: theme.textSecondary, fontSize: 11.5 }}>
-          <Ionicons name="mic" size={11} color={theme.textSecondary} /> Голосовое · {formatDuration(duration) || '—'}
+        <Text style={{ color: timeColor, fontSize: 11.5, fontVariant: ['tabular-nums'] as never }}>
+          {formatDuration(shown ?? 0) || '0:00'}
         </Text>
       </View>
     </Pressable>
@@ -603,9 +665,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
   },
-  audioCard: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 14, borderWidth: 1 },
-  audioPlay: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  waveRow: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 22 },
+  audioCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, paddingHorizontal: 2 },
+  audioPlay: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  waveRow: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 26 },
   docCard: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 9, borderRadius: 14, borderWidth: 1 },
   docIcon: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   docDownload: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },

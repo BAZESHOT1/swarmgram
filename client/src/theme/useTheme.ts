@@ -7,10 +7,11 @@ import { makeTheme, type Theme, type ThemeName } from './theme';
 export function useTheme(): Theme {
   const preference = useStore((s) => s.themeName);
   const accentName = useStore((s) => s.accentName);
+  const uiStyle = useStore((s) => s.uiStyle);
   const osScheme = useColorScheme();
   const resolved: Extract<ThemeName, 'dark' | 'light'> =
     preference === 'system' ? (osScheme === 'light' ? 'light' : 'dark') : preference;
-  return React.useMemo(() => makeTheme(resolved, accentName), [resolved, accentName]);
+  return React.useMemo(() => ({ ...makeTheme(resolved, accentName), glassUi: uiStyle !== 'flat' }), [resolved, accentName, uiStyle]);
 }
 
 /** Фактически выбранная тёмная/светлая тема (для StatusBar и т. п.). */

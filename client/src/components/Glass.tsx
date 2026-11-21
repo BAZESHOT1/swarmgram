@@ -61,6 +61,21 @@ export function Glass({
   const effFill = light ? lightFill(fill) : fill;
   const effBorder = light && borderColor === GLASS_BORDER ? 'rgba(0,0,0,0.08)' : borderColor;
   const effTint = tint ?? (light ? 'light' : 'dark');
+  // Монотонный стиль: без размытия и полупрозрачности — сплошная серая / тёмно-белая заливка.
+  if (theme.glassUi === false) {
+    return (
+      <View
+        {...rest}
+        style={[
+          styles.base,
+          { borderRadius: radius, borderWidth, borderColor: effBorder, backgroundColor: light ? '#E9EAEE' : '#1F1F22' },
+          style,
+        ]}
+      >
+        {children}
+      </View>
+    );
+  }
 
   return (
     <View
