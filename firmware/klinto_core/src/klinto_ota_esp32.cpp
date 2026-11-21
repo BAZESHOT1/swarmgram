@@ -7,6 +7,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <esp_attr.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>
@@ -40,6 +41,78 @@ char g_remote_url[128] = {0};
 char g_remote_token[80] = {0};
 char g_remote_path[128] = {0};
 portMUX_TYPE g_remote_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* --------------------------------------------------------- прогресс OTA ---
+ * Битовая карта принятых чанков в NVS: после watchdog/перезагрузки модуль
+ * продолжает с того же места, а не качает 1.5 МБ заново (важно для LoRa).
+ */
+constexpr uint32_t kProgressMagic = 0x4B4F5052u; /* "KOPR" */
+struct OtaProgress {
+  uint32_t magic;
+  uint32_t slot_addr;
+  uint16_t patch_id;
+  uint16_t target_build;
+  uint16_t window_start;
+  uint32_t received_count;
+  uint8_t bits[KL_OTA_MAX_CHUNKS / 8];
+};
+/* Один буфер на всю прошивку: 1.5 КБ на стеке mesh-задачи приводили к переполнению. */
+OtaProgress g_progress;
+
+bool load_progress(void *, uint16_t patch_id, uint16_t target_build, uint8_t *bits,
+                   uint16_t *window_start, uint32_t *received_count) {
+  if (!bits || !window_start || !received_count) return false;
+  Preferences prefs;
+  if (!prefs.begin("klinto_ota", true)) return false;
+  const size_t n = prefs.getBytesLength("prog");
+  const bool ok = n == sizeof(g_progress) &&
+                  prefs.getBytes("prog", &g_progress, sizeof(g_progress)) == sizeof(g_progress);
+  prefs.end();
+  if (!ok || g_progress.magic != kProgressMagic) return false;
+  const esp_partition_t *target = esp_ota_get_next_update_partition(nullptr);
+  if (!target || target->address != g_progress.slot_addr) return false;
+  if (g_progress.patch_id != patch_id || g_progress.target_build != target_build) return false;
+  memcpy(bits, g_progress.bits, sizeof(g_progress.bits));
+  *window_start = g_progress.window_start;
+  *received_count = g_progress.received_count;
+  return true;
+}
+
+void store_progress(void *, uint16_t patch_id, uint16_t target_build, const uint8_t *bits,
+                    uint16_t window_start, uint32_t received_count) {
+  const esp_partition_t *target = esp_ota_get_next_update_partition(nullptr);
+  if (!target || !bits) return;
+  memset(&g_progress, 0, sizeof(g_progress));
+  g_progress.magic = kProgressMagic;
+  g_progress.slot_addr = target->address;
+  g_progress.patch_id = patch_id;
+  g_progress.target_build = target_build;
+  g_progress.window_start = window_start;
+  g_progress.received_count = received_count;
+  memcpy(g_progress.bits, bits, sizeof(g_progress.bits));
+  Preferences prefs;
+  if (prefs.begin("klinto_ota", false)) {
+    prefs.putBytes("prog", &g_progress, sizeof(g_progress));
+    prefs.end();
+  }
+}
+
+void clear_progress(void *) {
+  Preferences prefs;
+  if (prefs.begin("klinto_ota", false)) {
+    prefs.remove("prog");
+    prefs.end();
+  }
+}
+
+/* ------------------------------------------------------- ранний rollback ---
+ * Счётчик в RTC-памяти переживает watchdog/перезагрузку. Если новый образ
+ * падает до kl_ota_esp32_begin(), IDF-загрузчик всё равно должен вернуть
+ * предыдущую прошивку — счётчик лишь ускоряет это и даёт лог.
+ */
+RTC_NOINIT_ATTR static uint32_t g_boot_guard_magic;
+RTC_NOINIT_ATTR static uint32_t g_boot_guard_count;
+constexpr uint32_t kBootGuardMagic = 0x4B4C4F54u; /* "KLOT" */
 
 void remember_pending(const esp_partition_t *target, uint16_t target_build);
 
@@ -231,6 +304,9 @@ void abort_target(void *) {
     esp_ota_abort(g_ota);
     g_ota = 0;
   }
+  /* Полный образ пишется прямо в раздел — отпускаем его, не переключая загрузку.
+   * Старая прошивка продолжает работать; следующий slot_begin сотрёт слот. */
+  g_target = nullptr;
 }
 
 void reboot(void *) { esp_restart(); }
@@ -258,11 +334,35 @@ bool kl_ota_esp32_begin() {
   return true;
 }
 
+void kl_ota_esp32_early_guard() {
+  if (g_boot_guard_magic != kBootGuardMagic) {
+    g_boot_guard_magic = kBootGuardMagic;
+    g_boot_guard_count = 0;
+  }
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (!running || esp_ota_get_state_partition(running, &state) != ESP_OK) return;
+  if (state != ESP_OTA_IMG_PENDING_VERIFY) {
+    g_boot_guard_count = 0;
+    return;
+  }
+  g_boot_guard_count++;
+  Serial.printf("[ota] pending image boot %u/3\n", (unsigned)g_boot_guard_count);
+  if (g_boot_guard_count >= 3) {
+    Serial.println("[ota] early guard: image did not validate, rolling back");
+    if (esp_ota_mark_app_invalid_rollback_and_reboot() != ESP_OK) {
+      Serial.println("[ota] early guard: rollback failed, restart");
+      esp_restart();
+    }
+  }
+}
+
 const kl_ota_platform_t *kl_ota_esp32_platform() {
   static kl_ota_platform_t platform = {
       nullptr, patch_write, patch_read, patch_erase, read_running, begin_target,
       write_target, commit_target, abort_target, reboot, verify_signature, mark_valid,
       slot_begin, slot_write, slot_finish, remote_read, store_manifest,
+      load_progress, store_progress, clear_progress,
   };
   return &platform;
 }
@@ -282,7 +382,10 @@ void kl_ota_esp32_store_build(uint16_t build) {
   prefs.end();
 }
 
-void kl_ota_esp32_mark_valid() { esp_ota_mark_app_valid_cancel_rollback(); }
+void kl_ota_esp32_mark_valid() {
+  esp_ota_mark_app_valid_cancel_rollback();
+  g_boot_guard_count = 0;
+}
 
 bool kl_ota_esp32_pending() {
   Preferences prefs;
@@ -303,6 +406,8 @@ void kl_ota_esp32_rollback_now(const char *reason) {
   prefs.putUChar("pend", 0);
   prefs.putUChar("boots", 0);
   prefs.end();
+  g_boot_guard_count = 0;
+  clear_progress(nullptr);
   Serial.printf("[ota] rollback: %s (build %u marked bad)\n", reason ? reason : "", (unsigned)tbuild);
   const esp_partition_t *candidates[3] = {
       esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr),

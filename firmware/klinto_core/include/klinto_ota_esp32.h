@@ -9,6 +9,9 @@
 #if defined(ESP32)
 /** Смонтировать LittleFS и подготовить каталог /ota. */
 bool kl_ota_esp32_begin();
+/** Самый ранний вызов в setup(): до WiFi/BLE/LittleFS. Считает неудачные
+ *  загрузки нового образа в RTC-памяти и откатывается после 3-й. */
+void kl_ota_esp32_early_guard();
 /** Платформенные колбэки для KlintoOta. */
 const kl_ota_platform_t *kl_ota_esp32_platform();
 /** Анти-откат: сохранённый максимальный build_number в NVS. */

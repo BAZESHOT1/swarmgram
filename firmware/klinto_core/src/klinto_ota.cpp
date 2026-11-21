@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(ARDUINO)
+#include <Arduino.h>
+#endif
+
 namespace {
 
 constexpr uint16_t kMaxChunks = KL_OTA_MAX_CHUNKS;
@@ -65,6 +69,9 @@ void KlintoOta::init(const kl_ota_platform_t *platform, uint8_t chip_arch, uint1
   received_count_ = 0;
   window_start_ = 0;
   source_ = false;
+  started_ms_ = 0;
+  last_progress_ms_ = 0;
+  last_saved_count_ = 0;
 }
 
 void KlintoOta::set_state(uint8_t s) {
@@ -265,21 +272,41 @@ void KlintoOta::handle_announce(const kl_ota_manifest_t &m, uint32_t now_ms) {
   deferred_ = false;
   last_reject_ = 7;
   full_ = kl_ota_manifest_is_full(&m);
-  if (full_) {
+  bool resumed = false;
+  if (full_ && platform_.load_progress && platform_.slot_begin) {
+    uint16_t window_start = 0;
+    uint32_t received = 0;
+    if (platform_.load_progress(platform_.ctx, m.patch_id, m.target_build, progress_bits_,
+                                &window_start, &received)) {
+      memcpy(received_bits_, progress_bits_, sizeof(received_bits_));
+      window_start_ = window_start;
+      received_count_ = (uint16_t)received;
+      resumed = true;
+    }
+  }
+  if (full_ && !resumed) {
+    /* Сначала забываем старый прогресс, потом стираем слот: иначе обрыв
+     * питания посреди стирания оставил бы битовую карту от старого образа. */
+    if (platform_.clear_progress) platform_.clear_progress(platform_.ctx);
     /* Полный образ: место — неактивный OTA-слот, LittleFS не нужна. */
     if (!platform_.slot_begin || !platform_.slot_begin(platform_.ctx, m.patch_size)) {
       has_manifest_ = false;
       return;
     }
-  } else if (platform_.patch_erase) {
+  } else if (!full_ && platform_.patch_erase) {
     platform_.patch_erase(platform_.ctx);
   }
-  memset(received_bits_, 0, sizeof(received_bits_));
+  if (!resumed) {
+    memset(received_bits_, 0, sizeof(received_bits_));
+    received_count_ = 0;
+    window_start_ = 0;
+  }
   last_reject_ = 0;
-  received_count_ = 0;
-  window_start_ = 0;
   last_packet_ms_ = now_ms;
   last_nack_ms_ = 0;
+  started_ms_ = now_ms;
+  last_progress_ms_ = now_ms;
+  last_saved_count_ = received_count_;
   set_state(KL_OTA_DOWNLOADING);
   send_nack(now_ms);
 }
@@ -299,6 +326,20 @@ void KlintoOta::handle_chunk(uint16_t patch_id, uint16_t index, const uint8_t *d
   set_chunk(index);
   received_count_++;
   last_packet_ms_ = now_ms;
+  last_progress_ms_ = now_ms;
+
+  /* Сохраняем битовую карту, чтобы после watchdog/перезагрузки не качать образ заново.
+   * Раз в 128 чанков (~23 КБ) — компромисс между износом NVS и потерей прогресса. */
+  if (full_ && platform_.store_progress &&
+      (uint16_t)(received_count_ - last_saved_count_) >= 128) {
+    last_saved_count_ = received_count_;
+    platform_.store_progress(platform_.ctx, manifest_.patch_id, manifest_.target_build,
+                             (const uint8_t *)received_bits_, window_start_, received_count_);
+  }
+  /* Не держим mesh-задачу и watchdog без пауз на стирание/запись флеша. */
+#if defined(ARDUINO)
+  if ((received_count_ & 15u) == 0) yield();
+#endif
 
   if (received_count_ >= manifest_.total_chunks) {
     set_state(KL_OTA_VERIFYING);
@@ -331,16 +372,46 @@ void KlintoOta::send_nack(uint32_t now_ms) {
   last_nack_ms_ = now_ms;
 }
 
+void KlintoOta::abort_update(const char *reason) {
+  if (state_ == KL_OTA_IDLE && !has_manifest_) return;
+  if (has_platform_) {
+    /* Прогресс не стираем: при таймауте/обрыве связи модуль должен продолжить
+     * с того же места, когда источник снова появится. Ошибки проверки образа
+     * очищают прогресс отдельно, в maybe_finish_download(). */
+    if (platform_.abort_target) platform_.abort_target(platform_.ctx);
+  }
+  has_manifest_ = false;
+  source_ = false;
+  received_count_ = 0;
+  window_start_ = 0;
+  last_saved_count_ = 0;
+  started_ms_ = 0;
+  last_progress_ms_ = 0;
+  memset(received_bits_, 0, sizeof(received_bits_));
+  last_reject_ = 0;
+  set_state(KL_OTA_IDLE);
+#if defined(ARDUINO)
+  if (reason) Serial.printf("[ota] update aborted: %s\n", reason);
+#endif
+}
+
 void KlintoOta::maybe_finish_download(uint32_t now_ms) {
   if (state_ != KL_OTA_VERIFYING || now_ms < finish_at_ms_) return;
   if (full_) {
     /* Полный образ уже в слоте: проверка подписи/SHA и переключение загрузки. */
     if (!has_platform_ || !platform_.slot_finish || !platform_.slot_finish(platform_.ctx, &manifest_)) {
+      if (has_platform_ && platform_.clear_progress) platform_.clear_progress(platform_.ctx);
       set_state(KL_OTA_FAILED_ROLLBACK);
       return;
     }
+    if (platform_.clear_progress) platform_.clear_progress(platform_.ctx);
     if (platform_.store_manifest) platform_.store_manifest(platform_.ctx, &manifest_);
     stored_build_ = manifest_.target_build;
+    {
+      uint8_t done[8];
+      const size_t n = kl_ota_encode_nack(manifest_.patch_id, 0xFFFF, 0, done, sizeof(done));
+      if (n) send_packet(KL_TYPE_OTA_NACK, done, n, true);
+    }
     set_state(KL_OTA_PENDING_REBOOT);
     reboot_at_ms_ = now_ms + 3000;
     return;
@@ -382,6 +453,11 @@ void KlintoOta::maybe_finish_download(uint32_t now_ms) {
   }
   if (platform_.patch_erase) platform_.patch_erase(platform_.ctx);
   stored_build_ = manifest_.target_build;
+  {
+    uint8_t done[8];
+    const size_t n = kl_ota_encode_nack(manifest_.patch_id, 0xFFFF, 0, done, sizeof(done));
+    if (n) send_packet(KL_TYPE_OTA_NACK, done, n, true);
+  }
   set_state(KL_OTA_PENDING_REBOOT);
   reboot_at_ms_ = now_ms + 3000;
 }
@@ -438,9 +514,19 @@ void KlintoOta::tick(uint32_t now_ms) {
       }
       send_nack(now_ms);
     }
-    /* Защита от зависшей раздачи: повторный анонс не нужен, NACK уже идёт. */
-    if (now_ms - last_packet_ms_ > 180000u) set_state(KL_OTA_FAILED_ROLLBACK);
+    /* Зависшая раздача: по LoRa окна идут медленно, поэтому таймаут больше. */
+    const uint32_t stall_ms = (manifest_.ifc_mask & 2) ? 900000u : 300000u;
+    const uint32_t since = last_progress_ms_ ? last_progress_ms_ : last_packet_ms_;
+    if (since && now_ms - since > stall_ms) {
+      abort_update((manifest_.ifc_mask & 2) ? "no progress (lora)" : "no progress");
+    } else if (started_ms_ && now_ms - started_ms_ > 5400000u) {
+      abort_update("download too long");
+    }
   }
+
+  /* Любая ошибка проверки/применения не должна оставлять модуль в подвешенном
+   * состоянии: отменяем обновление и продолжаем работать на старой прошивке. */
+  if (state_ == KL_OTA_FAILED_ROLLBACK) abort_update("verify/apply failed");
 
   maybe_finish_download(now_ms);
 
@@ -492,7 +578,14 @@ bool KlintoOta::start_source(const kl_ota_manifest_t &m, uint8_t mode) {
 void KlintoOta::handle_nack(uint16_t patch_id, uint16_t window_start, uint32_t mask,
                             uint32_t now_ms) {
   (void)now_ms;
-  if (!source_ || patch_id != manifest_.patch_id || mask == 0) return;
+  if (!source_ || patch_id != manifest_.patch_id) return;
+  /* 0xFFFF — приёмник полностью собрал образ и уходит в перезагрузку.
+   * Останавливаем раздачу, чтобы не занимать эфир (особенно LoRa). */
+  if (window_start == 0xFFFF) {
+    stop_source();
+    return;
+  }
+  if (mask == 0) return;
   resend_window_ = window_start;
   resend_mask_ = mask;
 }

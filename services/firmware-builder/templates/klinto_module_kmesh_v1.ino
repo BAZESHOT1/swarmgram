@@ -10,6 +10,7 @@
 
 #include "config.h"
 #include "klinto_runtime.h"
+#include "klinto_ota_esp32.h"
 
 #ifndef KL_BATT_CHARGING_PIN
 #define KL_BATT_CHARGING_PIN -1
@@ -33,6 +34,9 @@ static bool readCharging() {
 }
 
 void setup() {
+  Serial.begin(115200);
+  delay(50);
+  kl_ota_esp32_early_guard();
   KlintoNode::instance().begin();
   g_battPin = KlintoNode::instance().hwBattPin();
   g_battRatio = KlintoNode::instance().hwBattRatio();

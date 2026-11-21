@@ -89,6 +89,16 @@ struct kl_ota_platform_t {
   bool (*remote_read)(void *ctx, uint32_t offset, uint8_t *out, size_t len);
   /** Запомнить применённый манифест (для каскадной раздачи после проверки). */
   void (*store_manifest)(void *ctx, const kl_ota_manifest_t *m);
+  /**
+   * Возобновление недокачанного полного образа после перезагрузки/сбоя.
+   * Битовая карта — те же KL_OTA_MAX_CHUNKS бит, что и в приёмнике.
+   * false — сохранённого прогресса нет или он относится к другому образу/слоту.
+   */
+  bool (*load_progress)(void *ctx, uint16_t patch_id, uint16_t target_build, uint8_t *bits,
+                        uint16_t *window_start, uint32_t *received_count);
+  void (*store_progress)(void *ctx, uint16_t patch_id, uint16_t target_build, const uint8_t *bits,
+                         uint16_t window_start, uint32_t received_count);
+  void (*clear_progress)(void *ctx);
 };
 
 typedef bool (*kl_ota_send_t)(void *ctx, uint8_t type, const uint8_t *payload, size_t len,
@@ -153,6 +163,8 @@ class KlintoOta {
   bool chunk_received(uint16_t index) const;
   bool src_read(uint32_t offset, uint8_t *out, size_t len);
   void set_chunk(uint16_t index);
+  /** Прервать приём/проверку, оставить старую прошивку и вернуться в IDLE. */
+  void abort_update(const char *reason);
 
   kl_ota_platform_t platform_;
   bool has_platform_;
@@ -178,12 +190,18 @@ class KlintoOta {
   bool has_manifest_;
   bool deferred_;
   uint32_t received_bits_[KL_OTA_MAX_CHUNKS / 32];
+  /** Временная карта для возобновления: держим в объекте, а не на стеке mesh-задачи. */
+  uint8_t progress_bits_[KL_OTA_MAX_CHUNKS / 8];
   uint16_t received_count_;
   uint16_t window_start_;
   uint32_t last_packet_ms_;
   uint32_t last_nack_ms_;
   uint32_t finish_at_ms_;
   uint32_t reboot_at_ms_;
+  /** Старт текущего приёма и последний реальный прогресс (для таймаутов). */
+  uint32_t started_ms_ = 0;
+  uint32_t last_progress_ms_ = 0;
+  uint16_t last_saved_count_ = 0;
 
   bool source_;
   uint16_t source_next_;
